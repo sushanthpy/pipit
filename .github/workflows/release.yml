@@ -34,16 +34,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Update version in Cargo.toml
-        run: |
-          sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' Cargo.toml
-          git add Cargo.toml
-          git commit -m "Release v${{ github.event.inputs.version }}" || true
-
       - name: Create and push tag
         run: |
           git tag "v${{ github.event.inputs.version }}"
-          git push origin main --tags
+          git push origin "v${{ github.event.inputs.version }}"
 
   build:
     name: Build (${{ matrix.target }})
