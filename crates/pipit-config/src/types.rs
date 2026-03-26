@@ -464,23 +464,12 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub auto_commit: bool,
     pub lint_command: Option<String>,
     pub test_command: Option<String>,
     pub conventions_file: Option<String>,
-}
-
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self {
-            auto_commit: false,
-            lint_command: None,
-            test_command: None,
-            conventions_file: None,
-        }
-    }
 }
 
 /// CLI overrides — highest priority config source.
