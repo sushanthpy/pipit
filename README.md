@@ -11,6 +11,35 @@ Pipit is built for real codebases, not toy prompts.
 
 ---
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sushanthpy/pipit/main/install.sh | sh
+```
+
+Or specify a version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sushanthpy/pipit/main/install.sh | sh -s v0.1.0
+```
+
+Set a custom install directory:
+
+```sh
+PIPIT_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/sushanthpy/pipit/main/install.sh | sh
+```
+
+Or build from source:
+
+```sh
+git clone https://github.com/sushanthpy/pipit.git
+cd pipit
+cargo build --release
+cp target/release/pipit /usr/local/bin/
+```
+
+---
+
 ## Why Pipit?
 
 Pipit gives you a simple terminal interface for day-to-day coding work:
