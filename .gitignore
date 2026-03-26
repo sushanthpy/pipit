@@ -1,0 +1,38 @@
+# Build artifacts
+/target/
+/crates/*/target/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor swap/backup
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Pipit runtime data
+.pipit/secrets.toml
+.pipit/sessions/
+.pipit/cache/
+.forge/
+
+# Scratch / personal
+c-code.py
+files/
+run.sh
+
+# Cargo lock is committed for binaries (keep it)
+# Cargo.lock
+
+# Env files
+.env
+.env.*

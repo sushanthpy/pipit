@@ -1,0 +1,22 @@
+[package]
+name = "pipit-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pipit-provider = { path = "../pipit-provider" }
+pipit-tools = { path = "../pipit-tools" }
+pipit-edit = { path = "../pipit-edit" }
+pipit-context = { path = "../pipit-context" }
+pipit-intelligence = { path = "../pipit-intelligence" }
+pipit-extensions = { path = "../pipit-extensions" }
+pipit-config = { path = "../pipit-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

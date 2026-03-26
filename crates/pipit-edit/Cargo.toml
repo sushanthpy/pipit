@@ -1,0 +1,13 @@
+[package]
+name = "pipit-edit"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+similar = { workspace = true }
+pipit-provider = { path = "../pipit-provider" }

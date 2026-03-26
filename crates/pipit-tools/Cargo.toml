@@ -1,0 +1,20 @@
+[package]
+name = "pipit-tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pipit-config = { path = "../pipit-config" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+tokio-util = { workspace = true }
+pipit-provider = { path = "../pipit-provider" }
+pipit-edit = { path = "../pipit-edit" }
+toml = { workspace = true }

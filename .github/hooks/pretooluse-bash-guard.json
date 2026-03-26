@@ -1,0 +1,10 @@
+{
+  "event": "PreToolUse",
+  "matcher": "bash",
+  "description": "Example workflow hook manifest for reviewing shell commands before execution.",
+  "script": {
+    "type": "command",
+    "command": "sh scripts/check-bash-command.sh",
+    "timeout": 5
+  }
+}

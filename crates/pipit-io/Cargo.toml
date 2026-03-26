@@ -1,0 +1,18 @@
+[package]
+name = "pipit-io"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pipit-core = { path = "../pipit-core" }
+pipit-config = { path = "../pipit-config" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+pulldown-cmark = { workspace = true }
+syntect = { workspace = true }

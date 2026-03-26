@@ -1,0 +1,95 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pipit-cli",
+    "crates/pipit-core",
+    "crates/pipit-provider",
+    "crates/pipit-tools",
+    "crates/pipit-intelligence",
+    "crates/pipit-edit",
+    "crates/pipit-context",
+    "crates/pipit-extensions",
+    "crates/pipit-io",
+    "crates/pipit-config",
+    "crates/pipit-skills",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"] }
+eventsource-stream = "0.2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Markdown + syntax highlighting
+pulldown-cmark = "0.12"
+syntect = "5"
+
+# Code intelligence
+tree-sitter = "0.24"
+petgraph = "0.6"
+
+# Search
+ignore = "0.4"
+globset = "0.4"
+
+# Extensions
+mlua = { version = "0.10", features = ["luajit", "serialize"] }
+
+# Storage
+tempfile = "3"
+
+# Auth
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Concurrency
+rayon = "1"
+dashmap = "6"
+
+# Diff
+similar = "2"
+
+# File watching
+notify = "7"
+
+# Telemetry
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async trait
+async-trait = "0.1"
+
+# Bytes
+bytes = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
