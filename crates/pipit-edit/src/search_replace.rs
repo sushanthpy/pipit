@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 /// Search/Replace block format — default for Claude and Gemini.
 ///
 /// Format:
-/// ```
+/// ```text
 /// path/to/file.rs
 /// <<<<<<< SEARCH
 /// old code
