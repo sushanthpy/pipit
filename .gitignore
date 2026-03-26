@@ -36,3 +36,4 @@ run.sh
 # Env files
 .env
 .env.*
+mini-swe-agent

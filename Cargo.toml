@@ -28,7 +28,7 @@ tokio-stream = "0.1"
 futures = "0.3"
 
 # HTTP
-reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "json"] }
 eventsource-stream = "0.2"
 
 # Serialization
