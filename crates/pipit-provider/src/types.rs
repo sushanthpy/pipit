@@ -141,7 +141,7 @@ pub struct MessageMetadata {
 }
 
 /// Completion request sent to a provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CompletionRequest {
     pub system: String,
     pub messages: Vec<Message>,
@@ -149,19 +149,6 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stop_sequences: Vec<String>,
-}
-
-impl Default for CompletionRequest {
-    fn default() -> Self {
-        Self {
-            system: String::new(),
-            messages: Vec::new(),
-            tools: Vec::new(),
-            temperature: None,
-            max_tokens: None,
-            stop_sequences: Vec::new(),
-        }
-    }
 }
 
 /// A tool declaration for the LLM.
