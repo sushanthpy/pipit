@@ -202,7 +202,7 @@ impl PipitUi {
 
         // Line 1: repo, branch, model, mode
         let line1 = format!(
-            " {repo}  {branch}{dirty}  {model}  {mode}",
+            " pipit · {repo}  {branch}{dirty}  {model}  {mode}",
             repo = self.status.repo_name,
             branch = self.status.branch,
             dirty = branch_marker,

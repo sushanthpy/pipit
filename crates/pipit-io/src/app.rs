@@ -207,8 +207,9 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
     };
 
     let line1 = Line::from(vec![
-        Span::styled(" ", Style::default()),
-        Span::styled(&s.repo_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(" pipit", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&s.repo_name, Style::default().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled(format!("{}{}", s.branch, branch_marker), Style::default().fg(Color::Green)),
         Span::raw("  "),

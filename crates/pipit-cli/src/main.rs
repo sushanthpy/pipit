@@ -914,10 +914,21 @@ async fn run_tui_mode(
     let tui_state = Arc::new(Mutex::new(TuiState::new(status)));
     let mut terminal = app::init_terminal().context("Failed to init TUI")?;
 
-    // Welcome message
+    // Welcome banner
     {
         let mut state = tui_state.lock().unwrap();
-        state.push_activity("·", ratatui::style::Color::Cyan, "pipit v0.1.0 — /help for commands".to_string());
+        let logo_lines = [
+            r"        _       _ _   ",
+            r"  _ __ (_)_ __ (_) |_ ",
+            r" | '_ \| | '_ \| | __|",
+            r" | |_) | | |_) | | |_ ",
+            r" | .__/|_| .__/|_|\__|",
+            r" |_|     |_|    v0.1.0",
+        ];
+        for line in &logo_lines {
+            state.push_activity(" ", ratatui::style::Color::Yellow, line.to_string());
+        }
+        state.push_activity("·", ratatui::style::Color::Cyan, "/help for commands".to_string());
     }
 
     // Spawn agent event handler that updates TUI state
