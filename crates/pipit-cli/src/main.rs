@@ -1,3 +1,4 @@
+mod update;
 mod workflow;
 
 use anyhow::{Context, Result};
@@ -46,7 +47,7 @@ struct LoadedPlanningState {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "pipit", version = "0.1.0", about = "AI coding agent")]
+#[command(name = "pipit", version = env!("CARGO_PKG_VERSION"), about = "AI coding agent")]
 struct Cli {
     /// Initial prompt (if provided, runs non-interactively)
     #[arg(value_name = "PROMPT")]
@@ -97,16 +98,18 @@ struct Cli {
     tui: bool,
 
     #[command(subcommand)]
-    command: Option<AuthCommands>,
+    command: Option<Commands>,
 }
 
 #[derive(clap::Subcommand, Debug)]
-enum AuthCommands {
+enum Commands {
     /// Manage provider authentication
     Auth {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// Update pipit to the latest version
+    Update,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -148,10 +151,15 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Handle auth subcommands early (before provider resolution)
-    if let Some(AuthCommands::Auth { action }) = &cli.command {
-        return handle_auth_command(action).await;
+    // Handle subcommands early (before provider resolution)
+    match &cli.command {
+        Some(Commands::Auth { action }) => return handle_auth_command(action).await,
+        Some(Commands::Update) => return update::self_update().await,
+        None => {}
     }
+
+    // Background version check (non-blocking)
+    let update_msg = tokio::spawn(update::check_for_update_background());
 
     let cli_provider = cli
         .provider
@@ -316,6 +324,11 @@ async fn main() -> Result<()> {
 
     // Create UI
     let mut ui = PipitUi::new(show_thinking, true, trace_ui, status.clone());
+
+    // Show update notification if available (non-blocking check started earlier)
+    if let Ok(Some(msg)) = update_msg.await {
+        eprintln!("\x1b[33m{}\x1b[0m\n", msg);
+    }
 
     // Single-shot mode
     if let Some(prompt) = cli.prompt {
@@ -923,7 +936,7 @@ async fn run_tui_mode(
             r" | '_ \| | '_ \| | __|",
             r" | |_) | | |_) | | |_ ",
             r" | .__/|_| .__/|_|\__|",
-            r" |_|     |_|    v0.1.0",
+            &format!(" |_|     |_|    v{}", env!("CARGO_PKG_VERSION")),
         ];
         for line in &logo_lines {
             state.push_activity(" ", ratatui::style::Color::Yellow, line.to_string());

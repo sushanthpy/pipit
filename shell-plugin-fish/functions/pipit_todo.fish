@@ -68,8 +68,8 @@ function pipit_todo -d "Task tracking for pipit sessions"
             set -l new_todos
             set -l cleared 0
             for entry in $pipit_todos
-                set -l status (string split -m1 '|' -- $entry)[1]
-                if test "$status" = "DONE"
+                set -l st (string split -m1 '|' -- $entry)[1]
+                if test "$st" = "DONE"
                     set cleared (math $cleared + 1)
                 else
                     set -a new_todos $entry
@@ -109,10 +109,10 @@ function _pipit_todo_list -d "Display todo list"
     for entry in $pipit_todos
         set i (math $i + 1)
         set -l parts (string split -m1 '|' -- $entry)
-        set -l status $parts[1]
+        set -l st $parts[1]
         set -l text $parts[2]
 
-        switch $status
+        switch $st
             case TODO
                 set_color white
                 printf "  %2d. ○ %s\n" $i $text
@@ -131,10 +131,10 @@ function _pipit_todo_list -d "Display todo list"
     set -l done 0
     set -l doing 0
     for entry in $pipit_todos
-        set -l status (string split -m1 '|' -- $entry)[1]
-        if test "$status" = "DONE"
+        set -l st (string split -m1 '|' -- $entry)[1]
+        if test "$st" = "DONE"
             set done (math $done + 1)
-        else if test "$status" = "DOING"
+        else if test "$st" = "DOING"
             set doing (math $doing + 1)
         end
     end

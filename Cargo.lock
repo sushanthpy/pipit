@@ -1327,6 +1327,7 @@ dependencies = [
  "pipit-skills",
  "pipit-tools",
  "ratatui",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

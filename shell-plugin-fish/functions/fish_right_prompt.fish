@@ -21,10 +21,10 @@ function fish_right_prompt
     set -l doing_count 0
     set -l todo_count 0
     for entry in $pipit_todos
-        set -l status (string split -m1 '|' -- $entry)[1]
-        if test "$status" = "DOING"
+        set -l st (string split -m1 '|' -- $entry)[1]
+        if test "$st" = "DOING"
             set doing_count (math $doing_count + 1)
-        else if test "$status" = "TODO"
+        else if test "$st" = "TODO"
             set todo_count (math $todo_count + 1)
         end
     end

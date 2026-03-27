@@ -26,10 +26,11 @@ function pipit_env -d "Show pipit environment and API keys"
         if test -n "$val"
             # Mask: show first 4 and last 4 chars
             set -l len (string length $val)
+            set -l masked
             if test $len -gt 8
-                set -l masked (string sub -l 4 $val)"····"(string sub -s (math $len - 3) $val)
+                set masked (string sub -l 4 $val)"····"(string sub -s (math $len - 3) $val)
             else
-                set -l masked "····"
+                set masked "····"
             end
             set_color green; printf "  ✓ %-24s %s\n" $key $masked; set_color normal
         else
