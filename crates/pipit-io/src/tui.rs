@@ -61,7 +61,7 @@ impl StatusBarState {
         }
     }
 
-    fn token_pct(&self) -> u64 {
+    pub fn token_pct(&self) -> u64 {
         if self.tokens_limit == 0 {
             0
         } else {
@@ -632,6 +632,28 @@ impl PipitUi {
                 if self.show_trace {
                     eprintln!("{DIM}steering› {text}{RESET}");
                 }
+            }
+            AgentEvent::PhaseTransition { from: _, to, mode } => {
+                self.finish_inline_sections();
+                eprintln!("{BOLD_BLUE}pipit›{RESET} {DIM}{mode}{RESET} · {to}");
+            }
+            AgentEvent::VerifierVerdict { verdict, confidence, findings_summary } => {
+                self.finish_inline_sections();
+                let color = match verdict.as_str() {
+                    "PASS" => GREEN,
+                    "REPAIRABLE" => YELLOW,
+                    _ => RED,
+                };
+                eprintln!("{color}verify› {verdict}{RESET} {DIM}(confidence: {confidence:.0}%){RESET}");
+                if !findings_summary.is_empty() {
+                    for line in findings_summary.lines() {
+                        eprintln!("  {DIM}{line}{RESET}");
+                    }
+                }
+            }
+            AgentEvent::RepairStarted { attempt, reason } => {
+                self.finish_inline_sections();
+                eprintln!("{YELLOW}repair› attempt {attempt}: {reason}{RESET}");
             }
             AgentEvent::TurnEnd {
                 turn_number,

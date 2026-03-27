@@ -1,6 +1,7 @@
 use crate::events::{AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler, ToolCallOutcome, TurnEndReason};
 use crate::governor::{Governor, RiskReport};
 use crate::loop_detector::LoopDetector;
+use crate::pev::{ModelRouter, PevConfig};
 use crate::planner::{CandidatePlan, Planner};
 use crate::proof::{
     ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, PlanPivot, ProofPacket,
@@ -36,6 +37,9 @@ pub struct AgentLoopConfig {
     pub test_command: Option<String>,
     /// If set, run this lint command after any file mutation.
     pub lint_command: Option<String>,
+    /// PEV (Plan/Execute/Verify) orchestration config.
+    /// When Some, the agent uses role-routed model inference.
+    pub pev: Option<PevConfig>,
 }
 
 impl Default for AgentLoopConfig {
@@ -51,6 +55,7 @@ impl Default for AgentLoopConfig {
             pricing: PricingConfig::default(),
             test_command: None,
             lint_command: None,
+            pev: None,
         }
     }
 }
@@ -58,7 +63,7 @@ impl Default for AgentLoopConfig {
 /// The agent loop — the central ~400 lines of the project.
 /// Coordinates LLM calls, tool execution, context management.
 pub struct AgentLoop {
-    provider: Arc<dyn LlmProvider>,
+    models: ModelRouter,
     tools: ToolRegistry,
     context: ContextManager,
     extensions: Arc<dyn ExtensionRunner>,
@@ -83,7 +88,7 @@ pub struct PlanningState {
 
 impl AgentLoop {
     pub fn new(
-        provider: Arc<dyn LlmProvider>,
+        models: ModelRouter,
         tools: ToolRegistry,
         context: ContextManager,
         extensions: Arc<dyn ExtensionRunner>,
@@ -100,7 +105,7 @@ impl AgentLoop {
         let tool_context = ToolContext::new(project_root, config.approval_mode);
 
         let agent = Self {
-            provider,
+            models,
             tools,
             context,
             extensions,
@@ -120,6 +125,11 @@ impl AgentLoop {
 
     pub fn set_repo_map(&mut self, map: String) {
         self.repo_map = Some(map);
+    }
+
+    /// Convenience: get the executor provider (the default for the main loop).
+    fn provider(&self) -> &Arc<dyn LlmProvider> {
+        &self.models.for_role(crate::pev::ModelRole::Executor).provider
     }
 
     /// Update the approval mode at runtime (from /permissions command).
@@ -196,7 +206,8 @@ impl AgentLoop {
                     tracing::warn!("PreCompact extension hook failed: {}", e);
                 }
                 self.emit(AgentEvent::CompressionStart);
-                match self.context.compress(&*self.provider, cancel.clone()).await {
+                let compress_provider = self.provider().clone();
+                match self.context.compress(&*compress_provider, cancel.clone()).await {
                     Ok(stats) => {
                         self.emit(AgentEvent::CompressionEnd {
                             messages_removed: stats.messages_removed,
@@ -264,7 +275,7 @@ impl AgentLoop {
 
             // Fix #12: Track cost from response usage
             if response.stop_reason.is_some() {
-                let cost = compute_cost(self.provider.id(), &response.usage, &self.config.pricing);
+                let cost = compute_cost(self.provider().id(), &response.usage, &self.config.pricing);
                 self.context.add_cost(cost);
             }
 
@@ -444,7 +455,7 @@ impl AgentLoop {
                 }
                 StopReason::MaxTokens => {
                     // Fix #14: Continue generation via assistant prefill if supported
-                    if self.provider.capabilities().supports_prefill && !response.text.is_empty() {
+                    if self.provider().capabilities().supports_prefill && !response.text.is_empty() {
                         // Append partial text as assistant prefill and loop again
                         self.context.push_message(Message::user(
                             "Continue from where you left off. Your previous response was truncated."
@@ -490,7 +501,7 @@ impl AgentLoop {
         request: CompletionRequest,
         cancel: CancellationToken,
     ) -> Result<AssistantResponse, pipit_provider::ProviderError> {
-        let mut stream = self.provider.complete(request, cancel.clone()).await?;
+        let mut stream = self.provider().complete(request, cancel.clone()).await?;
         let mut response = AssistantResponse::new();
 
         while let Some(event) = stream.next().await {
@@ -882,8 +893,9 @@ impl AgentLoop {
         &mut self,
         cancel: CancellationToken,
     ) -> Result<pipit_context::budget::CompressionStats, String> {
+        let provider = self.provider().clone();
         self.context
-            .compress(&*self.provider, cancel)
+            .compress(&*provider, cancel)
             .await
             .map_err(|e| e.to_string())
     }

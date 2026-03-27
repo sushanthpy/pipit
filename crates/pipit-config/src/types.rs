@@ -39,6 +39,9 @@ impl PipitConfig {
             if let Some(v) = p.default {
                 self.provider.default = v;
             }
+            if let Some(v) = p.base_url {
+                self.provider.custom_base_url = Some(v);
+            }
         }
         if let Some(m) = layer.model {
             if let Some(v) = m.default_model {
@@ -95,6 +98,7 @@ pub struct PipitConfigLayer {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfigLayer {
     pub default: Option<ProviderKind>,
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

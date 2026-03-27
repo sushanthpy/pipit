@@ -93,9 +93,36 @@ struct Cli {
     #[arg(long)]
     base_url: Option<String>,
 
-    /// Use full-screen TUI mode (alternate screen with fixed layout)
+    /// Use classic REPL mode instead of the full-screen TUI
     #[arg(long, default_value_t = false)]
-    tui: bool,
+    classic: bool,
+
+    /// Agent mode: fast, balanced, guarded, custom
+    ///
+    /// fast     — direct execution, no verification overhead
+    /// balanced — plans before acting, heuristic verification  
+    /// guarded  — full plan/execute/verify with repair loops
+    /// custom   — guarded with user-specified role models
+    #[arg(long, default_value = "fast")]
+    mode: String,
+
+    // ── Expert: role model overrides (hidden from default --help) ──
+
+    /// [expert] Planner model override (for custom mode)
+    #[arg(long, hide = true)]
+    planner_model: Option<String>,
+
+    /// [expert] Planner provider override (for custom mode)
+    #[arg(long, hide = true)]
+    planner_provider: Option<String>,
+
+    /// [expert] Verifier model override (for custom mode)
+    #[arg(long, hide = true)]
+    verifier_model: Option<String>,
+
+    /// [expert] Verifier provider override (for custom mode)
+    #[arg(long, hide = true)]
+    verifier_provider: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -110,6 +137,8 @@ enum Commands {
     },
     /// Update pipit to the latest version
     Update,
+    /// Interactive setup wizard — configure provider, model, and preferences
+    Setup,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -155,11 +184,20 @@ async fn main() -> Result<()> {
     match &cli.command {
         Some(Commands::Auth { action }) => return handle_auth_command(action).await,
         Some(Commands::Update) => return update::self_update().await,
+        Some(Commands::Setup) => return run_setup_wizard(),
         None => {}
     }
 
     // Background version check (non-blocking)
     let update_msg = tokio::spawn(update::check_for_update_background());
+
+    // First-run hint: if no config exists and no provider flag, guide the user
+    if !pipit_config::has_user_config() && cli.provider.is_none() {
+        eprintln!();
+        eprintln!("  \x1b[1;33mFirst time?\x1b[0m Run \x1b[1mpipit setup\x1b[0m for interactive configuration.");
+        eprintln!("  \x1b[90mOr pass flags: pipit --provider openai --model gpt-4o\x1b[0m");
+        eprintln!();
+    }
 
     let cli_provider = cli
         .provider
@@ -208,18 +246,94 @@ async fn main() -> Result<()> {
                 ProviderKind::Mistral => "MISTRAL_API_KEY",
                 ProviderKind::Ollama => "OLLAMA_API_KEY (not usually needed)",
             };
-            anyhow::anyhow!("No API key found. Set {} or pass --api-key", env_var)
+            anyhow::anyhow!(
+                "No API key found for {}.\n\n\
+                 Quick fix (pick one):\n\
+                 1. pipit setup            Interactive config wizard\n\
+                 2. export {}=<key>   Environment variable\n\
+                 3. pipit auth login {}    Store in credentials\n\
+                 4. pipit --api-key <key>  One-time flag\n\n\
+                 Config is saved to ~/.config/pipit/config.toml",
+                provider_kind, env_var, provider_kind
+            )
         })?;
 
     // Resolve model
     let model = cli.model.unwrap_or(config.model.default_model.clone());
 
+    // Resolve base URL: CLI flag > config file
+    let base_url = cli.base_url.or(config.provider.custom_base_url.clone());
+
     // Create provider
     let provider: Arc<dyn LlmProvider> = Arc::from(
-        pipit_provider::create_provider(provider_kind, &model, &api_key, cli.base_url.as_deref())
+        pipit_provider::create_provider(provider_kind, &model, &api_key, base_url.as_deref())
             .map_err(|e| anyhow::anyhow!("Provider creation failed for '{}': {}", model, e))?,
 
     );
+
+    // Build model router based on agent mode
+    let agent_mode: pipit_core::AgentMode = cli.mode.parse()
+        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+
+    // Auto-promote to Custom if role overrides are specified
+    let agent_mode = if agent_mode != pipit_core::AgentMode::Custom
+        && (cli.planner_model.is_some() || cli.planner_provider.is_some()
+            || cli.verifier_model.is_some() || cli.verifier_provider.is_some())
+    {
+        pipit_core::AgentMode::Custom
+    } else {
+        agent_mode
+    };
+
+    let pev_config = agent_mode.to_pev_config();
+
+    let models = if agent_mode == pipit_core::AgentMode::Custom {
+        use pipit_core::{ModelRouter, RoleProvider, ModelRole};
+
+        let planner_model_id = cli.planner_model.as_deref().unwrap_or(&model);
+        let verifier_model_id = cli.verifier_model.as_deref().unwrap_or(&model);
+
+        let make_provider = |role_model: &str, role_provider_str: Option<&str>| -> Result<Arc<dyn LlmProvider>, anyhow::Error> {
+            let rp_kind: ProviderKind = if let Some(p) = role_provider_str {
+                p.parse().map_err(|e: String| anyhow::anyhow!("{}", e))?
+            } else {
+                provider_kind
+            };
+            let rp_key = pipit_config::resolve_api_key(rp_kind)
+                .unwrap_or_else(|| api_key.clone());
+            let rp_base = if role_provider_str.is_some() { None } else { base_url.as_deref() };
+            Ok(Arc::from(pipit_provider::create_provider(rp_kind, role_model, &rp_key, rp_base)
+                .map_err(|e| anyhow::anyhow!("Provider creation for {} failed: {}", role_model, e))?))
+        };
+
+        let planner_provider = if cli.planner_model.is_some() || cli.planner_provider.is_some() {
+            make_provider(planner_model_id, cli.planner_provider.as_deref())?
+        } else {
+            provider.clone()
+        };
+
+        let verifier_provider = if cli.verifier_model.is_some() || cli.verifier_provider.is_some() {
+            make_provider(verifier_model_id, cli.verifier_provider.as_deref())?
+        } else {
+            provider.clone()
+        };
+
+        let router = ModelRouter::new(
+            RoleProvider { provider: planner_provider, model_id: planner_model_id.to_string(), role: ModelRole::Planner },
+            RoleProvider { provider: provider.clone(), model_id: model.clone(), role: ModelRole::Executor },
+            RoleProvider { provider: verifier_provider, model_id: verifier_model_id.to_string(), role: ModelRole::Verifier },
+        );
+
+        eprintln!("pipit› mode: custom | planner: {} | executor: {} | verifier: {}",
+            planner_model_id, model, verifier_model_id);
+
+        router
+    } else {
+        if agent_mode != pipit_core::AgentMode::Fast {
+            eprintln!("pipit› mode: {} — {}", agent_mode, agent_mode.description());
+        }
+        pipit_core::ModelRouter::single(provider.clone(), model.clone())
+    };
 
     // Build tool registry
     let tools = ToolRegistry::with_builtins();
@@ -286,6 +400,7 @@ async fn main() -> Result<()> {
         pricing: config.pricing.clone(),
         test_command: config.project.test_command.clone(),
         lint_command: config.project.lint_command.clone(),
+        pev: pev_config,
         ..Default::default()
     };
 
@@ -294,7 +409,7 @@ async fn main() -> Result<()> {
         Arc::new(InteractiveApprovalHandler);
 
     let (mut agent, mut event_rx, _steering_tx) = AgentLoop::new(
-        provider.clone(),
+        models,
         tools,
         context,
         extensions,
@@ -375,8 +490,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // ── TUI mode vs classic REPL ─────────────────────────────────────────
-    if cli.tui {
+    // ── TUI mode (default) vs classic REPL ───────────────────────────────
+    if !cli.classic {
         return run_tui_mode(
             agent,
             &mut event_rx,
@@ -386,6 +501,7 @@ async fn main() -> Result<()> {
             &extensions_for_lifecycle,
             status,
             trace_ui,
+            agent_mode,
         )
         .await;
     }
@@ -906,6 +1022,50 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Convert a SlashCommand back to its string form for forwarding to the agent.
+fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
+    use pipit_io::input::SlashCommand::*;
+    match cmd {
+        Help => "help".to_string(),
+        Status => "status".to_string(),
+        Plans => "plans".to_string(),
+        Clear => "clear".to_string(),
+        Model(s) => if s.is_empty() { "model".to_string() } else { format!("model {}", s) },
+        Compact => "compact".to_string(),
+        Undo => "undo".to_string(),
+        Branch(Some(s)) => format!("branch {}", s),
+        Branch(None) => "branch".to_string(),
+        BranchList => "branches".to_string(),
+        BranchSwitch(s) => format!("switch {}", s),
+        Cost => "cost".to_string(),
+        Quit => "quit".to_string(),
+        Context => "context".to_string(),
+        Tokens => "tokens".to_string(),
+        Permissions(Some(s)) => format!("permissions {}", s),
+        Permissions(None) => "permissions".to_string(),
+        Plan(Some(s)) => format!("plan {}", s),
+        Plan(None) => "plan".to_string(),
+        Add(s) => format!("add {}", s),
+        Drop(s) => format!("drop {}", s),
+        Summarize => "summarize".to_string(),
+        Rewind => "rewind".to_string(),
+        Verify(Some(s)) => format!("verify {}", s),
+        Verify(None) => "verify".to_string(),
+        SaveSession(Some(s)) => format!("save {}", s),
+        SaveSession(None) => "save".to_string(),
+        ResumeSession(Some(s)) => format!("resume {}", s),
+        ResumeSession(None) => "resume".to_string(),
+        Aside(s) => if s.is_empty() { "aside".to_string() } else { format!("aside {}", s) },
+        Checkpoint(Some(s)) => format!("checkpoint {}", s),
+        Checkpoint(None) => "checkpoint".to_string(),
+        Tdd(Some(s)) => format!("tdd {}", s),
+        Tdd(None) => "tdd".to_string(),
+        CodeReview => "code-review".to_string(),
+        BuildFix => "build-fix".to_string(),
+        Unknown(s) => s.clone(),
+    }
+}
+
 /// Full-screen TUI mode using ratatui.
 #[allow(clippy::too_many_arguments)]
 async fn run_tui_mode(
@@ -917,6 +1077,7 @@ async fn run_tui_mode(
     extensions: &Arc<dyn pipit_extensions::ExtensionRunner>,
     status: StatusBarState,
     _trace_ui: bool,
+    agent_mode: pipit_core::AgentMode,
 ) -> Result<()> {
     use pipit_io::app::{self, TuiState};
     use std::sync::{Arc, Mutex};
@@ -927,21 +1088,10 @@ async fn run_tui_mode(
     let tui_state = Arc::new(Mutex::new(TuiState::new(status)));
     let mut terminal = app::init_terminal().context("Failed to init TUI")?;
 
-    // Welcome banner
+    // Set agent mode on TUI state (no welcome logo — shown in welcome pane instead)
     {
         let mut state = tui_state.lock().unwrap();
-        let logo_lines = [
-            r"        _       _ _   ",
-            r"  _ __ (_)_ __ (_) |_ ",
-            r" | '_ \| | '_ \| | __|",
-            r" | |_) | | |_) | | |_ ",
-            r" | .__/|_| .__/|_|\__|",
-            &format!(" |_|     |_|    v{}", env!("CARGO_PKG_VERSION")),
-        ];
-        for line in &logo_lines {
-            state.push_activity(" ", ratatui::style::Color::Yellow, line.to_string());
-        }
-        state.push_activity("·", ratatui::style::Color::Cyan, "/help for commands".to_string());
+        state.agent_mode = agent_mode.to_string();
     }
 
     // Spawn agent event handler that updates TUI state
@@ -1016,6 +1166,22 @@ async fn run_tui_mode(
                 AgentEvent::LoopDetected { tool_name, count } => {
                     state.push_activity("⚠", ratatui::style::Color::Yellow, format!("{} repeated {}×", tool_name, count));
                 }
+                AgentEvent::PhaseTransition { to, mode, .. } => {
+                    state.push_activity("◇", ratatui::style::Color::Magenta, format!("{} · {}", mode, to));
+                    state.begin_working(&format!("{}…", to));
+                }
+                AgentEvent::VerifierVerdict { verdict, confidence, .. } => {
+                    let color = match verdict.as_str() {
+                        "PASS" => ratatui::style::Color::Green,
+                        "REPAIRABLE" => ratatui::style::Color::Yellow,
+                        _ => ratatui::style::Color::Red,
+                    };
+                    state.push_activity("◈", color, format!("verify: {} ({:.0}%)", verdict, confidence));
+                }
+                AgentEvent::RepairStarted { attempt, reason } => {
+                    state.push_activity("↻", ratatui::style::Color::Yellow, format!("repair #{}: {}", attempt, reason));
+                    state.begin_working("Repairing…");
+                }
                 AgentEvent::TurnEnd { turn_number, .. } => {
                     state.finish_working();
                     state.push_activity("·", ratatui::style::Color::DarkGray, format!("turn {} complete", turn_number));
@@ -1028,6 +1194,10 @@ async fn run_tui_mode(
     // Channel for sending prompts to the agent task
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<String>(8);
 
+    // Shared cancellation token — Escape key cancels the current run
+    let cancel_token: Arc<Mutex<CancellationToken>> = Arc::new(Mutex::new(CancellationToken::new()));
+    let cancel_for_agent = cancel_token.clone();
+
     // Spawn agent runner as a separate task so the TUI keeps redrawing
     let tui_state_for_agent = tui_state.clone();
     let agent_handle = tokio::spawn(async move {
@@ -1036,7 +1206,8 @@ async fn run_tui_mode(
                 let mut s = tui_state_for_agent.lock().unwrap();
                 s.begin_working("Thinking…");
             }
-            let cancel = CancellationToken::new();
+            // Get the current cancel token for this run
+            let cancel = cancel_for_agent.lock().unwrap().clone();
             let outcome = agent.run(prompt, cancel).await;
             {
                 let mut s = tui_state_for_agent.lock().unwrap();
@@ -1081,7 +1252,19 @@ async fn run_tui_mode(
                 app::handle_key(&mut state, key);
 
                 if state.should_quit {
+                    // Cancel any running agent work before exiting
+                    cancel_token.lock().unwrap().cancel();
                     break;
+                }
+
+                // Escape cancels the current agent run
+                if key.code == crossterm::event::KeyCode::Esc && state.is_working {
+                    let mut token = cancel_token.lock().unwrap();
+                    token.cancel();
+                    // Replace with a fresh token for the next run
+                    *token = CancellationToken::new();
+                    state.finish_working();
+                    state.push_activity("⏹", ratatui::style::Color::Yellow, "Stopped".to_string());
                 }
 
                 // Check if input was submitted
@@ -1095,26 +1278,89 @@ async fn run_tui_mode(
                                 pipit_io::input::SlashCommand::Quit => break,
                                 pipit_io::input::SlashCommand::Help => {
                                     let mut s = tui_state.lock().unwrap();
-                                    s.push_activity("·", ratatui::style::Color::Cyan, "/help /status /plans /context /tokens /permissions /plan /add /drop".to_string());
-                                    s.push_activity("·", ratatui::style::Color::Cyan, "/compact /verify /aside /checkpoint /save /resume /clear /cost /quit".to_string());
-                                    s.push_activity("·", ratatui::style::Color::Cyan, "Grammar: /command  @file  !shell  ↑↓ scroll".to_string());
+                                    s.push_activity("?", ratatui::style::Color::Cyan, "/help".to_string());
+                                    s.content_lines.clear();
+                                    s.content_scroll_offset = 0;
+                                    let help = vec![
+                                        "Commands",
+                                        "",
+                                        "  /help              Show this help",
+                                        "  /status            Show repo, model, tokens, cost",
+                                        "  /cost              Show token cost summary",
+                                        "  /clear             Reset context and chat history",
+                                        "  /quit  /q          Exit pipit",
+                                        "",
+                                        "  /plans             Show proof-packet plan history",
+                                        "  /context  /ctx     Show files in working set",
+                                        "  /tokens  /tok      Token usage breakdown",
+                                        "  /compact           Compress context to free tokens",
+                                        "",
+                                        "  /add <file>        Add file to working set",
+                                        "  /drop <file>       Remove file from working set",
+                                        "  /plan [goal]       Enter plan-first mode",
+                                        "  /verify [scope]    Run build/lint/test checks",
+                                        "  /aside <question>  Quick side question",
+                                        "",
+                                        "Grammar",
+                                        "",
+                                        "  /command           Slash commands (see above)",
+                                        "  @file.rs           Attach file as context",
+                                        "  !ls -la            Run shell command directly",
+                                        "  ↑ ↓                Scroll timeline",
+                                        "",
+                                        "Examples",
+                                        "",
+                                        "  explain this codebase",
+                                        "  @src/main.rs fix the panic on line 42",
+                                        "  !cargo test -- --nocapture",
+                                        "  /add src/lib.rs",
+                                        "  /verify cargo test",
+                                    ];
+                                    for line in help {
+                                        s.content_lines.push(line.to_string());
+                                    }
+                                    s.has_received_input = true;
                                 }
                                 pipit_io::input::SlashCommand::Clear => {
                                     let _ = prompt_tx.send("/clear".to_string()).await;
                                     let mut s = tui_state.lock().unwrap();
                                     s.activity_lines.clear();
+                                    s.content_lines.clear();
                                     s.scroll_offset = 0;
+                                    s.content_scroll_offset = 0;
                                     s.push_activity("·", ratatui::style::Color::DarkGray, "Context cleared".to_string());
                                 }
-                                _ => {
+                                pipit_io::input::SlashCommand::Cost => {
+                                    let s = tui_state.lock().unwrap();
+                                    let cost_msg = format!("${:.4} · {}% tokens", s.status.cost, s.status.token_pct());
+                                    drop(s);
                                     let mut s = tui_state.lock().unwrap();
-                                    s.push_activity("·", ratatui::style::Color::Yellow, "Use classic mode for this command".to_string());
+                                    s.push_activity("$", ratatui::style::Color::Green, cost_msg);
+                                }
+                                pipit_io::input::SlashCommand::Status => {
+                                    let s = tui_state.lock().unwrap();
+                                    let info = format!(
+                                        "{} · {} · {} · {}% tokens · ${:.4}",
+                                        s.status.repo_name, s.status.branch, s.status.model,
+                                        s.status.token_pct(), s.status.cost
+                                    );
+                                    drop(s);
+                                    let mut s = tui_state.lock().unwrap();
+                                    s.push_activity("·", ratatui::style::Color::Cyan, info);
+                                }
+                                // Forward everything else to the agent as a slash command
+                                other => {
+                                    let cmd_str = format!("/{}", slash_command_to_str(&other));
+                                    let _ = prompt_tx.send(cmd_str).await;
                                 }
                             }
                         }
-                        pipit_io::input::UserInput::Prompt(prompt)
-                        | pipit_io::input::UserInput::ShellPassthrough(prompt) => {
+                        pipit_io::input::UserInput::Prompt(prompt) => {
                             let _ = prompt_tx.send(prompt).await;
+                        }
+                        pipit_io::input::UserInput::ShellPassthrough(cmd) => {
+                            let enriched = format!("Run this shell command and show the output: `{}`", cmd);
+                            let _ = prompt_tx.send(enriched).await;
                         }
                         pipit_io::input::UserInput::PromptWithFiles { prompt, files } => {
                             let enriched = format!("First read these files: {}. Then: {}", files.join(", "), prompt);
@@ -1629,4 +1875,202 @@ fn load_planning_snapshot(project_root: &PathBuf) -> Result<Option<LoadedPlannin
         source: PlanningStateSource::Disk,
         proof_summary: None,
     }))
+}
+
+// ── Interactive setup wizard ─────────────────────────────────────────────
+
+fn run_setup_wizard() -> Result<()> {
+    use std::io::{self, Write};
+
+    let config_path = pipit_config::user_config_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
+
+    println!();
+    println!("  \x1b[1;33mpipit setup\x1b[0m");
+    println!("  \x1b[90mInteractive configuration wizard\x1b[0m");
+    println!();
+
+    if config_path.exists() {
+        println!("  \x1b[90mExisting config:\x1b[0m {}", config_path.display());
+        print!("  Overwrite? [y/N] ");
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("  Aborted.");
+            return Ok(());
+        }
+        println!();
+    }
+
+    // ── Provider ─────────────────────────────────────────────────────
+    println!("  \x1b[1mProvider\x1b[0m");
+    println!("  \x1b[90mSupported: anthropic, openai, deepseek, google, openrouter,\x1b[0m");
+    println!("  \x1b[90m           ollama, groq, cerebras, mistral, xai, openai_compatible\x1b[0m");
+    println!();
+    let provider_str = prompt_input("  Provider [anthropic]: ")?;
+    let provider_str = if provider_str.is_empty() { "anthropic".to_string() } else { provider_str };
+    let provider_kind: ProviderKind = provider_str.parse()
+        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+    println!();
+
+    // ── Model ────────────────────────────────────────────────────────
+    let default_model = default_model_for_provider(provider_kind);
+    println!("  \x1b[1mModel\x1b[0m");
+    let model_str = prompt_input(&format!("  Model [{}]: ", default_model))?;
+    let model = if model_str.is_empty() { default_model.to_string() } else { model_str };
+    println!();
+
+    // ── Base URL (for compatible/ollama/custom) ──────────────────────
+    let base_url = if needs_base_url(provider_kind) {
+        let default_url = default_base_url(provider_kind);
+        println!("  \x1b[1mBase URL\x1b[0m");
+        let url = prompt_input(&format!("  Endpoint URL [{}]: ", default_url))?;
+        let url = if url.is_empty() { default_url.to_string() } else { url };
+        println!();
+        Some(url)
+    } else {
+        None
+    };
+
+    // ── API key ──────────────────────────────────────────────────────
+    println!("  \x1b[1mAPI Key\x1b[0m");
+    if provider_kind == ProviderKind::Ollama {
+        println!("  \x1b[90mOllama doesn't need an API key\x1b[0m");
+        println!();
+    } else {
+        let existing = pipit_config::resolve_api_key(provider_kind);
+        if existing.is_some() {
+            println!("  \x1b[32m✓ Key already configured\x1b[0m (via env var or credentials)");
+            println!();
+        } else {
+            println!("  \x1b[90mEnter key or leave blank to set later.\x1b[0m");
+            println!("  \x1b[90mYou can also use: export {}=<key>\x1b[0m", env_var_for_provider(provider_kind));
+            let key = prompt_input("  API Key: ")?;
+            if !key.is_empty() {
+                // Store in credentials file
+                let mut store = pipit_config::CredentialStore::load();
+                store.set(&provider_kind.to_string(), pipit_config::StoredCredential::ApiKey { api_key: key });
+                store.save()
+                    .map_err(|e| anyhow::anyhow!("Failed to save credentials: {}", e))?;
+                println!("  \x1b[32m✓ Key saved to ~/.pipit/credentials.json\x1b[0m");
+            }
+            println!();
+        }
+    }
+
+    // ── Approval mode ────────────────────────────────────────────────
+    println!("  \x1b[1mApproval Mode\x1b[0m");
+    println!("  \x1b[90m  suggest     — read-only, ask before every change\x1b[0m");
+    println!("  \x1b[90m  auto_edit   — auto-apply edits, ask for commands\x1b[0m");
+    println!("  \x1b[90m  full_auto   — autonomous, no confirmation needed\x1b[0m");
+    let approval_str = prompt_input("  Approval mode [full_auto]: ")?;
+    let approval_str = if approval_str.is_empty() { "full_auto".to_string() } else { approval_str };
+    let approval: ApprovalMode = approval_str.parse()
+        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+    println!();
+
+    // ── Max turns ────────────────────────────────────────────────────
+    println!("  \x1b[1mMax Turns\x1b[0m");
+    println!("  \x1b[90mMax agent turns per prompt (0 = unlimited)\x1b[0m");
+    let turns_str = prompt_input("  Max turns [25]: ")?;
+    let max_turns: u32 = if turns_str.is_empty() { 25 } else {
+        turns_str.parse().map_err(|_| anyhow::anyhow!("Invalid number: {}", turns_str))?
+    };
+    println!();
+
+    // ── Build config layer ───────────────────────────────────────────
+    let layer = pipit_config::PipitConfigLayer {
+        provider: Some(pipit_config::ProviderConfigLayer {
+            default: Some(provider_kind),
+            base_url: base_url.clone(),
+        }),
+        model: Some(pipit_config::ModelConfigLayer {
+            default_model: Some(model.clone()),
+            context_window: None,
+            max_output_tokens: None,
+        }),
+        approval: Some(approval),
+        context: Some(pipit_config::ContextConfigLayer {
+            max_turns: Some(max_turns),
+            ..Default::default()
+        }),
+        pricing: None,
+    };
+
+    pipit_config::write_user_config(&layer)
+        .map_err(|e| anyhow::anyhow!("Failed to write config: {}", e))?;
+
+    println!("  \x1b[32m✓ Config saved to {}\x1b[0m", config_path.display());
+    println!();
+
+    // Show summary
+    println!("  \x1b[1mSummary\x1b[0m");
+    println!("  \x1b[90m  Provider:  \x1b[0m {}", provider_kind);
+    println!("  \x1b[90m  Model:     \x1b[0m {}", model);
+    if let Some(url) = &base_url {
+        println!("  \x1b[90m  Base URL:  \x1b[0m {}", url);
+    }
+    println!("  \x1b[90m  Approval:  \x1b[0m {}", approval);
+    println!("  \x1b[90m  Max turns: \x1b[0m {}", max_turns);
+    println!();
+    println!("  Run \x1b[1mpipit\x1b[0m to start coding!");
+    println!();
+
+    Ok(())
+}
+
+fn prompt_input(prompt: &str) -> Result<String> {
+    use std::io::{self, Write};
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim().to_string())
+}
+
+fn default_model_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "claude-sonnet-4-20250514",
+        ProviderKind::OpenAi => "gpt-4o",
+        ProviderKind::DeepSeek => "deepseek-chat",
+        ProviderKind::Google => "gemini-2.5-flash",
+        ProviderKind::OpenRouter => "anthropic/claude-sonnet-4-20250514",
+        ProviderKind::XAi => "grok-3",
+        ProviderKind::Cerebras => "llama-4-scout-17b-16e-instruct",
+        ProviderKind::Groq => "llama-4-scout-17b-16e-instruct",
+        ProviderKind::Mistral => "mistral-large-latest",
+        ProviderKind::Ollama => "qwen2.5-coder:14b",
+        ProviderKind::OpenAiCompatible => "default",
+    }
+}
+
+fn needs_base_url(provider: ProviderKind) -> bool {
+    matches!(provider,
+        ProviderKind::OpenAiCompatible
+        | ProviderKind::AnthropicCompatible
+        | ProviderKind::Ollama
+    )
+}
+
+fn default_base_url(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Ollama => "http://localhost:11434",
+        _ => "http://localhost:8000",
+    }
+}
+
+fn env_var_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
+        ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::XAi => "XAI_API_KEY",
+        ProviderKind::Cerebras => "CEREBRAS_API_KEY",
+        ProviderKind::Groq => "GROQ_API_KEY",
+        ProviderKind::Mistral => "MISTRAL_API_KEY",
+        ProviderKind::Ollama => "OLLAMA_API_KEY",
+    }
 }

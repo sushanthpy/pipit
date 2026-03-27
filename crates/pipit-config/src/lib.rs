@@ -145,3 +145,29 @@ pub fn resolve_api_key(provider: ProviderKind) -> Option<String> {
 
     None
 }
+
+/// Return the user config directory: `~/.config/pipit/` (follows platform standard).
+pub fn user_config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("pipit"))
+}
+
+/// Return the path for the user config file: `~/.config/pipit/config.toml`.
+pub fn user_config_path() -> Option<PathBuf> {
+    user_config_dir().map(|d| d.join("config.toml"))
+}
+
+/// Check whether a user config file exists.
+pub fn has_user_config() -> bool {
+    user_config_path().map(|p| p.exists()).unwrap_or(false)
+}
+
+/// Write a config layer to the user config file (`~/.config/pipit/config.toml`).
+/// Creates the directory if it doesn't exist.
+pub fn write_user_config(layer: &PipitConfigLayer) -> Result<(), ConfigError> {
+    let dir = user_config_dir().ok_or_else(|| ConfigError::Other("Cannot determine config directory".into()))?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("config.toml");
+    let toml_str = toml::to_string_pretty(layer)?;
+    std::fs::write(&path, toml_str)?;
+    Ok(())
+}

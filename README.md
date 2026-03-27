@@ -1,6 +1,17 @@
 <p align="center">
-  <img src="pipit.png" alt="Pipit — AI coding agent for the terminal" width="700">
+  <img src="main-pipit.png" alt="Pipit — AI coding agent for the terminal" width="700">
 </p>
+
+<p align="center">
+  <img src="full-img.png" alt="Pipit — AI coding agent for the terminal" width="700">
+</p>
+```
+        _._
+       (o >
+      / / \
+     (_|  /
+       " "
+```
 
 # Pipit
 

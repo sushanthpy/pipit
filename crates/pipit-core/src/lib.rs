@@ -2,6 +2,7 @@ pub mod agent;
 pub mod events;
 pub mod governor;
 pub mod loop_detector;
+pub mod pev;
 pub mod planner;
 pub mod proof;
 pub mod verifier;
@@ -14,6 +15,11 @@ pub use events::{
 };
 pub use governor::{ActionClass, Governor, RiskReport};
 pub use loop_detector::LoopDetector;
+pub use pev::{
+    AgentMode, ModelRole, ModelRouter, RoleProvider, PevConfig, PevPhase,
+    PlanSpec, ExecutionBrief, ExecutionResult, VerificationReport, Verdict,
+    Finding, FindingSeverity, RepairDirective, EditSummary, CommandOutput,
+};
 pub use planner::{CandidatePlan, Planner, StrategyKind};
 pub use proof::{
 	Assumption, ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, ProofPacket,

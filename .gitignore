@@ -37,3 +37,5 @@ run.sh
 .env
 .env.*
 mini-swe-agent
+pipit-cli.txt
+.pipit

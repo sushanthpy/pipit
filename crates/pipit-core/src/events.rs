@@ -90,6 +90,25 @@ pub enum AgentEvent {
 
     // --- Steering ---
     SteeringMessageInjected { text: String },
+
+    // --- PEV phase transitions ---
+    /// Phase changed in the PEV orchestrator.
+    PhaseTransition {
+        from: String,
+        to: String,
+        mode: String,
+    },
+    /// Verifier produced a verdict.
+    VerifierVerdict {
+        verdict: String,
+        confidence: f32,
+        findings_summary: String,
+    },
+    /// Repair loop started.
+    RepairStarted {
+        attempt: u32,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]
