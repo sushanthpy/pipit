@@ -87,6 +87,7 @@ fn plans_command_loads_persisted_snapshot_with_metadata_after_restart() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_pipit"))
         .current_dir(temp.path())
+        .arg("--classic")
         .arg("--root")
         .arg(temp.path())
         .arg("--provider")

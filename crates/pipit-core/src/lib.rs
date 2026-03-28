@@ -4,8 +4,10 @@ pub mod governor;
 pub mod loop_detector;
 pub mod pev;
 pub mod planner;
+pub mod planner_llm;
 pub mod proof;
 pub mod verifier;
+pub mod verifier_llm;
 pub mod worktree;
 
 pub use agent::{AgentLoop, AgentLoopConfig, PlanningState};
@@ -20,10 +22,13 @@ pub use pev::{
     PlanSpec, ExecutionBrief, ExecutionResult, VerificationReport, Verdict,
     Finding, FindingSeverity, RepairDirective, EditSummary, CommandOutput,
 };
-pub use planner::{CandidatePlan, Planner, StrategyKind};
+pub use planner::{CandidatePlan, NullPlanner, PlanSource, PlanStrategy, Planner, StrategyKind, VerificationSource, VerifyStrategy, is_question_task};
+pub use planner_llm::LlmPlanner;
 pub use proof::{
-	Assumption, ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, ProofPacket,
-	PlanPivot, PolicyStage, RealizedEdit, RollbackCheckpoint, SuccessCriterion, VerificationStep,
+	Assumption, ChangeClaim, ConfidenceReport, EvidenceArtifact, ImplementationTier,
+	Objective, ProofPacket, PlanPivot, PolicyStage, RealizedEdit, RollbackCheckpoint,
+	SuccessCriterion, VerificationStep,
 };
-pub use verifier::Verifier;
+pub use verifier::{NullVerifier, Verifier};
+pub use verifier_llm::LlmVerifier;
 pub use worktree::WorktreeManager;

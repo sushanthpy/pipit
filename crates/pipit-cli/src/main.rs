@@ -1,11 +1,18 @@
+mod auth;
+mod persistence;
+mod prompt_builder;
+mod setup;
+mod tui;
 mod update;
 mod workflow;
+
+use persistence::{LoadedPlanningState, PlanningStateSource};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use pipit_config::{ApprovalMode, CliOverrides, ProviderKind};
 use pipit_context::{ContextManager, budget::ContextSettings};
-use pipit_core::{AgentLoop, AgentLoopConfig, AgentOutcome, PlanningState, ProofPacket};
+use pipit_core::{AgentLoop, AgentLoopConfig, AgentOutcome, PlanningState};
 use pipit_extensions::HookExtensionRunner;
 use pipit_intelligence::RepoMap;
 use pipit_io::input::{classify_input, read_input, SlashCommand, UserInput};
@@ -13,37 +20,35 @@ use pipit_io::{PipitUi, InteractiveApprovalHandler, StatusBarState};
 use pipit_provider::LlmProvider;
 use pipit_skills::SkillRegistry;
 use pipit_tools::ToolRegistry;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 use workflow::WorkflowAssets;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PlanningSnapshot {
-    planning_state: PlanningState,
-    proof_summary: Option<PlanningProofSummary>,
-}
+// ── Debug logger (writes to /tmp/pipit-debug.log when --debug is set) ────
+use std::sync::atomic::{AtomicBool, Ordering};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PlanningProofSummary {
-    objective: String,
-    confidence: f32,
-    risk_score: f32,
-    proof_file: Option<String>,
-}
+static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, Copy)]
-enum PlanningStateSource {
-    Live,
-    Disk,
-}
-
-struct LoadedPlanningState {
-    state: PlanningState,
-    source: PlanningStateSource,
-    proof_summary: Option<PlanningProofSummary>,
+/// Write a timestamped diagnostic line to /tmp/pipit-debug.log.
+/// No-op unless `--debug` was passed.
+pub(crate) fn dbg_log(msg: &str) {
+    if !DEBUG_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    use std::io::Write;
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let ts = format!("{}.{:03}", elapsed.as_secs(), elapsed.subsec_millis());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/pipit-debug.log")
+    {
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -97,6 +102,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     classic: bool,
 
+    /// Write detailed startup diagnostics to /tmp/pipit-debug.log
+    #[arg(long, default_value_t = false)]
+    debug: bool,
+
     /// Agent mode: fast, balanced, guarded, custom
     ///
     /// fast     — direct execution, no verification overhead
@@ -116,6 +125,10 @@ struct Cli {
     #[arg(long, hide = true)]
     planner_provider: Option<String>,
 
+    /// [expert] Planner base URL override (for custom mode)
+    #[arg(long, hide = true)]
+    planner_base_url: Option<String>,
+
     /// [expert] Verifier model override (for custom mode)
     #[arg(long, hide = true)]
     verifier_model: Option<String>,
@@ -123,6 +136,10 @@ struct Cli {
     /// [expert] Verifier provider override (for custom mode)
     #[arg(long, hide = true)]
     verifier_provider: Option<String>,
+
+    /// [expert] Verifier base URL override (for custom mode)
+    #[arg(long, hide = true)]
+    verifier_base_url: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -168,25 +185,38 @@ enum AuthAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
+    // Initialize tracing with a TUI-safe writer that suppresses output
+    // while the full-screen ratatui alternate screen is active.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("pipit=info".parse().unwrap()),
         )
         .with_target(false)
-        .with_writer(std::io::stderr)
+        .with_writer(|| pipit_io::TuiSafeStderr)
         .init();
 
     let cli = Cli::parse();
 
+    // Enable debug logging if requested
+    if cli.debug {
+        DEBUG_ENABLED.store(true, Ordering::Relaxed);
+        // Truncate previous log
+        let _ = std::fs::write("/tmp/pipit-debug.log", "");
+        dbg_log("=== pipit startup (--debug) ===");
+        dbg_log(&format!("version: {}", env!("CARGO_PKG_VERSION")));
+        dbg_log(&format!("classic: {}, mode: {}, repomap: {}", cli.classic, cli.mode, cli.repomap));
+    }
+
     // Handle subcommands early (before provider resolution)
     match &cli.command {
-        Some(Commands::Auth { action }) => return handle_auth_command(action).await,
+        Some(Commands::Auth { action }) => return auth::handle(action).await,
         Some(Commands::Update) => return update::self_update().await,
-        Some(Commands::Setup) => return run_setup_wizard(),
+        Some(Commands::Setup) => return setup::run(),
         None => {}
     }
+
+    dbg_log("[1/12] subcommand dispatch done");
 
     // Background version check (non-blocking)
     let update_msg = tokio::spawn(update::check_for_update_background());
@@ -224,10 +254,13 @@ async fn main() -> Result<()> {
         api_key: cli.api_key.clone(),
     };
 
+    dbg_log(&format!("[2/12] project_root={}", project_root.display()));
+
     let config =
         pipit_config::resolve_config(Some(&project_root), overrides).context("Config resolution failed")?;
 
     let provider_kind = config.provider.default;
+    dbg_log(&format!("[3/12] config resolved, provider={}", provider_kind));
 
     // Resolve API key
     let api_key = cli
@@ -258,6 +291,8 @@ async fn main() -> Result<()> {
             )
         })?;
 
+    dbg_log("[4/12] api_key resolved");
+
     // Resolve model
     let model = cli.model.unwrap_or(config.model.default_model.clone());
 
@@ -271,6 +306,8 @@ async fn main() -> Result<()> {
 
     );
 
+    dbg_log(&format!("[5/12] provider created: {} / {}", provider_kind, model));
+
     // Build model router based on agent mode
     let agent_mode: pipit_core::AgentMode = cli.mode.parse()
         .map_err(|e: String| anyhow::anyhow!("{}", e))?;
@@ -278,7 +315,8 @@ async fn main() -> Result<()> {
     // Auto-promote to Custom if role overrides are specified
     let agent_mode = if agent_mode != pipit_core::AgentMode::Custom
         && (cli.planner_model.is_some() || cli.planner_provider.is_some()
-            || cli.verifier_model.is_some() || cli.verifier_provider.is_some())
+            || cli.verifier_model.is_some() || cli.verifier_provider.is_some()
+            || cli.planner_base_url.is_some() || cli.verifier_base_url.is_some())
     {
         pipit_core::AgentMode::Custom
     } else {
@@ -293,7 +331,27 @@ async fn main() -> Result<()> {
         let planner_model_id = cli.planner_model.as_deref().unwrap_or(&model);
         let verifier_model_id = cli.verifier_model.as_deref().unwrap_or(&model);
 
-        let make_provider = |role_model: &str, role_provider_str: Option<&str>| -> Result<Arc<dyn LlmProvider>, anyhow::Error> {
+        // Warn if planner/verifier uses a non-reasoning model
+        let non_reasoning_hints = ["non-reasoning", "fast", "mini", "instant", "flash", "haiku"];
+        for (role, model_id) in [("planner", planner_model_id), ("verifier", verifier_model_id)] {
+            let lower = model_id.to_lowercase();
+            if non_reasoning_hints.iter().any(|h| lower.contains(h)) {
+                eprintln!(
+                    "  \x1b[1;33m⚠ Warning:\x1b[0m {} model '{}' may lack reasoning capability.",
+                    role, model_id
+                );
+                eprintln!(
+                    "  \x1b[90m  The {} role works best with a thinking model (e.g. claude-sonnet, gpt-4o, deepseek-chat).\x1b[0m",
+                    role
+                );
+                eprintln!(
+                    "  \x1b[90m  Non-reasoning models are better suited for the executor role.\x1b[0m"
+                );
+                eprintln!();
+            }
+        }
+
+        let make_provider = |role_model: &str, role_provider_str: Option<&str>, role_base_url: Option<&str>| -> Result<Arc<dyn LlmProvider>, anyhow::Error> {
             let rp_kind: ProviderKind = if let Some(p) = role_provider_str {
                 p.parse().map_err(|e: String| anyhow::anyhow!("{}", e))?
             } else {
@@ -301,19 +359,19 @@ async fn main() -> Result<()> {
             };
             let rp_key = pipit_config::resolve_api_key(rp_kind)
                 .unwrap_or_else(|| api_key.clone());
-            let rp_base = if role_provider_str.is_some() { None } else { base_url.as_deref() };
+            let rp_base = role_base_url.or(base_url.as_deref());
             Ok(Arc::from(pipit_provider::create_provider(rp_kind, role_model, &rp_key, rp_base)
                 .map_err(|e| anyhow::anyhow!("Provider creation for {} failed: {}", role_model, e))?))
         };
 
-        let planner_provider = if cli.planner_model.is_some() || cli.planner_provider.is_some() {
-            make_provider(planner_model_id, cli.planner_provider.as_deref())?
+        let planner_provider = if cli.planner_model.is_some() || cli.planner_provider.is_some() || cli.planner_base_url.is_some() {
+            make_provider(planner_model_id, cli.planner_provider.as_deref(), cli.planner_base_url.as_deref())?
         } else {
             provider.clone()
         };
 
-        let verifier_provider = if cli.verifier_model.is_some() || cli.verifier_provider.is_some() {
-            make_provider(verifier_model_id, cli.verifier_provider.as_deref())?
+        let verifier_provider = if cli.verifier_model.is_some() || cli.verifier_provider.is_some() || cli.verifier_base_url.is_some() {
+            make_provider(verifier_model_id, cli.verifier_provider.as_deref(), cli.verifier_base_url.as_deref())?
         } else {
             provider.clone()
         };
@@ -335,6 +393,8 @@ async fn main() -> Result<()> {
         pipit_core::ModelRouter::single(provider.clone(), model.clone())
     };
 
+    dbg_log(&format!("[6/12] model_router built, mode={}", agent_mode));
+
     // Build tool registry
     let tools = ToolRegistry::with_builtins();
 
@@ -347,8 +407,10 @@ async fn main() -> Result<()> {
         tracing::info!("Skills: {} discovered", skills.count());
     }
 
+    dbg_log(&format!("[7/12] tools={}, skills={}, workflow_assets loaded", tools.tool_names().len(), skills.count()));
+
     // Build system prompt (with skill index injected as Tier 1)
-    let system_prompt = build_system_prompt(
+    let system_prompt = prompt_builder::build_system_prompt(
         &project_root,
         &tools,
         config.approval,
@@ -369,21 +431,33 @@ async fn main() -> Result<()> {
         },
     );
 
-    // Build RepoMap
-    let repo_map_text = if cli.repomap {
+    dbg_log("[8/12] system_prompt + context_manager built");
+
+    // Build RepoMap — skip if project_root is not a git repo (e.g. user's home dir)
+    // to avoid scanning millions of files and hanging forever.
+    let is_git_repo = project_root.join(".git").exists();
+    let repo_map_text = if cli.repomap && is_git_repo {
+        dbg_log(&format!("[8.5] building repomap for {}", project_root.display()));
         let intelligence_config = pipit_intelligence::IntelligenceConfig::default();
         let repo_map = RepoMap::build(&project_root, intelligence_config);
         if repo_map.file_count() > 0 {
             let map = repo_map.render(&[], 4096);
             tracing::info!("RepoMap: {} files indexed", repo_map.file_count());
+            dbg_log(&format!("[8.5] repomap: {} files indexed", repo_map.file_count()));
             context.update_repo_map_tokens((map.len() as u64) / 4);
             Some(map)
         } else {
             None
         }
     } else {
+        if cli.repomap && !is_git_repo {
+            dbg_log("[8.5] skipping repomap — not a git repo");
+            tracing::info!("RepoMap skipped — {} is not a git repository", project_root.display());
+        }
         None
     };
+
+    dbg_log("[9/12] repomap done");
 
     // Build extensions
     let extensions: Arc<dyn pipit_extensions::ExtensionRunner> = Arc::new(
@@ -403,6 +477,8 @@ async fn main() -> Result<()> {
         pev: pev_config,
         ..Default::default()
     };
+
+    dbg_log("[10/12] agent_config built");
 
     // Build approval handler
     let approval_handler: Arc<dyn pipit_core::ApprovalHandler> =
@@ -437,13 +513,23 @@ async fn main() -> Result<()> {
     // Create status bar state
     let status = StatusBarState::new(project_name.clone(), model.clone(), approval_mode);
 
+    dbg_log("[11/12] agent + event_rx created");
+
     // Create UI
     let mut ui = PipitUi::new(show_thinking, true, trace_ui, status.clone());
 
-    // Show update notification if available (non-blocking check started earlier)
-    if let Ok(Some(msg)) = update_msg.await {
-        eprintln!("\x1b[33m{}\x1b[0m\n", msg);
-    }
+    // Show update notification if available.
+    // Use a short timeout so a slow/unreachable GitHub API never stalls startup.
+    let _update_notice = match tokio::time::timeout(
+        std::time::Duration::from_millis(800),
+        update_msg,
+    ).await {
+        Ok(Ok(Some(msg))) => {
+            eprintln!("\x1b[33m{}\x1b[0m\n", msg);
+            Some(msg)
+        }
+        _ => None,
+    };
 
     // Single-shot mode
     if let Some(prompt) = cli.prompt {
@@ -461,28 +547,28 @@ async fn main() -> Result<()> {
 
         match outcome {
             AgentOutcome::Completed { turns, cost, proof, .. } => {
-                let proof_path = persist_proof_packet(&project_root, &proof).ok();
+                let proof_path = persistence::persist_proof_packet(&project_root, &proof).ok();
                 if let Some(planning_state) = agent.planning_state() {
-                    persist_planning_snapshot(
+                    persistence::persist_planning_snapshot(
                         &project_root,
                         &planning_state,
-                        planning_proof_summary(&proof, proof_path.as_ref()),
+                        persistence::planning_proof_summary(&proof, proof_path.as_ref()),
                     )
                     .ok();
                 }
-                print_proof_summary(&proof);
+                persistence::print_proof_summary(&proof);
                 eprintln!("\n\x1b[2m({} turns, ${:.4})\x1b[0m", turns, cost);
             }
             AgentOutcome::Error(e) => {
                 if let Some(planning_state) = agent.planning_state() {
-                    persist_planning_snapshot(&project_root, &planning_state, None).ok();
+                    persistence::persist_planning_snapshot(&project_root, &planning_state, None).ok();
                 }
                 eprintln!("\n\x1b[31mError: {}\x1b[0m", e);
                 std::process::exit(1);
             }
             _ => {
                 if let Some(planning_state) = agent.planning_state() {
-                    persist_planning_snapshot(&project_root, &planning_state, None).ok();
+                    persistence::persist_planning_snapshot(&project_root, &planning_state, None).ok();
                 }
             }
         }
@@ -490,9 +576,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    dbg_log("[12/12] pre-TUI: all init done, entering TUI/REPL");
+
     // ── TUI mode (default) vs classic REPL ───────────────────────────────
     if !cli.classic {
-        return run_tui_mode(
+        return tui::run(
             agent,
             &mut event_rx,
             &project_root,
@@ -562,8 +650,8 @@ async fn main() -> Result<()> {
                                 source: PlanningStateSource::Live,
                                 proof_summary: None,
                             })
-                            .or_else(|| load_planning_snapshot(&project_root).ok().flatten());
-                        print_plans(state);
+                            .or_else(|| persistence::load_planning_snapshot(&project_root).ok().flatten());
+                       persistence::print_plans(state);
                         continue;
                     }
                     SlashCommand::Quit => break,
@@ -1022,371 +1110,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Convert a SlashCommand back to its string form for forwarding to the agent.
-fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
-    use pipit_io::input::SlashCommand::*;
-    match cmd {
-        Help => "help".to_string(),
-        Status => "status".to_string(),
-        Plans => "plans".to_string(),
-        Clear => "clear".to_string(),
-        Model(s) => if s.is_empty() { "model".to_string() } else { format!("model {}", s) },
-        Compact => "compact".to_string(),
-        Undo => "undo".to_string(),
-        Branch(Some(s)) => format!("branch {}", s),
-        Branch(None) => "branch".to_string(),
-        BranchList => "branches".to_string(),
-        BranchSwitch(s) => format!("switch {}", s),
-        Cost => "cost".to_string(),
-        Quit => "quit".to_string(),
-        Context => "context".to_string(),
-        Tokens => "tokens".to_string(),
-        Permissions(Some(s)) => format!("permissions {}", s),
-        Permissions(None) => "permissions".to_string(),
-        Plan(Some(s)) => format!("plan {}", s),
-        Plan(None) => "plan".to_string(),
-        Add(s) => format!("add {}", s),
-        Drop(s) => format!("drop {}", s),
-        Summarize => "summarize".to_string(),
-        Rewind => "rewind".to_string(),
-        Verify(Some(s)) => format!("verify {}", s),
-        Verify(None) => "verify".to_string(),
-        SaveSession(Some(s)) => format!("save {}", s),
-        SaveSession(None) => "save".to_string(),
-        ResumeSession(Some(s)) => format!("resume {}", s),
-        ResumeSession(None) => "resume".to_string(),
-        Aside(s) => if s.is_empty() { "aside".to_string() } else { format!("aside {}", s) },
-        Checkpoint(Some(s)) => format!("checkpoint {}", s),
-        Checkpoint(None) => "checkpoint".to_string(),
-        Tdd(Some(s)) => format!("tdd {}", s),
-        Tdd(None) => "tdd".to_string(),
-        CodeReview => "code-review".to_string(),
-        BuildFix => "build-fix".to_string(),
-        Unknown(s) => s.clone(),
-    }
-}
-
-/// Full-screen TUI mode using ratatui.
-#[allow(clippy::too_many_arguments)]
-async fn run_tui_mode(
-    mut agent: AgentLoop,
-    event_rx: &mut tokio::sync::broadcast::Receiver<pipit_core::AgentEvent>,
-    project_root: &PathBuf,
-    skills: &mut SkillRegistry,
-    workflow_assets: &workflow::WorkflowAssets,
-    extensions: &Arc<dyn pipit_extensions::ExtensionRunner>,
-    status: StatusBarState,
-    _trace_ui: bool,
-    agent_mode: pipit_core::AgentMode,
-) -> Result<()> {
-    use pipit_io::app::{self, TuiState};
-    use std::sync::{Arc, Mutex};
-    use crossterm::event::{self as crossterm_event, Event, KeyEvent};
-
-    let _ = extensions.on_session_start().await;
-
-    let tui_state = Arc::new(Mutex::new(TuiState::new(status)));
-    let mut terminal = app::init_terminal().context("Failed to init TUI")?;
-
-    // Set agent mode on TUI state (no welcome logo — shown in welcome pane instead)
-    {
-        let mut state = tui_state.lock().unwrap();
-        state.agent_mode = agent_mode.to_string();
-    }
-
-    // Spawn agent event handler that updates TUI state
-    let tui_state_for_events = tui_state.clone();
-    let mut event_rx_owned = event_rx.resubscribe();
-    let _event_handle = tokio::spawn(async move {
-        use pipit_core::AgentEvent;
-        while let Ok(event) = event_rx_owned.recv().await {
-            let mut state = tui_state_for_events.lock().unwrap();
-            match &event {
-                AgentEvent::TurnStart { turn_number } => {
-                    // Commit any previous streaming text
-                    state.finish_working();
-                    state.begin_working(&format!("Turn {}", turn_number));
-                }
-                AgentEvent::ContentDelta { text } => {
-                    let cleaned = text.replace("</think>", "").replace("<think>", "");
-                    if !cleaned.trim().is_empty() || !text.contains("think>") {
-                        state.push_content(&cleaned);
-                    }
-                }
-                AgentEvent::ContentComplete { .. } => {
-                    // Streaming done — commit to activity log
-                    state.finish_working();
-                }
-                AgentEvent::ToolCallStart { name, args, .. } => {
-                    // Commit streaming before showing tool
-                    state.finish_working();
-                    let summary = match name.as_str() {
-                        "read_file" => format!("Read {}", args["path"].as_str().unwrap_or("?")),
-                        "edit_file" => format!("Edit {}", args["path"].as_str().unwrap_or("?")),
-                        "write_file" => format!("Write {}", args["path"].as_str().unwrap_or("?")),
-                        "bash" => format!("$ {}", args["command"].as_str().unwrap_or("?").chars().take(60).collect::<String>()),
-                        "grep" => format!("Grep '{}'", args["pattern"].as_str().unwrap_or("?")),
-                        _ => format!("{} …", name),
-                    };
-                    let icon = match name.as_str() {
-                        "read_file" | "grep" | "glob" | "list_directory" => "○",
-                        "edit_file" | "write_file" => "●",
-                        "bash" => "▸",
-                        _ => "·",
-                    };
-                    let color = match name.as_str() {
-                        "edit_file" | "write_file" => ratatui::style::Color::Green,
-                        "bash" => ratatui::style::Color::Cyan,
-                        _ => ratatui::style::Color::DarkGray,
-                    };
-                    state.push_activity(icon, color, summary);
-                    state.begin_working(&format!("Running {}…", name));
-                }
-                AgentEvent::ToolCallEnd { name, result, .. } => {
-                    state.finish_working();
-                    match result {
-                        pipit_core::ToolCallOutcome::Success { mutated: true, .. } => {
-                            state.push_activity("✓", ratatui::style::Color::Green, format!("{} done", name));
-                        }
-                        pipit_core::ToolCallOutcome::Error { message } => {
-                            let msg = if message.len() > 80 { format!("{}…", &message.chars().take(80).collect::<String>()) } else { message.clone() };
-                            state.push_activity("✗", ratatui::style::Color::Red, format!("{}: {}", name, msg));
-                        }
-                        _ => {}
-                    }
-                }
-                AgentEvent::TokenUsageUpdate { used, limit, cost } => {
-                    state.status.tokens_used = *used;
-                    state.status.tokens_limit = *limit;
-                    state.status.cost = *cost;
-                }
-                AgentEvent::PlanSelected { strategy, rationale, .. } => {
-                    state.push_activity("◆", ratatui::style::Color::Blue, format!("{} — {}", strategy, rationale));
-                }
-                AgentEvent::LoopDetected { tool_name, count } => {
-                    state.push_activity("⚠", ratatui::style::Color::Yellow, format!("{} repeated {}×", tool_name, count));
-                }
-                AgentEvent::PhaseTransition { to, mode, .. } => {
-                    state.push_activity("◇", ratatui::style::Color::Magenta, format!("{} · {}", mode, to));
-                    state.begin_working(&format!("{}…", to));
-                }
-                AgentEvent::VerifierVerdict { verdict, confidence, .. } => {
-                    let color = match verdict.as_str() {
-                        "PASS" => ratatui::style::Color::Green,
-                        "REPAIRABLE" => ratatui::style::Color::Yellow,
-                        _ => ratatui::style::Color::Red,
-                    };
-                    state.push_activity("◈", color, format!("verify: {} ({:.0}%)", verdict, confidence));
-                }
-                AgentEvent::RepairStarted { attempt, reason } => {
-                    state.push_activity("↻", ratatui::style::Color::Yellow, format!("repair #{}: {}", attempt, reason));
-                    state.begin_working("Repairing…");
-                }
-                AgentEvent::TurnEnd { turn_number, .. } => {
-                    state.finish_working();
-                    state.push_activity("·", ratatui::style::Color::DarkGray, format!("turn {} complete", turn_number));
-                }
-                _ => {}
-            }
-        }
-    });
-
-    // Channel for sending prompts to the agent task
-    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<String>(8);
-
-    // Shared cancellation token — Escape key cancels the current run
-    let cancel_token: Arc<Mutex<CancellationToken>> = Arc::new(Mutex::new(CancellationToken::new()));
-    let cancel_for_agent = cancel_token.clone();
-
-    // Spawn agent runner as a separate task so the TUI keeps redrawing
-    let tui_state_for_agent = tui_state.clone();
-    let agent_handle = tokio::spawn(async move {
-        while let Some(prompt) = prompt_rx.recv().await {
-            {
-                let mut s = tui_state_for_agent.lock().unwrap();
-                s.begin_working("Thinking…");
-            }
-            // Get the current cancel token for this run
-            let cancel = cancel_for_agent.lock().unwrap().clone();
-            let outcome = agent.run(prompt, cancel).await;
-            {
-                let mut s = tui_state_for_agent.lock().unwrap();
-                s.finish_working();
-                match &outcome {
-                    AgentOutcome::Completed { turns, cost, .. } => {
-                        s.push_activity("✓", ratatui::style::Color::Green, format!("Done — {} turns, ${:.4}", turns, cost));
-                    }
-                    AgentOutcome::Error(e) => {
-                        s.push_activity("✗", ratatui::style::Color::Red, format!("Error: {}", e));
-                    }
-                    AgentOutcome::Cancelled => {
-                        s.push_activity("·", ratatui::style::Color::DarkGray, "Cancelled".to_string());
-                    }
-                    AgentOutcome::MaxTurnsReached(n) => {
-                        s.push_activity("⚠", ratatui::style::Color::Yellow, format!("Max turns ({})", n));
-                    }
-                }
-            }
-        }
-    });
-
-    // Main TUI event loop — never blocks on agent work
-    loop {
-        // Draw
-        {
-            let state = tui_state.lock().unwrap();
-            terminal.draw(|f| app::draw(f, &state))?;
-        }
-
-        // Poll for crossterm events (16ms ≈ 60fps for responsive typing)
-        if crossterm_event::poll(std::time::Duration::from_millis(16))? {
-            let event = crossterm_event::read()?;
-            match event {
-                Event::Paste(text) => {
-                    // Handle pasted text as a single block (newlines → spaces)
-                    let mut state = tui_state.lock().unwrap();
-                    state.handle_paste(&text);
-                }
-                Event::Key(key) => {
-                let mut state = tui_state.lock().unwrap();
-                app::handle_key(&mut state, key);
-
-                if state.should_quit {
-                    // Cancel any running agent work before exiting
-                    cancel_token.lock().unwrap().cancel();
-                    break;
-                }
-
-                // Escape cancels the current agent run
-                if key.code == crossterm::event::KeyCode::Esc && state.is_working {
-                    let mut token = cancel_token.lock().unwrap();
-                    token.cancel();
-                    // Replace with a fresh token for the next run
-                    *token = CancellationToken::new();
-                    state.finish_working();
-                    state.push_activity("⏹", ratatui::style::Color::Yellow, "Stopped".to_string());
-                }
-
-                // Check if input was submitted
-                if let Some(input) = state.submitted_input.take() {
-                    drop(state); // Release lock
-
-                    let classified = pipit_io::input::classify_input(&input);
-                    match classified {
-                        pipit_io::input::UserInput::Command(cmd) => {
-                            match cmd {
-                                pipit_io::input::SlashCommand::Quit => break,
-                                pipit_io::input::SlashCommand::Help => {
-                                    let mut s = tui_state.lock().unwrap();
-                                    s.push_activity("?", ratatui::style::Color::Cyan, "/help".to_string());
-                                    s.content_lines.clear();
-                                    s.content_scroll_offset = 0;
-                                    let help = vec![
-                                        "Commands",
-                                        "",
-                                        "  /help              Show this help",
-                                        "  /status            Show repo, model, tokens, cost",
-                                        "  /cost              Show token cost summary",
-                                        "  /clear             Reset context and chat history",
-                                        "  /quit  /q          Exit pipit",
-                                        "",
-                                        "  /plans             Show proof-packet plan history",
-                                        "  /context  /ctx     Show files in working set",
-                                        "  /tokens  /tok      Token usage breakdown",
-                                        "  /compact           Compress context to free tokens",
-                                        "",
-                                        "  /add <file>        Add file to working set",
-                                        "  /drop <file>       Remove file from working set",
-                                        "  /plan [goal]       Enter plan-first mode",
-                                        "  /verify [scope]    Run build/lint/test checks",
-                                        "  /aside <question>  Quick side question",
-                                        "",
-                                        "Grammar",
-                                        "",
-                                        "  /command           Slash commands (see above)",
-                                        "  @file.rs           Attach file as context",
-                                        "  !ls -la            Run shell command directly",
-                                        "  ↑ ↓                Scroll timeline",
-                                        "",
-                                        "Examples",
-                                        "",
-                                        "  explain this codebase",
-                                        "  @src/main.rs fix the panic on line 42",
-                                        "  !cargo test -- --nocapture",
-                                        "  /add src/lib.rs",
-                                        "  /verify cargo test",
-                                    ];
-                                    for line in help {
-                                        s.content_lines.push(line.to_string());
-                                    }
-                                    s.has_received_input = true;
-                                }
-                                pipit_io::input::SlashCommand::Clear => {
-                                    let _ = prompt_tx.send("/clear".to_string()).await;
-                                    let mut s = tui_state.lock().unwrap();
-                                    s.activity_lines.clear();
-                                    s.content_lines.clear();
-                                    s.scroll_offset = 0;
-                                    s.content_scroll_offset = 0;
-                                    s.push_activity("·", ratatui::style::Color::DarkGray, "Context cleared".to_string());
-                                }
-                                pipit_io::input::SlashCommand::Cost => {
-                                    let s = tui_state.lock().unwrap();
-                                    let cost_msg = format!("${:.4} · {}% tokens", s.status.cost, s.status.token_pct());
-                                    drop(s);
-                                    let mut s = tui_state.lock().unwrap();
-                                    s.push_activity("$", ratatui::style::Color::Green, cost_msg);
-                                }
-                                pipit_io::input::SlashCommand::Status => {
-                                    let s = tui_state.lock().unwrap();
-                                    let info = format!(
-                                        "{} · {} · {} · {}% tokens · ${:.4}",
-                                        s.status.repo_name, s.status.branch, s.status.model,
-                                        s.status.token_pct(), s.status.cost
-                                    );
-                                    drop(s);
-                                    let mut s = tui_state.lock().unwrap();
-                                    s.push_activity("·", ratatui::style::Color::Cyan, info);
-                                }
-                                // Forward everything else to the agent as a slash command
-                                other => {
-                                    let cmd_str = format!("/{}", slash_command_to_str(&other));
-                                    let _ = prompt_tx.send(cmd_str).await;
-                                }
-                            }
-                        }
-                        pipit_io::input::UserInput::Prompt(prompt) => {
-                            let _ = prompt_tx.send(prompt).await;
-                        }
-                        pipit_io::input::UserInput::ShellPassthrough(cmd) => {
-                            let enriched = format!("Run this shell command and show the output: `{}`", cmd);
-                            let _ = prompt_tx.send(enriched).await;
-                        }
-                        pipit_io::input::UserInput::PromptWithFiles { prompt, files } => {
-                            let enriched = format!("First read these files: {}. Then: {}", files.join(", "), prompt);
-                            let _ = prompt_tx.send(enriched).await;
-                        }
-                        pipit_io::input::UserInput::PromptWithImages { prompt, image_paths } => {
-                            // In TUI mode, send a description prompt (image injection needs agent access)
-                            let enriched = format!("Analyze these image files: {}. {}", image_paths.join(", "), prompt);
-                            let _ = prompt_tx.send(enriched).await;
-                        }
-                    }
-                }
-                } // end Event::Key
-                _ => {} // ignore resize, focus, etc.
-            } // end match event
-        }
-    }
-
-    // Cleanup
-    drop(prompt_tx); // Signal agent task to stop
-    let _ = agent_handle.await;
-    let _ = extensions.on_session_end().await;
-    app::restore_terminal(&mut terminal)?;
-    Ok(())
-}
-
 /// Handle the outcome of an agent run — persist proofs, print summaries, show errors.
 fn handle_agent_outcome(
     project_root: &PathBuf,
@@ -1397,680 +1120,35 @@ fn handle_agent_outcome(
         AgentOutcome::Completed {
             turns, cost, proof, ..
         } => {
-            let proof_path = persist_proof_packet(project_root, &proof).ok();
+            let proof_path = persistence::persist_proof_packet(project_root, &proof).ok();
             if let Some(planning_state) = agent.planning_state() {
-                persist_planning_snapshot(
+                persistence::persist_planning_snapshot(
                     project_root,
                     &planning_state,
-                    planning_proof_summary(&proof, proof_path.as_ref()),
+                    persistence::planning_proof_summary(&proof, proof_path.as_ref()),
                 )
                 .ok();
             }
-            print_proof_summary(&proof);
+            persistence::print_proof_summary(&proof);
             eprintln!("\x1b[2m({} turns, ${:.4})\x1b[0m", turns, cost);
         }
         AgentOutcome::MaxTurnsReached(n) => {
             if let Some(planning_state) = agent.planning_state() {
-                persist_planning_snapshot(project_root, &planning_state, None).ok();
+                persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[33mReached max turns ({})\x1b[0m", n);
         }
         AgentOutcome::Cancelled => {
             if let Some(planning_state) = agent.planning_state() {
-                persist_planning_snapshot(project_root, &planning_state, None).ok();
+                persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[2m(cancelled)\x1b[0m");
         }
         AgentOutcome::Error(e) => {
             if let Some(planning_state) = agent.planning_state() {
-                persist_planning_snapshot(project_root, &planning_state, None).ok();
+                persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[31mError: {}\x1b[0m", e);
         }
-    }
-}
-
-// ─── Auth subcommand handling ───
-
-async fn handle_auth_command(action: &AuthAction) -> Result<()> {
-    use pipit_config::{
-        CredentialStore, StoredCredential, OAuthFlow,
-        oauth_device_flow, oauth_device_config_for,
-    };
-
-    match action {
-        AuthAction::Login {
-            provider,
-            api_key,
-            device,
-            adc,
-        } => {
-            let provider_kind: ProviderKind = provider
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!(e))?;
-            let mut store = CredentialStore::load();
-
-            if *adc {
-                // Google ADC marker
-                if provider_kind != ProviderKind::Google {
-                    anyhow::bail!("--adc is only valid for the google provider");
-                }
-                // Verify gcloud works
-                eprint!("Verifying Google ADC... ");
-                match store.resolve_token(ProviderKind::Google) {
-                    Some(_) => {
-                        store.set(
-                            &provider_kind.to_string(),
-                            StoredCredential::GoogleAdc,
-                        );
-                        store.save().context("Failed to save credentials")?;
-                        eprintln!("✓ Google ADC configured");
-                        eprintln!(
-                            "  Using: gcloud auth application-default print-access-token"
-                        );
-                    }
-                    None => {
-                        // Store the marker anyway — user might configure gcloud later
-                        store.set(
-                            &provider_kind.to_string(),
-                            StoredCredential::GoogleAdc,
-                        );
-                        store.save().context("Failed to save credentials")?;
-                        eprintln!("⚠ gcloud ADC not available yet");
-                        eprintln!("  Run: gcloud auth application-default login");
-                        eprintln!("  Marker saved — pipit will retry at runtime.");
-                    }
-                }
-                return Ok(());
-            }
-
-            if *device {
-                // OAuth device-code flow
-                if let Some(config) = oauth_device_config_for(provider_kind) {
-                    eprintln!("Starting OAuth device-code flow for {}...", provider);
-                    let token = oauth_device_flow(&config)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?;
-
-                    let expires_at = token.expires_in.map(|secs| {
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs() + secs)
-                            .unwrap_or(0)
-                    });
-
-                    store.set(
-                        &provider_kind.to_string(),
-                        StoredCredential::OAuthToken {
-                            access_token: token.access_token,
-                            refresh_token: token.refresh_token,
-                            expires_at,
-                            flow: OAuthFlow::DeviceCode,
-                        },
-                    );
-                    store.save().context("Failed to save credentials")?;
-                    eprintln!("Credentials saved to ~/.pipit/credentials.json");
-                } else {
-                    anyhow::bail!(
-                        "OAuth device flow not configured for {}. Use --api-key instead.",
-                        provider
-                    );
-                }
-                return Ok(());
-            }
-
-            // API key flow
-            let key = if let Some(k) = api_key {
-                k.clone()
-            } else {
-                // Prompt interactively
-                eprint!("Enter API key for {}: ", provider);
-                let mut input = String::new();
-                std::io::stdin()
-                    .read_line(&mut input)
-                    .context("Failed to read input")?;
-                let trimmed = input.trim().to_string();
-                if trimmed.is_empty() {
-                    anyhow::bail!("No API key provided");
-                }
-                trimmed
-            };
-
-            store.set(
-                &provider_kind.to_string(),
-                StoredCredential::ApiKey { api_key: key },
-            );
-            store.save().context("Failed to save credentials")?;
-            eprintln!("✓ API key stored for {}", provider);
-            if let Some(path) = CredentialStore::path() {
-                eprintln!("  Saved to: {}", path.display());
-            }
-        }
-
-        AuthAction::Logout { provider } => {
-            let provider_kind: ProviderKind = provider
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!(e))?;
-            let mut store = CredentialStore::load();
-            if store.remove(&provider_kind.to_string()) {
-                store.save().context("Failed to save credentials")?;
-                eprintln!("✓ Credentials removed for {}", provider);
-            } else {
-                eprintln!("No credentials found for {}", provider);
-            }
-        }
-
-        AuthAction::Status => {
-            let store = CredentialStore::load();
-            let entries = store.list();
-
-            if entries.is_empty() {
-                eprintln!("No stored credentials.");
-                eprintln!();
-                eprintln!("Use `pipit auth login <provider>` to add credentials.");
-                eprintln!("Or set environment variables (e.g. OPENAI_API_KEY).");
-            } else {
-                eprintln!("Stored credentials:");
-                eprintln!();
-                for (provider, kind) in &entries {
-                    let status = match kind {
-                        &"api_key" => "API key".to_string(),
-                        &"oauth_device" => "OAuth (device flow)".to_string(),
-                        &"oauth_code" => "OAuth (auth code)".to_string(),
-                        &"google_adc" => {
-                            // Check if ADC actually works
-                            let provider_kind: Result<ProviderKind, _> = provider.parse();
-                            if let Ok(pk) = provider_kind {
-                                if store.resolve_token(pk).is_some() {
-                                    "Google ADC ✓".to_string()
-                                } else {
-                                    "Google ADC ✗ (run: gcloud auth application-default login)".to_string()
-                                }
-                            } else {
-                                "Google ADC".to_string()
-                            }
-                        }
-                        other => other.to_string(),
-                    };
-                    eprintln!("  {:20} {}", provider, status);
-                }
-            }
-
-            // Also check env vars
-            eprintln!();
-            eprintln!("Environment variables:");
-            let env_checks = [
-                ("ANTHROPIC_API_KEY", "anthropic"),
-                ("OPENAI_API_KEY", "openai"),
-                ("DEEPSEEK_API_KEY", "deepseek"),
-                ("GOOGLE_API_KEY", "google"),
-                ("OPENROUTER_API_KEY", "openrouter"),
-                ("XAI_API_KEY", "xai"),
-                ("CEREBRAS_API_KEY", "cerebras"),
-                ("GROQ_API_KEY", "groq"),
-                ("MISTRAL_API_KEY", "mistral"),
-            ];
-            let mut found_env = false;
-            for (var, label) in &env_checks {
-                if std::env::var(var).is_ok() {
-                    eprintln!("  {:20} {} ✓", label, var);
-                    found_env = true;
-                }
-            }
-            if !found_env {
-                eprintln!("  (none set)");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// Fix #20: Composable system prompt builder
-fn build_system_prompt(
-    project_root: &PathBuf,
-    tools: &ToolRegistry,
-    approval_mode: pipit_config::ApprovalMode,
-    _provider: ProviderKind,
-    skills: &SkillRegistry,
-    workflow_assets: &WorkflowAssets,
-) -> String {
-    let project_name = project_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("project");
-
-    let mut prompt = format!(
-        r#"You are Pipit, an expert AI coding agent working in the terminal.
-
-## Core capabilities
-- Read, write, and edit code files with surgical precision
-- Execute shell commands
-- Search codebases with grep and glob
-- Navigate and understand project structure
-
-## Rules
-1. Always read a file before editing it to understand the full context.
-2. Make minimal, focused changes — don't refactor code you weren't asked to change.
-3. Use the edit_file tool for surgical edits, not write_file (which rewrites the whole file).
-4. When executing shell commands, explain what they do.
-5. If you encounter an error, analyze it and try a different approach.
-6. Never guess at file contents — always read first.
-7. Prefer using existing patterns and conventions found in the codebase.
-
-## Project
-Working directory: {root}
-Project: {name}
-"#,
-        root = project_root.display(),
-        name = project_name,
-    );
-
-    // Add tool-specific instructions with approval annotations
-    prompt.push_str("\n## Available Tools\n");
-    for (decl, needs_approval) in tools.declarations_annotated(approval_mode) {
-        if needs_approval {
-            prompt.push_str(&format!("- **{}** *(requires approval)*: {}\n", decl.name, decl.description));
-        } else {
-            prompt.push_str(&format!("- **{}**: {}\n", decl.name, decl.description));
-        }
-    }
-
-    // Add edit format instructions
-    prompt.push_str("\n## Edit format\n");
-    prompt.push_str("Use the edit_file tool for surgical code edits. Provide the exact search text and replacement.\n");
-    prompt.push_str("The search text must match the file exactly (fuzzy whitespace matching is used as fallback).\n");
-
-    // Load project conventions if present
-    let conventions_path = project_root.join(".pipit").join("CONVENTIONS.md");
-    if conventions_path.exists() {
-        if let Ok(conventions) = std::fs::read_to_string(&conventions_path) {
-            prompt.push_str("\n## Project Conventions\n");
-            prompt.push_str(&conventions);
-            prompt.push_str("\n");
-        }
-    }
-
-    // #21: Inject skill index (Tier 1 — names + descriptions only)
-    prompt.push_str(&skills.prompt_section());
-    prompt.push_str(&workflow_assets.prompt_section());
-
-    prompt
-}
-
-fn print_proof_summary(proof: &ProofPacket) {
-    eprintln!("\n\x1b[2mProof packet\x1b[0m");
-    eprintln!("  Objective: {}", proof.objective.statement);
-    eprintln!(
-        "  Selected plan: {:?} ({})",
-        proof.selected_plan.strategy,
-        proof.selected_plan.rationale
-    );
-    if !proof.candidate_plans.is_empty() {
-        eprintln!("  Top candidate plans:");
-        for (index, plan) in proof.candidate_plans.iter().take(3).enumerate() {
-            let score = plan.expected_value - plan.estimated_cost;
-            eprintln!(
-                "    {}. {:?} | score {:.2} | expected {:.2} | cost {:.2}",
-                index + 1,
-                plan.strategy,
-                score,
-                plan.expected_value,
-                plan.estimated_cost
-            );
-            eprintln!("       {}", plan.rationale);
-        }
-    }
-    eprintln!(
-        "  Confidence: {:.2} | Risk score: {:.4}",
-        proof.confidence.overall(),
-        proof.risk.score
-    );
-    eprintln!("  Evidence artifacts: {}", proof.evidence.len());
-    if !proof.plan_pivots.is_empty() {
-        eprintln!("  Plan pivots:");
-        for pivot in &proof.plan_pivots {
-            eprintln!(
-                "    - turn {}: {:?} -> {:?} ({})",
-                pivot.turn_number,
-                pivot.from.strategy,
-                pivot.to.strategy,
-                pivot.trigger
-            );
-        }
-    }
-    if let Some(checkpoint_id) = &proof.rollback_checkpoint.checkpoint_id {
-        eprintln!("  Rollback checkpoint: {}", checkpoint_id);
-    }
-    if !proof.realized_edits.is_empty() {
-        eprintln!("  Realized edits:");
-        for edit in &proof.realized_edits {
-            eprintln!("    - {}: {}", edit.path, edit.summary);
-        }
-    }
-    if !proof.unresolved_assumptions.is_empty() {
-        eprintln!("  Unresolved assumptions:");
-        for assumption in &proof.unresolved_assumptions {
-            eprintln!("    - {}", assumption.description);
-        }
-    }
-}
-
-fn print_plans(loaded: Option<LoadedPlanningState>) {
-    let Some(LoadedPlanningState {
-        state,
-        source,
-        proof_summary,
-    }) = loaded else {
-        eprintln!("\x1b[2mNo planning state yet. Run a task first.\x1b[0m");
-        return;
-    };
-
-    eprintln!("\x1b[2mRanked plans\x1b[0m");
-    let source = match source {
-        PlanningStateSource::Live => "live session",
-        PlanningStateSource::Disk => "persisted snapshot",
-    };
-    eprintln!("  source: {}", source);
-    if let Some(summary) = proof_summary {
-        eprintln!(
-            "  latest proof: confidence {:.2} | risk {:.4}",
-            summary.confidence,
-            summary.risk_score
-        );
-        eprintln!("  objective: {}", summary.objective);
-        if let Some(path) = summary.proof_file {
-            eprintln!("  proof file: {}", path);
-        }
-    }
-    for (index, plan) in state.candidate_plans.iter().enumerate() {
-        let score = plan.expected_value - plan.estimated_cost;
-        let marker = if plan == &state.selected_plan { "*" } else { " " };
-        eprintln!(
-            "{} {}. {:?} | score {:.2} | expected {:.2} | cost {:.2}",
-            marker,
-            index + 1,
-            plan.strategy,
-            score,
-            plan.expected_value,
-            plan.estimated_cost
-        );
-        eprintln!("    {}", plan.rationale);
-    }
-
-    if !state.plan_pivots.is_empty() {
-        eprintln!("\n\x1b[2mPivot history\x1b[0m");
-        for pivot in &state.plan_pivots {
-            eprintln!(
-                "  turn {}: {:?} -> {:?} | {}",
-                pivot.turn_number,
-                pivot.from.strategy,
-                pivot.to.strategy,
-                pivot.trigger
-            );
-        }
-    }
-}
-
-fn persist_proof_packet(project_root: &PathBuf, proof: &ProofPacket) -> Result<PathBuf> {
-    let proofs_dir = project_root.join(".pipit").join("proofs");
-    std::fs::create_dir_all(&proofs_dir)?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let file_path = proofs_dir.join(format!("proof-{}.json", timestamp));
-    let json = serde_json::to_string_pretty(proof)?;
-    std::fs::write(&file_path, json)?;
-    Ok(file_path)
-}
-
-fn planning_proof_summary(
-    proof: &ProofPacket,
-    proof_path: Option<&PathBuf>,
-) -> Option<PlanningProofSummary> {
-    Some(PlanningProofSummary {
-        objective: proof.objective.statement.clone(),
-        confidence: proof.confidence.overall(),
-        risk_score: proof.risk.score,
-        proof_file: proof_path.map(|path| path.display().to_string()),
-    })
-}
-
-fn persist_planning_snapshot(
-    project_root: &PathBuf,
-    planning_state: &PlanningState,
-    proof_summary: Option<PlanningProofSummary>,
-) -> Result<()> {
-    let plans_dir = project_root.join(".pipit").join("plans");
-    std::fs::create_dir_all(&plans_dir)?;
-    let file_path = plans_dir.join("latest.json");
-    let snapshot = PlanningSnapshot {
-        planning_state: planning_state.clone(),
-        proof_summary,
-    };
-    let json = serde_json::to_string_pretty(&snapshot)?;
-    std::fs::write(file_path, json)?;
-    Ok(())
-}
-
-fn load_planning_snapshot(project_root: &PathBuf) -> Result<Option<LoadedPlanningState>> {
-    let file_path = project_root.join(".pipit").join("plans").join("latest.json");
-    if !file_path.exists() {
-        return Ok(None);
-    }
-
-    let raw = std::fs::read_to_string(file_path)?;
-    if let Ok(snapshot) = serde_json::from_str::<PlanningSnapshot>(&raw) {
-        return Ok(Some(LoadedPlanningState {
-            state: snapshot.planning_state,
-            source: PlanningStateSource::Disk,
-            proof_summary: snapshot.proof_summary,
-        }));
-    }
-
-    let planning_state = serde_json::from_str::<PlanningState>(&raw)?;
-    Ok(Some(LoadedPlanningState {
-        state: planning_state,
-        source: PlanningStateSource::Disk,
-        proof_summary: None,
-    }))
-}
-
-// ── Interactive setup wizard ─────────────────────────────────────────────
-
-fn run_setup_wizard() -> Result<()> {
-    use std::io::{self, Write};
-
-    let config_path = pipit_config::user_config_path()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
-
-    println!();
-    println!("  \x1b[1;33mpipit setup\x1b[0m");
-    println!("  \x1b[90mInteractive configuration wizard\x1b[0m");
-    println!();
-
-    if config_path.exists() {
-        println!("  \x1b[90mExisting config:\x1b[0m {}", config_path.display());
-        print!("  Overwrite? [y/N] ");
-        io::stdout().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !answer.trim().eq_ignore_ascii_case("y") {
-            println!("  Aborted.");
-            return Ok(());
-        }
-        println!();
-    }
-
-    // ── Provider ─────────────────────────────────────────────────────
-    println!("  \x1b[1mProvider\x1b[0m");
-    println!("  \x1b[90mSupported: anthropic, openai, deepseek, google, openrouter,\x1b[0m");
-    println!("  \x1b[90m           ollama, groq, cerebras, mistral, xai, openai_compatible\x1b[0m");
-    println!();
-    let provider_str = prompt_input("  Provider [anthropic]: ")?;
-    let provider_str = if provider_str.is_empty() { "anthropic".to_string() } else { provider_str };
-    let provider_kind: ProviderKind = provider_str.parse()
-        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
-    println!();
-
-    // ── Model ────────────────────────────────────────────────────────
-    let default_model = default_model_for_provider(provider_kind);
-    println!("  \x1b[1mModel\x1b[0m");
-    let model_str = prompt_input(&format!("  Model [{}]: ", default_model))?;
-    let model = if model_str.is_empty() { default_model.to_string() } else { model_str };
-    println!();
-
-    // ── Base URL (for compatible/ollama/custom) ──────────────────────
-    let base_url = if needs_base_url(provider_kind) {
-        let default_url = default_base_url(provider_kind);
-        println!("  \x1b[1mBase URL\x1b[0m");
-        let url = prompt_input(&format!("  Endpoint URL [{}]: ", default_url))?;
-        let url = if url.is_empty() { default_url.to_string() } else { url };
-        println!();
-        Some(url)
-    } else {
-        None
-    };
-
-    // ── API key ──────────────────────────────────────────────────────
-    println!("  \x1b[1mAPI Key\x1b[0m");
-    if provider_kind == ProviderKind::Ollama {
-        println!("  \x1b[90mOllama doesn't need an API key\x1b[0m");
-        println!();
-    } else {
-        let existing = pipit_config::resolve_api_key(provider_kind);
-        if existing.is_some() {
-            println!("  \x1b[32m✓ Key already configured\x1b[0m (via env var or credentials)");
-            println!();
-        } else {
-            println!("  \x1b[90mEnter key or leave blank to set later.\x1b[0m");
-            println!("  \x1b[90mYou can also use: export {}=<key>\x1b[0m", env_var_for_provider(provider_kind));
-            let key = prompt_input("  API Key: ")?;
-            if !key.is_empty() {
-                // Store in credentials file
-                let mut store = pipit_config::CredentialStore::load();
-                store.set(&provider_kind.to_string(), pipit_config::StoredCredential::ApiKey { api_key: key });
-                store.save()
-                    .map_err(|e| anyhow::anyhow!("Failed to save credentials: {}", e))?;
-                println!("  \x1b[32m✓ Key saved to ~/.pipit/credentials.json\x1b[0m");
-            }
-            println!();
-        }
-    }
-
-    // ── Approval mode ────────────────────────────────────────────────
-    println!("  \x1b[1mApproval Mode\x1b[0m");
-    println!("  \x1b[90m  suggest     — read-only, ask before every change\x1b[0m");
-    println!("  \x1b[90m  auto_edit   — auto-apply edits, ask for commands\x1b[0m");
-    println!("  \x1b[90m  full_auto   — autonomous, no confirmation needed\x1b[0m");
-    let approval_str = prompt_input("  Approval mode [full_auto]: ")?;
-    let approval_str = if approval_str.is_empty() { "full_auto".to_string() } else { approval_str };
-    let approval: ApprovalMode = approval_str.parse()
-        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
-    println!();
-
-    // ── Max turns ────────────────────────────────────────────────────
-    println!("  \x1b[1mMax Turns\x1b[0m");
-    println!("  \x1b[90mMax agent turns per prompt (0 = unlimited)\x1b[0m");
-    let turns_str = prompt_input("  Max turns [25]: ")?;
-    let max_turns: u32 = if turns_str.is_empty() { 25 } else {
-        turns_str.parse().map_err(|_| anyhow::anyhow!("Invalid number: {}", turns_str))?
-    };
-    println!();
-
-    // ── Build config layer ───────────────────────────────────────────
-    let layer = pipit_config::PipitConfigLayer {
-        provider: Some(pipit_config::ProviderConfigLayer {
-            default: Some(provider_kind),
-            base_url: base_url.clone(),
-        }),
-        model: Some(pipit_config::ModelConfigLayer {
-            default_model: Some(model.clone()),
-            context_window: None,
-            max_output_tokens: None,
-        }),
-        approval: Some(approval),
-        context: Some(pipit_config::ContextConfigLayer {
-            max_turns: Some(max_turns),
-            ..Default::default()
-        }),
-        pricing: None,
-    };
-
-    pipit_config::write_user_config(&layer)
-        .map_err(|e| anyhow::anyhow!("Failed to write config: {}", e))?;
-
-    println!("  \x1b[32m✓ Config saved to {}\x1b[0m", config_path.display());
-    println!();
-
-    // Show summary
-    println!("  \x1b[1mSummary\x1b[0m");
-    println!("  \x1b[90m  Provider:  \x1b[0m {}", provider_kind);
-    println!("  \x1b[90m  Model:     \x1b[0m {}", model);
-    if let Some(url) = &base_url {
-        println!("  \x1b[90m  Base URL:  \x1b[0m {}", url);
-    }
-    println!("  \x1b[90m  Approval:  \x1b[0m {}", approval);
-    println!("  \x1b[90m  Max turns: \x1b[0m {}", max_turns);
-    println!();
-    println!("  Run \x1b[1mpipit\x1b[0m to start coding!");
-    println!();
-
-    Ok(())
-}
-
-fn prompt_input(prompt: &str) -> Result<String> {
-    use std::io::{self, Write};
-    print!("{}", prompt);
-    io::stdout().flush()?;
-    let mut buf = String::new();
-    io::stdin().read_line(&mut buf)?;
-    Ok(buf.trim().to_string())
-}
-
-fn default_model_for_provider(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "claude-sonnet-4-20250514",
-        ProviderKind::OpenAi => "gpt-4o",
-        ProviderKind::DeepSeek => "deepseek-chat",
-        ProviderKind::Google => "gemini-2.5-flash",
-        ProviderKind::OpenRouter => "anthropic/claude-sonnet-4-20250514",
-        ProviderKind::XAi => "grok-3",
-        ProviderKind::Cerebras => "llama-4-scout-17b-16e-instruct",
-        ProviderKind::Groq => "llama-4-scout-17b-16e-instruct",
-        ProviderKind::Mistral => "mistral-large-latest",
-        ProviderKind::Ollama => "qwen2.5-coder:14b",
-        ProviderKind::OpenAiCompatible => "default",
-    }
-}
-
-fn needs_base_url(provider: ProviderKind) -> bool {
-    matches!(provider,
-        ProviderKind::OpenAiCompatible
-        | ProviderKind::AnthropicCompatible
-        | ProviderKind::Ollama
-    )
-}
-
-fn default_base_url(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Ollama => "http://localhost:11434",
-        _ => "http://localhost:8000",
-    }
-}
-
-fn env_var_for_provider(provider: ProviderKind) -> &'static str {
-    match provider {
-        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
-        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
-        ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
-        ProviderKind::Google => "GOOGLE_API_KEY",
-        ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
-        ProviderKind::XAi => "XAI_API_KEY",
-        ProviderKind::Cerebras => "CEREBRAS_API_KEY",
-        ProviderKind::Groq => "GROQ_API_KEY",
-        ProviderKind::Mistral => "MISTRAL_API_KEY",
-        ProviderKind::Ollama => "OLLAMA_API_KEY",
     }
 }

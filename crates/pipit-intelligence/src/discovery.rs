@@ -2,8 +2,11 @@ use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
 /// Walk the project, respecting .gitignore and binary detection.
+/// Caps at 10,000 files to prevent accidentally indexing huge directories.
 pub fn discover_files(root: &Path, max_file_size: u64) -> Vec<PathBuf> {
-    WalkBuilder::new(root)
+    const MAX_FILES: usize = 10_000;
+
+    let files: Vec<PathBuf> = WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
@@ -30,7 +33,20 @@ pub fn discover_files(root: &Path, max_file_size: u64) -> Vec<PathBuf> {
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         .filter(|e| !is_binary_file(e.path()))
         .filter_map(|e| e.path().strip_prefix(root).ok().map(|p| p.to_path_buf()))
-        .collect()
+        .take(MAX_FILES + 1)
+        .collect();
+
+    if files.len() > MAX_FILES {
+        // Directory is too large — return empty to skip indexing.
+        tracing::warn!(
+            "RepoMap: found >{} files under {}, skipping (too large)",
+            MAX_FILES,
+            root.display()
+        );
+        return Vec::new();
+    }
+
+    files
 }
 
 /// Detect if a file is binary by checking first 8KB for null bytes.

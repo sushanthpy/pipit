@@ -1,4 +1,38 @@
+use crate::planner::{VerifyStrategy, VerificationSource};
 use crate::proof::{Assumption, ConfidenceReport, EvidenceArtifact, RealizedEdit};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NullVerifier — Fast mode: always passes, zero overhead
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Default)]
+pub struct NullVerifier;
+
+impl VerifyStrategy for NullVerifier {
+    fn summarize_confidence(
+        &self,
+        _evidence: &[EvidenceArtifact],
+        _edits: &[RealizedEdit],
+    ) -> ConfidenceReport {
+        ConfidenceReport::default()
+    }
+
+    fn unresolved_assumptions(
+        &self,
+        _assumptions: &[Assumption],
+        _evidence: &[EvidenceArtifact],
+    ) -> Vec<Assumption> {
+        Vec::new()
+    }
+
+    fn source(&self) -> VerificationSource {
+        VerificationSource::None
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HeuristicVerifier — Balanced mode: confidence from evidence pass rates
+// ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Default)]
 pub struct Verifier;
@@ -166,5 +200,27 @@ impl Verifier {
             })
             .filter(|assumption| !assumption.verified)
             .collect()
+    }
+}
+
+impl VerifyStrategy for Verifier {
+    fn summarize_confidence(
+        &self,
+        evidence: &[EvidenceArtifact],
+        edits: &[RealizedEdit],
+    ) -> ConfidenceReport {
+        Verifier::summarize_confidence(self, evidence, edits)
+    }
+
+    fn unresolved_assumptions(
+        &self,
+        assumptions: &[Assumption],
+        evidence: &[EvidenceArtifact],
+    ) -> Vec<Assumption> {
+        Verifier::unresolved_assumptions(self, assumptions, evidence)
+    }
+
+    fn source(&self) -> VerificationSource {
+        VerificationSource::Heuristic
     }
 }

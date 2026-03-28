@@ -2,7 +2,7 @@ use crate::events::{AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler,
 use crate::governor::{Governor, RiskReport};
 use crate::loop_detector::LoopDetector;
 use crate::pev::{ModelRouter, PevConfig};
-use crate::planner::{CandidatePlan, Planner};
+use crate::planner::{CandidatePlan, Planner, PlanStrategy, VerifyStrategy};
 use crate::proof::{
     ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, PlanPivot, ProofPacket,
     PolicyStage, RealizedEdit, VerificationKind,
@@ -127,6 +127,16 @@ impl AgentLoop {
         self.repo_map = Some(map);
     }
 
+    /// Whether any tool calls have been executed in the current context.
+    /// Used to distinguish first-turn Q&A from multi-turn coding tasks.
+    fn has_had_tool_calls(&self) -> bool {
+        self.context.messages().iter().any(|msg| {
+            msg.content.iter().any(|block| {
+                matches!(block, pipit_provider::ContentBlock::ToolCall { .. })
+            })
+        })
+    }
+
     /// Convenience: get the executor provider (the default for the main loop).
     fn provider(&self) -> &Arc<dyn LlmProvider> {
         &self.models.for_role(crate::pev::ModelRole::Executor).provider
@@ -169,20 +179,47 @@ impl AgentLoop {
 
         let objective = Objective::from_prompt(&processed);
         let mut claim = ChangeClaim::from_objective(objective.clone());
-        let planner = Planner;
-        let verifier = Verifier;
+        let planner: Box<dyn PlanStrategy> = Box::new(Planner);
+        let verifier: Box<dyn VerifyStrategy> = Box::new(Verifier);
         let governor = Governor;
         let mut evidence = Vec::new();
         let mut realized_edits = Vec::new();
         let mut risk = RiskReport::default();
         let mut plan_pivots = Vec::new();
-        let mut candidate_plans: Vec<CandidatePlan> =
-            planner.candidate_plans_with_evidence(&objective, &claim.confidence, &evidence);
-        let mut selected_plan =
-            planner.select_plan_with_evidence(&objective, &claim.confidence, &evidence);
+
+        // Short-circuit planning for Q&A tasks.
+        // Questions like "what is this code" don't need DiagnosticOnly noise.
+        let is_qa = crate::planner::is_question_task(&processed);
+
+        let mut candidate_plans: Vec<CandidatePlan>;
+        let mut selected_plan: CandidatePlan;
+
+        if is_qa || self.config.pev.is_none() {
+            // Fast path: trivial plan, no noise
+            selected_plan = CandidatePlan {
+                strategy: crate::planner::StrategyKind::MinimalPatch,
+                rationale: "Direct response.".to_string(),
+                expected_value: 1.0,
+                estimated_cost: 0.05,
+                verification_plan: Vec::new(),
+                plan_source: crate::planner::PlanSource::Heuristic,
+            };
+            candidate_plans = vec![selected_plan.clone()];
+        } else {
+            // Normal planning flow for PEV modes
+            candidate_plans =
+                planner.candidate_plans(&objective, &claim.confidence, &evidence);
+            selected_plan =
+                planner.select_plan(&objective, &claim.confidence, &evidence);
+        }
+
         claim.align_with_plan(&selected_plan);
         self.update_planning_state(&selected_plan, &candidate_plans, &plan_pivots);
-        self.emit_plan_selected(&selected_plan, &candidate_plans, false);
+
+        // Only emit plan selected event if this isn't a trivial Q&A
+        if !is_qa {
+            self.emit_plan_selected(&selected_plan, &candidate_plans, false);
+        }
 
         // Add user message to context
         self.context.push_message(Message::user(&processed));
@@ -235,9 +272,9 @@ impl AgentLoop {
                 claim.confidence = verifier.summarize_confidence(&evidence, &realized_edits);
                 let previous_plan = selected_plan.clone();
                 candidate_plans =
-                    planner.candidate_plans_with_evidence(&objective, &claim.confidence, &evidence);
+                    planner.candidate_plans(&objective, &claim.confidence, &evidence);
                 selected_plan =
-                    planner.select_plan_with_evidence(&objective, &claim.confidence, &evidence);
+                    planner.select_plan(&objective, &claim.confidence, &evidence);
                 if selected_plan != previous_plan {
                     plan_pivots.push(PlanPivot {
                         turn_number: turn,
@@ -308,7 +345,7 @@ impl AgentLoop {
                     let usage = self.context.token_usage();
                     let proof = finalize_proof(
                         &governor,
-                        &verifier,
+                        &*verifier,
                         objective.clone(),
                         &mut claim,
                         selected_plan.clone(),
@@ -472,7 +509,7 @@ impl AgentLoop {
                         let usage = self.context.token_usage();
                         let proof = finalize_proof(
                             &governor,
-                            &verifier,
+                            &*verifier,
                             objective.clone(),
                             &mut claim,
                             selected_plan.clone(),
@@ -588,13 +625,25 @@ impl AgentLoop {
         tools: &[pipit_provider::ToolDeclaration],
     ) -> CompletionRequest {
         let mut request = self.context.build_request(tools, self.repo_map.as_deref());
-        request.system.push_str("\n\n");
-        request.system.push_str(&claim.render_for_prompt());
-        request.system.push_str("\n## Selected Execution Plan\n");
-        request.system.push_str(&format!(
-            "Strategy: {:?}\nRationale: {}\n",
-            selected_plan.strategy, selected_plan.rationale
-        ));
+
+        // Only inject planning context when:
+        //   (a) we're in a PEV mode (balanced/guarded/custom), AND
+        //   (b) the task has progressed beyond first-turn Q&A
+        //
+        // In fast mode or on the first turn, the system prompt stays clean.
+        // This prevents "Strategy: DiagnosticOnly" noise on simple questions.
+        let should_inject_plan = self.config.pev.is_some() && self.has_had_tool_calls();
+
+        if should_inject_plan {
+            request.system.push_str("\n\n");
+            request.system.push_str(&claim.render_for_prompt());
+            request.system.push_str("\n## Selected Execution Plan\n");
+            request.system.push_str(&format!(
+                "Strategy: {:?}\nRationale: {}\n",
+                selected_plan.strategy, selected_plan.rationale
+            ));
+        }
+
         if let Ok(Some(modified_system)) = self.extensions.on_before_request(&request.system).await {
             request.system = modified_system;
         }
@@ -1054,7 +1103,7 @@ fn evidence_from_tool(
 
 fn finalize_proof(
     governor: &Governor,
-    verifier: &Verifier,
+    verifier: &dyn VerifyStrategy,
     objective: Objective,
     claim: &mut ChangeClaim,
     selected_plan: CandidatePlan,
@@ -1065,11 +1114,35 @@ fn finalize_proof(
     risk: RiskReport,
     project_root: &std::path::Path,
 ) -> ProofPacket {
+    use crate::planner::{PlanSource, VerificationSource};
+    use crate::proof::ImplementationTier;
+    use std::collections::HashMap;
+
     let confidence = verifier.summarize_confidence(evidence, realized_edits);
     claim.confidence = confidence.clone();
     let unresolved_assumptions = verifier.unresolved_assumptions(&claim.assumptions, evidence);
     let modified_files: Vec<String> = realized_edits.iter().map(|edit| edit.path.clone()).collect();
     let rollback_checkpoint = governor.create_rollback_checkpoint(project_root, &modified_files);
+
+    // Record implementation tiers for provenance
+    let mut tiers = HashMap::new();
+    tiers.insert(
+        "planner".to_string(),
+        match selected_plan.plan_source {
+            PlanSource::Heuristic => ImplementationTier::Heuristic,
+            PlanSource::LlmStructured => ImplementationTier::LlmStructured,
+            PlanSource::UserSpecified => ImplementationTier::Heuristic,
+        },
+    );
+    tiers.insert(
+        "verifier".to_string(),
+        match verifier.source() {
+            VerificationSource::Heuristic => ImplementationTier::Heuristic,
+            VerificationSource::LlmStructured => ImplementationTier::LlmStructured,
+            VerificationSource::None => ImplementationTier::TypeOnly,
+        },
+    );
+    tiers.insert("governor".to_string(), ImplementationTier::Heuristic);
 
     ProofPacket {
         objective,
@@ -1083,6 +1156,7 @@ fn finalize_proof(
         risk,
         confidence,
         rollback_checkpoint,
+        tiers,
     }
 }
 
@@ -1284,6 +1358,7 @@ mod tests {
             expected_value: 0.9,
             estimated_cost: 0.4,
             verification_plan: vec![],
+            plan_source: crate::planner::PlanSource::Heuristic,
         };
         let previous_plan = CandidatePlan {
             strategy: StrategyKind::MinimalPatch,
@@ -1291,6 +1366,7 @@ mod tests {
             expected_value: 0.8,
             estimated_cost: 0.2,
             verification_plan: vec![],
+            plan_source: crate::planner::PlanSource::Heuristic,
         };
         let pivots = vec![PlanPivot {
             turn_number: 3,

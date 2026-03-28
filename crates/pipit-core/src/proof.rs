@@ -1,5 +1,33 @@
 use crate::planner::CandidatePlan;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Implementation tier for a subsystem — records provenance of confidence values.
+///
+/// Every reported confidence/score must carry its tier so post-hoc analysis
+/// can separate heuristic from LLM-derived measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImplementationTier {
+    /// Tier 0: Type defined but not yet implemented.
+    TypeOnly,
+    /// Tier 1: Rule-based heuristic, no LLM involved.
+    Heuristic,
+    /// Tier 2: Structured JSON output from an LLM role.
+    LlmStructured,
+    /// Tier 3: Tier 2 + empirically calibrated confidence scores.
+    Validated,
+}
+
+impl std::fmt::Display for ImplementationTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImplementationTier::TypeOnly => write!(f, "type-only"),
+            ImplementationTier::Heuristic => write!(f, "heuristic"),
+            ImplementationTier::LlmStructured => write!(f, "llm-structured"),
+            ImplementationTier::Validated => write!(f, "validated"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Objective {
@@ -178,6 +206,10 @@ pub struct ProofPacket {
     pub risk: crate::governor::RiskReport,
     pub confidence: ConfidenceReport,
     pub rollback_checkpoint: RollbackCheckpoint,
+    /// Implementation tier for each subsystem that contributed to this proof.
+    /// Keys: "planner", "verifier", "governor".
+    #[serde(default)]
+    pub tiers: HashMap<String, ImplementationTier>,
 }
 
 impl ChangeClaim {

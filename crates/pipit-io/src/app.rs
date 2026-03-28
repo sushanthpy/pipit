@@ -15,9 +15,10 @@
 //!   │ Tab commands · @file · !shell · Ctrl-J multiline   │
 //!   └───────────────────────────────────────────────────-┘
 
+use crate::composer::{self, Composer};
 use crate::tui::StatusBarState;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste},
+    event::{EnableBracketedPaste, DisableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -30,6 +31,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Lines displayed in the timeline (left pane: tool actions, plans, turns).
@@ -48,13 +50,11 @@ pub struct TuiState {
     pub activity_lines: Vec<ActivityLine>,
     /// Content lines (right pane): natural-language responses.
     pub content_lines: Vec<String>,
-    pub input_buffer: String,
-    pub cursor_pos: usize,
+    /// The rich input composer (replaces bare input_buffer).
+    pub composer: Composer,
     pub scroll_offset: u16,
     pub content_scroll_offset: u16,
     pub should_quit: bool,
-    /// When set, the input has been submitted and should be consumed.
-    pub submitted_input: Option<String>,
     /// Current streaming response text (in progress).
     pub streaming_text: String,
     /// Whether the agent is currently working.
@@ -69,20 +69,22 @@ pub struct TuiState {
     pub agent_mode: String,
     /// Whether the user has submitted at least one input.
     pub has_received_input: bool,
+    /// Frame counter for spinner animation (incremented every draw cycle).
+    pub spinner_frame: u64,
+    /// When the current working state began.
+    pub working_since: Option<std::time::Instant>,
 }
 
 impl TuiState {
-    pub fn new(status: StatusBarState) -> Self {
+    pub fn new(status: StatusBarState, project_root: PathBuf) -> Self {
         Self {
             status,
             activity_lines: Vec::new(),
             content_lines: Vec::new(),
-            input_buffer: String::new(),
-            cursor_pos: 0,
+            composer: Composer::new(project_root),
             scroll_offset: 0,
             content_scroll_offset: 0,
             should_quit: false,
-            submitted_input: None,
             streaming_text: String::new(),
             is_working: false,
             working_label: String::new(),
@@ -90,6 +92,8 @@ impl TuiState {
             phase_label: String::new(),
             agent_mode: "fast".to_string(),
             has_received_input: false,
+            spinner_frame: 0,
+            working_since: None,
         }
     }
 
@@ -97,8 +101,9 @@ impl TuiState {
     pub fn begin_working(&mut self, label: &str) {
         self.is_working = true;
         self.working_label = label.to_string();
-        self.phase_label = label.trim_end_matches('…').to_string();
-    }
+        self.phase_label = label.trim_end_matches('…').to_string();        if self.working_since.is_none() {
+            self.working_since = Some(std::time::Instant::now());
+        }    }
 
     /// Finish working — commit the streaming text to the content pane.
     pub fn finish_working(&mut self) {
@@ -110,6 +115,7 @@ impl TuiState {
         }
         self.is_working = false;
         self.working_label.clear();
+        self.working_since = None;
         self.auto_scroll_content();
     }
 
@@ -142,54 +148,46 @@ impl TuiState {
             self.content_scroll_offset = total.saturating_sub(10);
         }
     }
-
-    /// Handle a paste event.
-    pub fn handle_paste(&mut self, text: &str) {
-        let cleaned = text.replace('\n', " ").replace('\r', "");
-        let byte_pos = self.cursor_byte_pos();
-        self.input_buffer.insert_str(byte_pos, &cleaned);
-        self.cursor_pos += cleaned.chars().count();
-    }
-
-    fn cursor_byte_pos(&self) -> usize {
-        self.input_buffer
-            .char_indices()
-            .nth(self.cursor_pos)
-            .map(|(i, _)| i)
-            .unwrap_or(self.input_buffer.len())
-    }
-
-    pub fn visible_input(&self, max_chars: usize) -> (String, usize) {
-        let chars: Vec<char> = self.input_buffer.chars().collect();
-        let total = chars.len();
-        if total <= max_chars {
-            (self.input_buffer.clone(), self.cursor_pos)
-        } else {
-            let half = max_chars / 2;
-            let start = self.cursor_pos.saturating_sub(half);
-            let end = (start + max_chars).min(total);
-            let start = end.saturating_sub(max_chars);
-            let display: String = chars[start..end].iter().collect();
-            (display, self.cursor_pos - start)
-        }
-    }
 }
 
 pub type SharedTuiState = Arc<Mutex<TuiState>>;
 
 pub fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stderr>>> {
+    // Install panic hook BEFORE entering alternate screen so any panic
+    // during draw/event-handling restores the terminal instead of leaving
+    // it in a corrupted state (blank alt-screen, raw mode, hidden cursor).
+    let original_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        crate::set_tui_active(false);
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stderr(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
+        original_panic(info);
+    }));
+
     enable_raw_mode()?;
     let mut stderr = io::stderr();
     execute!(stderr, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Gate tracing output: any tracing events after this point are discarded
+    // so they don't corrupt the ratatui framebuffer.
+    crate::set_tui_active(true);
     let backend = CrosstermBackend::new(stderr);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
 
 pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -> io::Result<()> {
+    // Re-enable tracing output before leaving alternate screen.
+    crate::set_tui_active(false);
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+    // Restore the default panic hook so post-TUI panics behave normally.
+    let _ = std::panic::take_hook();
     Ok(())
 }
 
@@ -197,14 +195,15 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -
 pub fn draw(frame: &mut Frame, state: &TuiState) {
     let area = frame.area();
 
-    // Layout: status(2) | task/phase(1) | main_pane(flex) | input(3)
+    let composer_h = composer::composer_height(&state.composer);
+
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // status bar
-            Constraint::Length(1),  // task / phase strip
-            Constraint::Min(5),    // main pane (timeline | content)
-            Constraint::Length(3), // input bar
+            Constraint::Length(2),         // status bar
+            Constraint::Length(1),         // task / phase strip
+            Constraint::Min(5),            // main pane (timeline | content)
+            Constraint::Length(composer_h), // dynamic composer height
         ])
         .split(area);
 
@@ -212,7 +211,6 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
     draw_task_phase_strip(frame, vertical[1], state);
 
     if state.has_received_input {
-        // Split main pane: left timeline (30%) | right content (70%)
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -226,7 +224,11 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
         draw_welcome_pane(frame, vertical[2], state);
     }
 
-    draw_input_bar(frame, vertical[3], state);
+    // Draw the composer (replaces draw_input_bar)
+    composer::draw_composer(frame, vertical[3], &state.composer, state.is_working);
+
+    // Draw completion popup as overlay (must come LAST so it renders on top)
+    composer::draw_completion_popup(frame, vertical[3], &state.composer);
 }
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -347,11 +349,31 @@ fn draw_timeline_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     // Working indicator at bottom
     let mut display = lines;
     if state.is_working && !state.working_label.is_empty() {
+        const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+        let frame = (state.spinner_frame / 4) as usize % SPINNER.len();
+        let spinner_char = SPINNER[frame];
+
+        let elapsed = state.working_since
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        let elapsed_str = if elapsed > 0 {
+            format!(" {}s", elapsed)
+        } else {
+            String::new()
+        };
+
         display.push(Line::from(vec![
-            Span::styled(" ⟳ ", Style::default().fg(Color::Cyan)),
             Span::styled(
-                &state.working_label,
+                format!(" {} ", spinner_char),
                 Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                state.working_label.clone(),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                elapsed_str,
+                Style::default().fg(Color::DarkGray),
             ),
         ]));
     }
@@ -394,6 +416,26 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
             all_lines.push(Line::from(Span::styled(
                 format!(" {}", line),
                 Style::default().fg(Color::White),
+            )));
+        }
+    }
+
+    // Show thinking indicator when working with no content yet
+    if state.is_working && all_lines.is_empty() {
+        const DOTS: &[&str] = &["   ", ".  ", ".. ", "..."];
+        let frame = (state.spinner_frame / 8) as usize % DOTS.len();
+        all_lines.push(Line::from(Span::styled(
+            format!(" thinking{}", DOTS[frame]),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else if state.is_working && state.streaming_text.is_empty() {
+        let elapsed = state.working_since
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        if elapsed > 1 {
+            all_lines.push(Line::from(Span::styled(
+                format!(" generating response\u{2026} {}s", elapsed),
+                Style::default().fg(Color::DarkGray),
             )));
         }
     }
@@ -479,137 +521,50 @@ fn draw_welcome_pane(frame: &mut Frame, area: Rect, _state: &TuiState) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_input_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let prompt = "you› ";
-    let max_visible = (area.width as usize).saturating_sub(prompt.len() + 2);
-    let (display_text, cursor_display_pos) = state.visible_input(max_visible);
-
-    let line = Line::from(vec![
-        Span::styled(prompt, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw(&display_text),
-    ]);
-
-    let hint_text = if state.is_working {
-        " Esc stop · /help · Ctrl-C quit"
-    } else {
-        " /help · @file · !shell · Esc cancel · Ctrl-C quit"
-    };
-
-    let hint_line = Line::from(Span::styled(
-        hint_text,
-        Style::default().fg(Color::DarkGray),
-    ));
-
-    let text = ratatui::text::Text::from(vec![line, hint_line]);
-    let paragraph = Paragraph::new(text).block(Block::default());
-    frame.render_widget(paragraph, area);
-
-    let cursor_x = area.x + prompt.len() as u16 + cursor_display_pos as u16;
-    let cursor_y = area.y;
-    frame.set_cursor_position((cursor_x, cursor_y));
-}
-
 /// Handle a key event, updating state. Returns true if the event was consumed.
 pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
-    // Only handle Press and Repeat — ignore Release events (crossterm 0.26+ on macOS)
     if key.kind == KeyEventKind::Release {
         return false;
     }
 
+    // Ctrl-C / Ctrl-D: quit (always handled at top level)
     match key.code {
-        KeyCode::Enter => {
-            if !state.input_buffer.is_empty() {
-                let input = state.input_buffer.clone();
-                state.input_buffer.clear();
-                state.cursor_pos = 0;
-
-                // Set task label from first input
-                if !state.has_received_input {
-                    state.has_received_input = true;
-                    state.task_label = if input.len() > 80 {
-                        format!("{}…", &input.chars().take(78).collect::<String>())
-                    } else {
-                        input.clone()
-                    };
-                    // Clear welcome content
-                    state.content_lines.clear();
-                }
-
-                let display = if input.len() > 120 {
-                    format!("{}… [{} chars]", &input.chars().take(100).collect::<String>(), input.chars().count())
-                } else {
-                    input.clone()
-                };
-                state.push_activity("›", Color::Green, display);
-                state.submitted_input = Some(input);
-            }
-            true
-        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_quit = true;
-            true
+            return true;
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_quit = true;
-            true
+            return true;
         }
-        KeyCode::Char(c) => {
-            let byte_pos = state.cursor_byte_pos();
-            state.input_buffer.insert(byte_pos, c);
-            state.cursor_pos += 1;
-            true
-        }
-        KeyCode::Backspace => {
-            if state.cursor_pos > 0 {
-                state.cursor_pos -= 1;
-                let byte_pos = state.cursor_byte_pos();
-                if let Some((_, ch)) = state.input_buffer.char_indices().nth(state.cursor_pos) {
-                    state.input_buffer.drain(byte_pos..byte_pos + ch.len_utf8());
-                }
-            }
-            true
-        }
-        KeyCode::Delete => {
-            let char_count = state.input_buffer.chars().count();
-            if state.cursor_pos < char_count {
-                let byte_pos = state.cursor_byte_pos();
-                if let Some((_, ch)) = state.input_buffer.char_indices().nth(state.cursor_pos) {
-                    state.input_buffer.drain(byte_pos..byte_pos + ch.len_utf8());
-                }
-            }
-            true
-        }
-        KeyCode::Left => {
-            if state.cursor_pos > 0 { state.cursor_pos -= 1; }
-            true
-        }
-        KeyCode::Right => {
-            let c = state.input_buffer.chars().count();
-            if state.cursor_pos < c { state.cursor_pos += 1; }
-            true
-        }
-        KeyCode::Home => { state.cursor_pos = 0; true }
-        KeyCode::End => {
-            state.cursor_pos = state.input_buffer.chars().count();
-            true
-        }
-        KeyCode::Up | KeyCode::PageUp => {
-            // Scroll timeline up
-            if state.scroll_offset > 0 {
-                state.scroll_offset = state.scroll_offset.saturating_sub(
-                    if key.code == KeyCode::PageUp { 10 } else { 1 }
-                );
-            }
-            true
-        }
-        KeyCode::Down | KeyCode::PageDown => {
-            let max = state.activity_lines.len() as u16;
-            let delta = if key.code == KeyCode::PageDown { 10 } else { 1 };
-            state.scroll_offset = (state.scroll_offset + delta).min(max);
-            true
-        }
-        _ => false,
+        _ => {}
     }
+
+    // Content pane scrolling: Alt-Up/Down
+    match key.code {
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(1);
+            return true;
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            let max = state.content_lines.len() as u16;
+            state.content_scroll_offset = (state.content_scroll_offset + 1).min(max);
+            return true;
+        }
+        KeyCode::PageUp if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(10);
+            return true;
+        }
+        KeyCode::PageDown if key.modifiers.contains(KeyModifiers::ALT) => {
+            let max = state.content_lines.len() as u16;
+            state.content_scroll_offset = (state.content_scroll_offset + 10).min(max);
+            return true;
+        }
+        _ => {}
+    }
+
+    // Delegate to the composer
+    state.composer.handle_key(key)
 }
 
 fn truncate_str(s: &str, max: usize) -> String {

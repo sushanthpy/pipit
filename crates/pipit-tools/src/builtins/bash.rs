@@ -2,6 +2,7 @@ use crate::{Tool, ToolContext, ToolError, ToolResult, ToolDisplay};
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -100,9 +101,77 @@ impl Tool for BashTool {
             }
         }
 
+        // ── cd interception: persist directory changes across calls ──
+        //
+        // Each bash call spawns a fresh subprocess, so `cd /foo` doesn't
+        // persist. We intercept pure `cd` commands and update ctx.cwd.
+        let effective_cwd = ctx.current_dir();
+        let trimmed_cmd = command.trim();
+
+        // Pure cd command: `cd /path` (no &&, ;, or |)
+        if trimmed_cmd == "cd"
+            || (trimmed_cmd.starts_with("cd ")
+                && !trimmed_cmd.contains("&&")
+                && !trimmed_cmd.contains(';')
+                && !trimmed_cmd.contains('|'))
+        {
+            let target = if trimmed_cmd == "cd" {
+                // Bare `cd` → home directory
+                std::env::var("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| ctx.project_root.clone())
+            } else {
+                let path_arg = trimmed_cmd.strip_prefix("cd ").unwrap().trim();
+                let path_arg = path_arg.trim_matches('"').trim_matches('\'');
+
+                // Expand ~ to home
+                let expanded = if path_arg.starts_with("~/") || path_arg == "~" {
+                    if let Ok(home) = std::env::var("HOME") {
+                        PathBuf::from(home).join(path_arg.strip_prefix("~/").unwrap_or(""))
+                    } else {
+                        PathBuf::from(path_arg)
+                    }
+                } else {
+                    PathBuf::from(path_arg)
+                };
+
+                // Resolve relative to current cwd
+                if expanded.is_absolute() {
+                    expanded
+                } else {
+                    effective_cwd.join(&expanded)
+                }
+            };
+
+            // Canonicalize (resolve .., symlinks)
+            let resolved = match target.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    return Ok(ToolResult::text(format!(
+                        "cd: {}: {}",
+                        target.display(),
+                        e
+                    )));
+                }
+            };
+
+            if !resolved.is_dir() {
+                return Ok(ToolResult::text(format!(
+                    "cd: {}: No such directory",
+                    resolved.display()
+                )));
+            }
+
+            ctx.set_cwd(resolved.clone());
+            return Ok(ToolResult::text(format!(
+                "Changed directory to {}",
+                resolved.display()
+            )));
+        }
+
         // #23: Use sandbox for command execution when available
         let sandbox_config = super::sandbox::load_sandbox_config(&ctx.project_root);
-        let mut child_cmd = super::sandbox::sandboxed_command(command, &ctx.project_root, &sandbox_config);
+        let mut child_cmd = super::sandbox::sandboxed_command(command, &effective_cwd, &sandbox_config);
         child_cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());

@@ -12,6 +12,31 @@ pub enum StrategyKind {
     CharacterizationFirst,
 }
 
+/// Provenance of a plan — distinguishes heuristic from LLM-generated plans.
+///
+/// # Implementation Tier
+/// Tier 2: type-level encoding of plan provenance for proof packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanSource {
+    /// Keyword heuristic over objective text + evidence pattern matching.
+    Heuristic,
+    /// Structured JSON response from an LLM planner role.
+    LlmStructured,
+    /// User-provided plan (from /plan command or conventions).
+    UserSpecified,
+}
+
+/// Provenance of a verification verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerificationSource {
+    /// Weighted average of evidence artifact pass rates.
+    Heuristic,
+    /// Structured JSON verdict from an LLM verifier role.
+    LlmStructured,
+    /// No verification performed (Fast mode).
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CandidatePlan {
     pub strategy: StrategyKind,
@@ -19,7 +44,98 @@ pub struct CandidatePlan {
     pub expected_value: f32,
     pub estimated_cost: f32,
     pub verification_plan: Vec<VerificationStep>,
+    #[serde(default = "default_plan_source")]
+    pub plan_source: PlanSource,
 }
+
+fn default_plan_source() -> PlanSource {
+    PlanSource::Heuristic
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Strategy traits — polymorphic planner / verifier dispatch
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Trait for plan generation strategy. Implemented by heuristic, LLM, and null planners.
+pub trait PlanStrategy: Send + Sync {
+    fn candidate_plans(
+        &self,
+        objective: &Objective,
+        confidence: &ConfidenceReport,
+        evidence: &[EvidenceArtifact],
+    ) -> Vec<CandidatePlan>;
+
+    fn select_plan(
+        &self,
+        objective: &Objective,
+        confidence: &ConfidenceReport,
+        evidence: &[EvidenceArtifact],
+    ) -> CandidatePlan {
+        self.candidate_plans(objective, confidence, evidence)
+            .into_iter()
+            .next()
+            .unwrap_or(CandidatePlan {
+                strategy: StrategyKind::MinimalPatch,
+                rationale: "Fallback plan.".to_string(),
+                expected_value: 0.5,
+                estimated_cost: 0.5,
+                verification_plan: Vec::new(),
+                plan_source: PlanSource::Heuristic,
+            })
+    }
+
+    fn source(&self) -> PlanSource;
+}
+
+/// Trait for verification strategy. Implemented by heuristic, LLM, and null verifiers.
+pub trait VerifyStrategy: Send + Sync {
+    fn summarize_confidence(
+        &self,
+        evidence: &[EvidenceArtifact],
+        edits: &[crate::proof::RealizedEdit],
+    ) -> ConfidenceReport;
+
+    fn unresolved_assumptions(
+        &self,
+        assumptions: &[crate::proof::Assumption],
+        evidence: &[EvidenceArtifact],
+    ) -> Vec<crate::proof::Assumption>;
+
+    fn source(&self) -> VerificationSource;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NullPlanner — Fast mode: returns MinimalPatch immediately, zero overhead
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Default)]
+pub struct NullPlanner;
+
+impl PlanStrategy for NullPlanner {
+    fn candidate_plans(
+        &self,
+        _objective: &Objective,
+        _confidence: &ConfidenceReport,
+        _evidence: &[EvidenceArtifact],
+    ) -> Vec<CandidatePlan> {
+        vec![CandidatePlan {
+            strategy: StrategyKind::MinimalPatch,
+            rationale: "Fast mode — direct execution.".to_string(),
+            expected_value: 0.5,
+            estimated_cost: 0.1,
+            verification_plan: Vec::new(),
+            plan_source: PlanSource::Heuristic,
+        }]
+    }
+
+    fn source(&self) -> PlanSource {
+        PlanSource::Heuristic
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HeuristicPlanner — Balanced mode: keyword-driven strategy selection
+// ═══════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Default)]
 pub struct Planner;
@@ -74,6 +190,7 @@ impl Planner {
             verification_plan: vec![VerificationStep {
                 description: "Run the narrowest command or test that directly checks the requested behavior.".to_string(),
             }],
+            plan_source: PlanSource::Heuristic,
         });
 
         plans.push(CandidatePlan {
@@ -89,6 +206,7 @@ impl Planner {
                     description: "Verify behavior with a runtime command or focused test after the change.".to_string(),
                 },
             ],
+            plan_source: PlanSource::Heuristic,
         });
 
         plans.push(CandidatePlan {
@@ -121,6 +239,7 @@ impl Planner {
                     description: "Re-run those checks after the change and compare outputs.".to_string(),
                 },
             ],
+            plan_source: PlanSource::Heuristic,
         });
 
         if mentions_refactor {
@@ -132,6 +251,7 @@ impl Planner {
                 verification_plan: vec![VerificationStep {
                     description: "Confirm public behavior and boundaries still hold after the structural change.".to_string(),
                 }],
+                plan_source: PlanSource::Heuristic,
             });
         }
 
@@ -147,6 +267,7 @@ impl Planner {
             verification_plan: vec![VerificationStep {
                 description: "Collect evidence without mutating if the state remains too uncertain.".to_string(),
             }],
+            plan_source: PlanSource::Heuristic,
         });
 
         plans.sort_by(|a, b| {
@@ -182,7 +303,23 @@ impl Planner {
                 expected_value: 0.5,
                 estimated_cost: 0.5,
                 verification_plan: Vec::new(),
+                plan_source: PlanSource::Heuristic,
             })
+    }
+}
+
+impl PlanStrategy for Planner {
+    fn candidate_plans(
+        &self,
+        objective: &Objective,
+        confidence: &ConfidenceReport,
+        evidence: &[EvidenceArtifact],
+    ) -> Vec<CandidatePlan> {
+        self.candidate_plans_with_evidence(objective, confidence, evidence)
+    }
+
+    fn source(&self) -> PlanSource {
+        PlanSource::Heuristic
     }
 }
 
@@ -274,5 +411,148 @@ mod tests {
         let selected = planner.select_plan_with_evidence(&objective(), &confidence, &[]);
 
         assert_eq!(selected.strategy, StrategyKind::MinimalPatch);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Q&A classifier
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Quick classifier: is this prompt a question/information request
+/// rather than a coding task?
+///
+/// Used to short-circuit the planning system for Q&A. This avoids injecting
+/// "Strategy: DiagnosticOnly" into the system prompt when the user asks
+/// "what is this code" or "explain this function", which causes the model
+/// to wander through file-discovery instead of answering directly.
+///
+/// Errs on the side of NOT classifying as Q&A — if in doubt, returns false.
+pub fn is_question_task(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let trimmed = lower.trim();
+
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // Ends with a question mark — strong signal
+    if trimmed.ends_with('?') {
+        return true;
+    }
+
+    // Starts with a question word
+    const QUESTION_STARTERS: &[&str] = &[
+        "what ", "what's ", "whats ",
+        "how ", "how's ",
+        "why ", "where ", "when ", "which ",
+        "who ", "whom ",
+        "can you explain", "could you explain",
+        "explain ", "describe ",
+        "tell me", "show me",
+        "is there", "are there",
+        "does ", "do you know",
+        "what is", "what are",
+        "how do ", "how does ",
+        "how can ", "how should ",
+        "what do ", "what does ",
+    ];
+
+    if QUESTION_STARTERS.iter().any(|q| trimmed.starts_with(q)) {
+        // Check for action verbs that override the question form
+        // e.g., "can you fix the bug" is a task, not a question
+        const TASK_VERBS_IN_QUESTIONS: &[&str] = &[
+            "fix", "add", "create", "write", "edit", "change",
+            "update", "refactor", "implement", "build", "delete",
+            "remove", "modify", "replace", "move", "rename",
+            "install", "deploy", "configure", "set up",
+        ];
+
+        if TASK_VERBS_IN_QUESTIONS.iter().any(|v| trimmed.contains(v)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    // Short prompts (≤8 words) without action verbs are likely Q&A
+    let word_count = trimmed.split_whitespace().count();
+    if word_count <= 8 {
+        const ACTION_WORDS: &[&str] = &[
+            "fix", "add", "create", "write", "edit", "change",
+            "update", "refactor", "implement", "build", "delete",
+            "remove", "modify", "replace", "move", "rename",
+            "install", "deploy", "run", "execute", "test",
+            "debug", "optimize", "migrate", "convert",
+        ];
+
+        if !ACTION_WORDS.iter().any(|w| {
+            trimmed.split_whitespace().any(|token| token == *w)
+        }) {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(test)]
+mod question_task_tests {
+    use super::is_question_task;
+
+    #[test]
+    fn question_mark_is_question() {
+        assert!(is_question_task("what files are in this project?"));
+        assert!(is_question_task("how does the auth system work?"));
+    }
+
+    #[test]
+    fn question_starters_are_questions() {
+        assert!(is_question_task("what is this code"));
+        assert!(is_question_task("explain the architecture"));
+        assert!(is_question_task("how does the agent loop work"));
+        assert!(is_question_task("where is the main function defined"));
+        assert!(is_question_task("show me the config file"));
+        assert!(is_question_task("describe the project structure"));
+    }
+
+    #[test]
+    fn short_prompts_without_actions_are_questions() {
+        assert!(is_question_task("current directory"));
+        assert!(is_question_task("list of dependencies"));
+        assert!(is_question_task("project overview"));
+        assert!(is_question_task("status"));
+    }
+
+    #[test]
+    fn task_verbs_override_question_form() {
+        assert!(!is_question_task("can you fix the bug in main.rs"));
+        assert!(!is_question_task("how should I implement the cache"));
+        assert!(!is_question_task("explain and then fix the failing test"));
+    }
+
+    #[test]
+    fn action_prompts_are_not_questions() {
+        assert!(!is_question_task("fix the panic on line 42"));
+        assert!(!is_question_task("add a new endpoint for /api/users"));
+        assert!(!is_question_task("refactor the database module"));
+        assert!(!is_question_task("create a migration for the users table"));
+        assert!(!is_question_task("run the test suite and fix failures"));
+        assert!(!is_question_task("implement retry logic for the HTTP client"));
+    }
+
+    #[test]
+    fn empty_prompt_is_not_question() {
+        assert!(!is_question_task(""));
+        assert!(!is_question_task("   "));
+    }
+
+    #[test]
+    fn longer_action_prompts_are_not_questions() {
+        assert!(!is_question_task(
+            "update the config parser to support nested TOML tables with array values"
+        ));
+        assert!(!is_question_task(
+            "write a comprehensive test suite for the authentication middleware"
+        ));
     }
 }

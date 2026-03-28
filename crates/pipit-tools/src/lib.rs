@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -56,7 +57,9 @@ pub trait Tool: Send + Sync {
 /// Context passed to every tool execution.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
-    pub cwd: PathBuf,
+    /// Current working directory — updated by `cd` commands in bash.
+    /// Uses interior mutability so bash tool can update it through `&ToolContext`.
+    pub cwd: Arc<Mutex<PathBuf>>,
     pub project_root: PathBuf,
     pub approval_mode: ApprovalMode,
 }
@@ -64,10 +67,20 @@ pub struct ToolContext {
 impl ToolContext {
     pub fn new(project_root: PathBuf, approval_mode: ApprovalMode) -> Self {
         Self {
-            cwd: project_root.clone(),
+            cwd: Arc::new(Mutex::new(project_root.clone())),
             project_root,
             approval_mode,
         }
+    }
+
+    /// Get the current working directory.
+    pub fn current_dir(&self) -> PathBuf {
+        self.cwd.lock().unwrap().clone()
+    }
+
+    /// Update the current working directory (called by bash tool on `cd`).
+    pub fn set_cwd(&self, new_cwd: PathBuf) {
+        *self.cwd.lock().unwrap() = new_cwd;
     }
 }
 

@@ -1,0 +1,195 @@
+use anyhow::Result;
+use pipit_config::{ApprovalMode, ProviderKind};
+
+pub fn run() -> Result<()> {
+    use std::io::{self, Write};
+
+    let config_path = pipit_config::user_config_path()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
+
+    println!();
+    println!("  \x1b[1;33mpipit setup\x1b[0m");
+    println!("  \x1b[90mInteractive configuration wizard\x1b[0m");
+    println!();
+
+    if config_path.exists() {
+        println!("  \x1b[90mExisting config:\x1b[0m {}", config_path.display());
+        print!("  Overwrite? [y/N] ");
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("  Aborted.");
+            return Ok(());
+        }
+        println!();
+    }
+
+    // Provider
+    println!("  \x1b[1mProvider\x1b[0m");
+    println!("  \x1b[90mSupported: anthropic, openai, deepseek, google, openrouter,\x1b[0m");
+    println!("  \x1b[90m           ollama, groq, cerebras, mistral, xai, openai_compatible\x1b[0m");
+    println!();
+    let provider_str = prompt_input("  Provider [anthropic]: ")?;
+    let provider_str = if provider_str.is_empty() { "anthropic".to_string() } else { provider_str };
+    let provider_kind: ProviderKind = provider_str.parse()
+        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+    println!();
+
+    // Model
+    let default_model = default_model_for_provider(provider_kind);
+    println!("  \x1b[1mModel\x1b[0m");
+    let model_str = prompt_input(&format!("  Model [{}]: ", default_model))?;
+    let model = if model_str.is_empty() { default_model.to_string() } else { model_str };
+    println!();
+
+    // Base URL (for compatible/ollama/custom)
+    let base_url = if needs_base_url(provider_kind) {
+        let default_url = default_base_url(provider_kind);
+        println!("  \x1b[1mBase URL\x1b[0m");
+        let url = prompt_input(&format!("  Endpoint URL [{}]: ", default_url))?;
+        let url = if url.is_empty() { default_url.to_string() } else { url };
+        println!();
+        Some(url)
+    } else {
+        None
+    };
+
+    // API key
+    println!("  \x1b[1mAPI Key\x1b[0m");
+    if provider_kind == ProviderKind::Ollama {
+        println!("  \x1b[90mOllama doesn't need an API key\x1b[0m");
+        println!();
+    } else {
+        let existing = pipit_config::resolve_api_key(provider_kind);
+        if existing.is_some() {
+            println!("  \x1b[32m✓ Key already configured\x1b[0m (via env var or credentials)");
+            println!();
+        } else {
+            println!("  \x1b[90mEnter key or leave blank to set later.\x1b[0m");
+            println!("  \x1b[90mYou can also use: export {}=<key>\x1b[0m", env_var_for_provider(provider_kind));
+            let key = prompt_input("  API Key: ")?;
+            if !key.is_empty() {
+                let mut store = pipit_config::CredentialStore::load();
+                store.set(&provider_kind.to_string(), pipit_config::StoredCredential::ApiKey { api_key: key });
+                store.save()
+                    .map_err(|e| anyhow::anyhow!("Failed to save credentials: {}", e))?;
+                println!("  \x1b[32m✓ Key saved to ~/.pipit/credentials.json\x1b[0m");
+            }
+            println!();
+        }
+    }
+
+    // Approval mode
+    println!("  \x1b[1mApproval Mode\x1b[0m");
+    println!("  \x1b[90m  suggest     — read-only, ask before every change\x1b[0m");
+    println!("  \x1b[90m  auto_edit   — auto-apply edits, ask for commands\x1b[0m");
+    println!("  \x1b[90m  full_auto   — autonomous, no confirmation needed\x1b[0m");
+    let approval_str = prompt_input("  Approval mode [full_auto]: ")?;
+    let approval_str = if approval_str.is_empty() { "full_auto".to_string() } else { approval_str };
+    let approval: ApprovalMode = approval_str.parse()
+        .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+    println!();
+
+    // Max turns
+    println!("  \x1b[1mMax Turns\x1b[0m");
+    println!("  \x1b[90mMax agent turns per prompt (0 = unlimited)\x1b[0m");
+    let turns_str = prompt_input("  Max turns [25]: ")?;
+    let max_turns: u32 = if turns_str.is_empty() { 25 } else {
+        turns_str.parse().map_err(|_| anyhow::anyhow!("Invalid number: {}", turns_str))?
+    };
+    println!();
+
+    // Build config layer
+    let layer = pipit_config::PipitConfigLayer {
+        provider: Some(pipit_config::ProviderConfigLayer {
+            default: Some(provider_kind),
+            base_url: base_url.clone(),
+        }),
+        model: Some(pipit_config::ModelConfigLayer {
+            default_model: Some(model.clone()),
+            context_window: None,
+            max_output_tokens: None,
+        }),
+        approval: Some(approval),
+        context: Some(pipit_config::ContextConfigLayer {
+            max_turns: Some(max_turns),
+            ..Default::default()
+        }),
+        pricing: None,
+    };
+
+    pipit_config::write_user_config(&layer)
+        .map_err(|e| anyhow::anyhow!("Failed to write config: {}", e))?;
+
+    println!("  \x1b[32m✓ Config saved to {}\x1b[0m", config_path.display());
+    println!();
+    println!("  \x1b[1mSummary\x1b[0m");
+    println!("  \x1b[90m  Provider:  \x1b[0m {}", provider_kind);
+    println!("  \x1b[90m  Model:     \x1b[0m {}", model);
+    if let Some(url) = &base_url {
+        println!("  \x1b[90m  Base URL:  \x1b[0m {}", url);
+    }
+    println!("  \x1b[90m  Approval:  \x1b[0m {}", approval);
+    println!("  \x1b[90m  Max turns: \x1b[0m {}", max_turns);
+    println!();
+    println!("  Run \x1b[1mpipit\x1b[0m to start coding!");
+    println!();
+
+    Ok(())
+}
+
+fn prompt_input(prompt: &str) -> Result<String> {
+    use std::io::{self, Write};
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim().to_string())
+}
+
+fn default_model_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "claude-sonnet-4-20250514",
+        ProviderKind::OpenAi => "gpt-4o",
+        ProviderKind::DeepSeek => "deepseek-chat",
+        ProviderKind::Google => "gemini-2.5-flash",
+        ProviderKind::OpenRouter => "anthropic/claude-sonnet-4-20250514",
+        ProviderKind::XAi => "grok-3",
+        ProviderKind::Cerebras => "llama-4-scout-17b-16e-instruct",
+        ProviderKind::Groq => "llama-4-scout-17b-16e-instruct",
+        ProviderKind::Mistral => "mistral-large-latest",
+        ProviderKind::Ollama => "qwen2.5-coder:14b",
+        ProviderKind::OpenAiCompatible => "default",
+    }
+}
+
+fn needs_base_url(provider: ProviderKind) -> bool {
+    matches!(provider,
+        ProviderKind::OpenAiCompatible
+        | ProviderKind::AnthropicCompatible
+        | ProviderKind::Ollama
+    )
+}
+
+fn default_base_url(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Ollama => "http://localhost:11434",
+        _ => "http://localhost:8000",
+    }
+}
+
+fn env_var_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
+        ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::XAi => "XAI_API_KEY",
+        ProviderKind::Cerebras => "CEREBRAS_API_KEY",
+        ProviderKind::Groq => "GROQ_API_KEY",
+        ProviderKind::Mistral => "MISTRAL_API_KEY",
+        ProviderKind::Ollama => "OLLAMA_API_KEY",
+    }
+}
