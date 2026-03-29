@@ -89,6 +89,9 @@ fn apply_env_overrides(config: &mut PipitConfig) {
             config.context.max_turns = n;
         }
     }
+    if let Ok(val) = std::env::var("PIPIT_BASE_URL") {
+        config.provider.custom_base_url = Some(val);
+    }
 }
 
 fn apply_cli_overrides(config: &mut PipitConfig, overrides: CliOverrides) {

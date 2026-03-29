@@ -12,10 +12,22 @@ members = [
     "crates/pipit-io",
     "crates/pipit-config",
     "crates/pipit-skills",
+    "crates/pipit-channel",
+    "crates/pipit-daemon",
+    "crates/pipit-agent-mesh",
+    "crates/pipit-spec",
+    "crates/pipit-test-universe",
+    "crates/pipit-compliance",
+    "crates/pipit-arch-evolution",
+    "crates/pipit-evolve",
+    "crates/pipit-verify",
+    "crates/pipit-hw-codesign",
+    "crates/pipit-perf",
+    "crates/pipit-env",
 ]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
@@ -26,6 +38,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-stream = "0.1"
 futures = "0.3"
+async-stream = "0.3"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "json"] }
@@ -88,6 +101,29 @@ async-trait = "0.1"
 
 # Bytes
 bytes = "1"
+
+# Unicode
+unicode-width = "0.2"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Embedded KV store
+sled = "0.34"
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Cron
+cron = "0.15"
+
+# Unix
+libc = "0.2"
+
+# Random
+rand = "0.8"
 
 [profile.release]
 lto = true

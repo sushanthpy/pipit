@@ -1,4 +1,5 @@
 use pipit_config::{ApprovalMode, ProviderKind};
+use pipit_context::knowledge_injection;
 use pipit_skills::SkillRegistry;
 use pipit_tools::ToolRegistry;
 use std::path::Path;
@@ -155,6 +156,33 @@ You have these tools. Choose the RIGHT one on the FIRST try:
     // Skills + workflow assets
     prompt.push_str(&skills.prompt_section());
     prompt.push_str(&workflow_assets.prompt_section());
+
+    // Knowledge injection — past experience from completed tasks
+    // Injected automatically if knowledge units are available
+    let knowledge_dir = project_root.join(".pipit").join("knowledge");
+    if knowledge_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&knowledge_dir) {
+            let mut units: Vec<knowledge_injection::InjectedKnowledge> = Vec::new();
+            for entry in entries.flatten() {
+                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(unit) = serde_json::from_str::<knowledge_injection::InjectedKnowledge>(&content) {
+                            units.push(unit);
+                        }
+                    }
+                }
+            }
+            if !units.is_empty() {
+                let preamble = knowledge_injection::format_knowledge_preamble(
+                    &units,
+                    knowledge_injection::DEFAULT_KNOWLEDGE_BUDGET_TOKENS,
+                );
+                if !preamble.is_empty() {
+                    prompt.push_str(&preamble);
+                }
+            }
+        }
+    }
 
     prompt
 }

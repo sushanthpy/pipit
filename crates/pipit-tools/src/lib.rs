@@ -1,7 +1,9 @@
 pub mod registry;
 pub mod builtins;
+pub mod mcp;
 
 pub use registry::*;
+pub use mcp::{McpConfig, McpManager, McpClient, load_mcp_config};
 
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;

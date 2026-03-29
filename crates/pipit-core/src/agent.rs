@@ -127,6 +127,11 @@ impl AgentLoop {
         self.repo_map = Some(map);
     }
 
+    /// Borrow the context manager (for serialization / inspection).
+    pub fn context(&self) -> &ContextManager {
+        &self.context
+    }
+
     /// Whether any tool calls have been executed in the current context.
     /// Used to distinguish first-turn Q&A from multi-turn coding tasks.
     fn has_had_tool_calls(&self) -> bool {
@@ -187,15 +192,18 @@ impl AgentLoop {
         let mut risk = RiskReport::default();
         let mut plan_pivots = Vec::new();
 
-        // Short-circuit planning for Q&A tasks.
-        // Questions like "what is this code" don't need DiagnosticOnly noise.
+        // Short-circuit planning only for pure Q&A tasks.
+        // Questions like "what is this code" don't need strategy selection.
+        // But for all coding tasks (including fast mode), the heuristic planner
+        // must run — it selects CharacterizationFirst for test-related tasks,
+        // MinimalPatch for simple fixes, etc. This is critical for edit quality.
         let is_qa = crate::planner::is_question_task(&processed);
 
         let mut candidate_plans: Vec<CandidatePlan>;
         let mut selected_plan: CandidatePlan;
 
-        if is_qa || self.config.pev.is_none() {
-            // Fast path: trivial plan, no noise
+        if is_qa {
+            // Pure Q&A: trivial plan, no noise
             selected_plan = CandidatePlan {
                 strategy: crate::planner::StrategyKind::MinimalPatch,
                 rationale: "Direct response.".to_string(),
@@ -206,7 +214,7 @@ impl AgentLoop {
             };
             candidate_plans = vec![selected_plan.clone()];
         } else {
-            // Normal planning flow for PEV modes
+            // Normal planning flow (heuristic planner for all modes)
             candidate_plans =
                 planner.candidate_plans(&objective, &claim.confidence, &evidence);
             selected_plan =
@@ -260,6 +268,12 @@ impl AgentLoop {
             // Check turn limit
             turn += 1;
             if turn > self.config.max_turns {
+                let usage = self.context.token_usage();
+                self.emit(AgentEvent::TokenUsageUpdate {
+                    used: usage.total,
+                    limit: usage.limit,
+                    cost: usage.cost,
+                });
                 return AgentOutcome::MaxTurnsReached(turn);
             }
 
@@ -291,6 +305,7 @@ impl AgentLoop {
                 self.update_planning_state(&selected_plan, &candidate_plans, &plan_pivots);
             }
             // Stream the LLM response
+            self.emit(AgentEvent::Waiting { label: "Sending to model\u{2026}".to_string() });
             let response = match self
                 .stream_response_with_recovery(
                     &claim,
@@ -370,10 +385,37 @@ impl AgentLoop {
                     };
                 }
                 StopReason::ToolUse => {
-                    // Execute tool calls
+                    // Execute tool calls with turn-level timeout
                     let tool_calls = response.tool_calls.clone();
-                    let (results, modified_files, artifacts, edits, tool_risk) =
-                        self.execute_tools(&tool_calls, cancel.clone(), &governor, &claim.confidence).await;
+                    let turn_timeout = std::time::Duration::from_secs(
+                        self.config.tool_timeout_secs.max(30) * (tool_calls.len() as u64).max(1)
+                    );
+                    let tool_future = self.execute_tools(
+                        &tool_calls, cancel.clone(), &governor, &claim.confidence
+                    );
+                    let (results, modified_files, artifacts, edits, tool_risk) = tokio::select! {
+                        result = tool_future => result,
+                        _ = tokio::time::sleep(turn_timeout) => {
+                            self.emit(AgentEvent::ProviderError {
+                                error: format!("Tool execution timed out after {}s", turn_timeout.as_secs()),
+                                will_retry: false,
+                            });
+                            // Push timeout error as tool results so the agent knows what happened
+                            for call in &tool_calls {
+                                self.context.push_tool_result(
+                                    &call.call_id,
+                                    &format!("TIMEOUT: Tool execution exceeded {}s. The command may still be running. Try a different approach or break the task into smaller steps.", turn_timeout.as_secs()),
+                                    true,
+                                );
+                            }
+                            self.emit(AgentEvent::TurnEnd {
+                                turn_number: turn,
+                                reason: TurnEndReason::Error,
+                            });
+                            turn += 1;
+                            continue;
+                        }
+                    };
                     evidence.extend(artifacts);
                     realized_edits.extend(edits);
                     if tool_risk.score > risk.score {
@@ -438,7 +480,7 @@ impl AgentLoop {
                         self.consecutive_loop_hits = 0;
                     }
 
-                    // Push tool results to context
+                    // Push tool results to context (with truncation)
                     for (call_id, result) in results {
                         let (content, is_error) = match &result {
                             ToolCallOutcome::Success { content, .. } => {
@@ -451,9 +493,7 @@ impl AgentLoop {
                                 (message.clone(), true)
                             }
                         };
-                        self.context.push_message(
-                            Message::tool_result(&call_id, &content, is_error),
-                        );
+                        self.context.push_tool_result(&call_id, &content, is_error);
                     }
 
                     self.emit(AgentEvent::TurnEnd {
@@ -466,6 +506,7 @@ impl AgentLoop {
 
                     // Post-edit verification: auto-run lint/test if files were mutated
                     if !modified_files.is_empty() {
+                        self.emit(AgentEvent::Waiting { label: "Running verification\u{2026}".to_string() });
                         let verification_results =
                             self.run_post_edit_verification(&modified_files, cancel.clone()).await;
                         for (cmd, output, success) in &verification_results {
@@ -489,6 +530,7 @@ impl AgentLoop {
                     }
 
                     // Continue the loop
+                    self.emit(AgentEvent::Waiting { label: "Preparing next turn\u{2026}".to_string() });
                 }
                 StopReason::MaxTokens => {
                     // Fix #14: Continue generation via assistant prefill if supported
@@ -592,6 +634,35 @@ impl AgentLoop {
     ) -> Result<AssistantResponse, pipit_provider::ProviderError> {
         let mut attempts = 0usize;
 
+        // Pre-flight: proactively shrink context if over budget
+        let (input_est, model_limit, over) = self.context.preflight_check(
+            tools.len(),
+            self.repo_map.as_deref(),
+        );
+        if over > 0 {
+            tracing::warn!(
+                "Pre-flight: estimated {} tokens vs {} limit (over by {}). Reducing.",
+                input_est, model_limit, over
+            );
+            // Step 1: shrink old tool results
+            let freed = self.context.shrink_tool_results(500);
+            if freed > 0 {
+                self.emit(AgentEvent::Waiting {
+                    label: format!("Freed ~{} tokens from old tool results", freed),
+                });
+            }
+            // Step 2: check again, if still over, drop repo map + compress
+            let (_est2, _lim2, over2) = self.context.preflight_check(tools.len(), self.repo_map.as_deref());
+            if over2 > 0 {
+                let reduction = self.reduce_request_size();
+                if reduction.applied {
+                    self.emit(AgentEvent::Waiting {
+                        label: format!("Context reduced: {}", reduction.summary),
+                    });
+                }
+            }
+        }
+
         loop {
             let request = self.build_completion_request(claim, selected_plan, tools).await;
 
@@ -626,15 +697,15 @@ impl AgentLoop {
     ) -> CompletionRequest {
         let mut request = self.context.build_request(tools, self.repo_map.as_deref());
 
-        // Only inject planning context when:
-        //   (a) we're in a PEV mode (balanced/guarded/custom), AND
-        //   (b) the task has progressed beyond first-turn Q&A
-        //
-        // In fast mode or on the first turn, the system prompt stays clean.
-        // This prevents "Strategy: DiagnosticOnly" noise on simple questions.
-        let should_inject_plan = self.config.pev.is_some() && self.has_had_tool_calls();
+        // Always inject planning context for non-trivial tasks.
+        // The plan strategy (MinimalPatch, CharacterizationFirst, etc.) guides
+        // the model's approach — omitting it causes regressions in edit quality.
+        // Only suppress for first-turn Q&A that hasn't done any tool calls.
+        let is_trivial_qa = !self.has_had_tool_calls()
+            && selected_plan.strategy == crate::planner::StrategyKind::MinimalPatch
+            && selected_plan.rationale == "Direct response.";
 
-        if should_inject_plan {
+        if !is_trivial_qa {
             request.system.push_str("\n\n");
             request.system.push_str(&claim.render_for_prompt());
             request.system.push_str("\n## Selected Execution Plan\n");
@@ -1200,10 +1271,25 @@ fn is_request_too_large_error(error: &pipit_provider::ProviderError) -> bool {
         pipit_provider::ProviderError::ContextOverflow { .. } => true,
         pipit_provider::ProviderError::Other(message) => {
             let lower = message.to_ascii_lowercase();
+            // HTTP 413
             lower.contains("413")
                 || lower.contains("payload too large")
-                || lower.contains("request body") && lower.contains("too large")
+                || (lower.contains("request body") && lower.contains("too large"))
                 || lower.contains("length limit exceeded")
+                // vLLM: "maximum context length is X tokens"
+                || lower.contains("maximum context length")
+                // vLLM: "prompt contains X characters"
+                || (lower.contains("prompt") && lower.contains("too long"))
+                // Generic: "context length exceeded"
+                || lower.contains("context length exceeded")
+                || lower.contains("context_length_exceeded")
+                // Ollama / llama.cpp
+                || (lower.contains("input") && lower.contains("too long"))
+                || (lower.contains("token") && lower.contains("limit"))
+                // OpenAI: "maximum.*token"
+                || (lower.contains("maximum") && lower.contains("token"))
+                // Generic "too many tokens"
+                || lower.contains("too many tokens")
         }
         _ => false,
     }

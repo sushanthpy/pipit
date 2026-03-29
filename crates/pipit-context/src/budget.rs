@@ -65,6 +65,10 @@ pub struct ContextSettings {
     pub tool_result_reserve: u64,
     pub compression_threshold: f64,
     pub preserve_recent_messages: usize,
+    /// Maximum output tokens to request from the model.
+    pub max_output_tokens: u32,
+    /// Per-tool-result truncation limit (chars). 0 = no truncation.
+    pub tool_result_max_chars: usize,
 }
 
 impl Default for ContextSettings {
@@ -74,6 +78,8 @@ impl Default for ContextSettings {
             tool_result_reserve: DEFAULT_TOOL_RESULT_RESERVE,
             compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
             preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES,
+            max_output_tokens: 8192,
+            tool_result_max_chars: 32_000,
         }
     }
 }
@@ -138,6 +144,31 @@ impl ContextManager {
         self.messages.push(message);
     }
 
+    /// Push a tool result message, truncating content if it exceeds the configured limit.
+    pub fn push_tool_result(&mut self, call_id: &str, content: &str, is_error: bool) {
+        let max_chars = self.settings.tool_result_max_chars;
+        let truncated = if max_chars > 0 && content.len() > max_chars {
+            let lines: Vec<&str> = content.lines().collect();
+            let total = lines.len();
+            let head = 40.min(total);
+            let tail = 40.min(total.saturating_sub(head));
+            if total > head + tail {
+                format!(
+                    "{}\n\n[...truncated {} of {} lines...]\n\n{}",
+                    lines[..head].join("\n"),
+                    total - head - tail,
+                    total,
+                    lines[total - tail..].join("\n"),
+                )
+            } else {
+                content[..max_chars].to_string()
+            }
+        } else {
+            content.to_string()
+        };
+        self.messages.push(Message::tool_result(call_id, &truncated, is_error));
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -156,6 +187,53 @@ impl ContextManager {
         let usage = self.estimate_token_usage();
         let ratio = usage as f64 / self.budget.available_for_history as f64;
         ratio > self.settings.compression_threshold
+    }
+
+    /// Pre-flight check: estimate total request size and return how much over budget we are.
+    /// Returns (estimated_input_tokens, model_limit, over_by) where over_by > 0 means overflow.
+    pub fn preflight_check(&self, tools_count: usize, repo_map: Option<&str>) -> (u64, u64, i64) {
+        let system_tokens = (self.system_prompt.len() as u64) / 4;
+        let repo_map_tokens = repo_map.map(|m| (m.len() as u64) / 4).unwrap_or(self.budget.repo_map);
+        let history_tokens = self.estimate_token_usage();
+        let tools_tokens = (tools_count as u64) * 50;
+        let output_reserve = self.settings.max_output_tokens as u64;
+
+        let total_input = system_tokens + repo_map_tokens + history_tokens + tools_tokens + output_reserve;
+        let over = total_input as i64 - self.budget.model_limit as i64;
+        (total_input, self.budget.model_limit, over)
+    }
+
+    /// Proactively truncate old tool results in history to free tokens.
+    /// Returns number of tokens freed.
+    pub fn shrink_tool_results(&mut self, target_chars: usize) -> u64 {
+        let mut freed = 0u64;
+        for msg in &mut self.messages {
+            for block in &mut msg.content {
+                if let pipit_provider::ContentBlock::ToolResult { content, .. } = block {
+                    if content.len() > target_chars {
+                        let old_tokens = (content.len() as u64) / 4;
+                        let lines: Vec<&str> = content.lines().collect();
+                        let total = lines.len();
+                        let head = 20.min(total);
+                        let tail = 20.min(total.saturating_sub(head));
+                        if total > head + tail {
+                            *content = format!(
+                                "{}\n\n[...truncated {} of {} lines to free context...]\n\n{}",
+                                lines[..head].join("\n"),
+                                total - head - tail,
+                                total,
+                                lines[total - tail..].join("\n"),
+                            );
+                        } else {
+                            *content = content[..target_chars].to_string();
+                        }
+                        let new_tokens = (content.len() as u64) / 4;
+                        freed += old_tokens.saturating_sub(new_tokens);
+                    }
+                }
+            }
+        }
+        freed
     }
 
     /// Compress old messages by summarizing them.
@@ -233,12 +311,20 @@ impl ContextManager {
             system.push_str(map);
         }
 
+        // Calculate max_tokens: min(configured_max_output, remaining_budget)
+        let input_estimate = self.budget.system_prompt
+            + self.budget.repo_map
+            + self.estimate_token_usage()
+            + (tools.len() as u64) * 50; // ~50 tokens per tool schema
+        let remaining = self.budget.model_limit.saturating_sub(input_estimate);
+        let max_output = (self.settings.max_output_tokens as u64).min(remaining).max(256);
+
         CompletionRequest {
             system,
             messages: self.messages.clone(),
             tools: tools.to_vec(),
             temperature: Some(0.0),
-            max_tokens: None,
+            max_tokens: Some(max_output as u32),
             stop_sequences: vec![],
         }
     }

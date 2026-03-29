@@ -91,6 +91,10 @@ pub enum AgentEvent {
     // --- Steering ---
     SteeringMessageInjected { text: String },
 
+    // --- Status ---
+    /// Agent is busy with a phase that doesn't stream tokens (planning, verifying, etc.)
+    Waiting { label: String },
+
     // --- PEV phase transitions ---
     /// Phase changed in the PEV orchestrator.
     PhaseTransition {

@@ -1,0 +1,112 @@
+[
+  {
+    "name": "T1.1: File Creation",
+    "tier": "Tier 1",
+    "passed": true,
+    "checks_passed": 3,
+    "checks_total": 3,
+    "elapsed": 17.7,
+    "details": "  \u2713 file exists\n  \u2713 has type hints\n  \u2713 all functions work",
+    "error": ""
+  },
+  {
+    "name": "T1.2: Bug Fix",
+    "tier": "Tier 1",
+    "passed": true,
+    "checks_passed": 6,
+    "checks_total": 6,
+    "elapsed": 18.7,
+    "details": "  \u2713 divide handles zero division\n  \u2713 power uses exponentiation\n  \u2713 modulo handles zero division\n  \u2713 all tests pass\n  \u2713 add unchanged\n  \u2713 subtract unchanged",
+    "error": ""
+  },
+  {
+    "name": "T1.5: Test Generation",
+    "tier": "Tier 1",
+    "passed": true,
+    "checks_passed": 9,
+    "checks_total": 9,
+    "elapsed": 40.4,
+    "details": "  \u2713 test file exists\n  \u2713 tests factorial\n  \u2713 tests fibonacci\n  \u2713 tests is_prime\n  \u2713 tests gcd\n  \u2713 tests negative input\n  \u2713 tests edge case 0\n  \u2713 all tests pass\n  \u2713 >=8 tests written (21)",
+    "error": ""
+  },
+  {
+    "name": "T2.9: Hidden Edge Cases",
+    "tier": "Tier 2",
+    "passed": true,
+    "checks_passed": 5,
+    "checks_total": 5,
+    "elapsed": 49.2,
+    "details": "  \u2713 page_zero\n  \u2713 negative_page\n  \u2713 per_page_zero\n  \u2713 empty_list\n  \u2713 beyond_total",
+    "error": ""
+  },
+  {
+    "name": "T2.14: Security Hardening",
+    "tier": "Tier 2",
+    "passed": true,
+    "checks_passed": 8,
+    "checks_total": 8,
+    "elapsed": 28.2,
+    "details": "  \u2713 no hardcoded secret\n  \u2713 no MD5\n  \u2713 uses sha256 or better\n  \u2713 constant-time compare\n  \u2713 secure session ID\n  \u2713 secure temp file\n  \u2713 no password logging\n  \u2713 importable",
+    "error": ""
+  },
+  {
+    "name": "T3.18: Minimal Diff Fix",
+    "tier": "Tier 3",
+    "passed": true,
+    "checks_passed": 5,
+    "checks_total": 5,
+    "elapsed": 14.9,
+    "details": "  \u2713 all tests pass\n  \u2713 mean unchanged\n  \u2713 median unchanged\n  \u2713 std_dev unchanged\n  \u2713 percentile fixed",
+    "error": ""
+  },
+  {
+    "name": "T3.28: State Leakage Fix",
+    "tier": "Tier 3",
+    "passed": true,
+    "checks_passed": 7,
+    "checks_total": 7,
+    "elapsed": 10.4,
+    "details": "  \u2713 conftest.py exists\n  \u2713 uses fixture\n  \u2713 uses autouse\n  \u2713 calls clear\n  \u2713 cache.py unmodified\n  \u2713 test_cache.py unmodified\n  \u2713 all tests pass",
+    "error": ""
+  },
+  {
+    "name": "T4.27: Error Handling",
+    "tier": "Tier 4",
+    "passed": true,
+    "checks_passed": 5,
+    "checks_total": 5,
+    "elapsed": 23.9,
+    "details": "  \u2713 uses with-statement in read_json\n  \u2713 uses with-statement in read_csv\n  \u2713 raises ValueError for bad format\n  \u2713 batch_process handles errors\n  \u2713 all tests pass",
+    "error": ""
+  },
+  {
+    "name": "T5.36: Config Precedence",
+    "tier": "Tier 5",
+    "passed": true,
+    "checks_passed": 2,
+    "checks_total": 2,
+    "elapsed": 18.9,
+    "details": "  \u2713 all tests pass\n  \u2713 function still works",
+    "error": ""
+  },
+  {
+    "name": "TT.2: CSV \u2192 JSON",
+    "tier": "Terminal",
+    "passed": true,
+    "checks_passed": 10,
+    "checks_total": 10,
+    "elapsed": 13.5,
+    "details": "  \u2713 output file exists\n  \u2713 valid json\n  \u2713 is array\n  \u2713 correct count (4)\n  \u2713 has Alice\n  \u2713 has Carol\n  \u2713 has Grace\n  \u2713 has Iris\n  \u2713 no inactive\n  \u2713 salary is int",
+    "error": ""
+  },
+  {
+    "name": "TT.3: Git Archaeology",
+    "tier": "Terminal",
+    "passed": true,
+    "checks_passed": 3,
+    "checks_total": 3,
+    "elapsed": 12.6,
+    "details": "  \u2713 uses integer division\n  \u2713 safe_sqrt unchanged\n  \u2713 all tests pass",
+    "error": ""
+  }
+]

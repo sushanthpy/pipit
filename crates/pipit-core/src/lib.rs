@@ -1,4 +1,6 @@
 pub mod agent;
+pub mod adversarial;
+pub mod delegation;
 pub mod events;
 pub mod governor;
 pub mod loop_detector;
@@ -6,6 +8,7 @@ pub mod pev;
 pub mod planner;
 pub mod planner_llm;
 pub mod proof;
+pub mod sdd_pipeline;
 pub mod verifier;
 pub mod verifier_llm;
 pub mod worktree;
@@ -22,12 +25,16 @@ pub use pev::{
     PlanSpec, ExecutionBrief, ExecutionResult, VerificationReport, Verdict,
     Finding, FindingSeverity, RepairDirective, EditSummary, CommandOutput,
 };
-pub use planner::{CandidatePlan, NullPlanner, PlanSource, PlanStrategy, Planner, StrategyKind, VerificationSource, VerifyStrategy, is_question_task};
+pub use planner::{
+    CandidatePlan, NullPlanner, PlanSource, PlanStrategy, Planner, StrategyKind,
+    VerificationSource, VerifyStrategy, is_question_task,
+    AdaptiveScorer, generate_remediation_plan,
+};
 pub use planner_llm::LlmPlanner;
 pub use proof::{
 	Assumption, ChangeClaim, ConfidenceReport, EvidenceArtifact, ImplementationTier,
 	Objective, ProofPacket, PlanPivot, PolicyStage, RealizedEdit, RollbackCheckpoint,
-	SuccessCriterion, VerificationStep,
+	SuccessCriterion, VerificationKind, VerificationStep,
 };
 pub use verifier::{NullVerifier, Verifier};
 pub use verifier_llm::LlmVerifier;

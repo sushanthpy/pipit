@@ -70,21 +70,32 @@ impl OpenAiProvider {
     fn build_request_body(&self, request: &CompletionRequest) -> serde_json::Value {
         let mut messages = Vec::new();
 
-        // System message
+        // Collect all system content into a single system message at position 0.
+        // Many models (e.g. Qwen) require exactly one system message at the start.
+        let mut system_parts: Vec<String> = Vec::new();
         if !request.system.is_empty() {
+            system_parts.push(request.system.clone());
+        }
+        for msg in &request.messages {
+            if matches!(&msg.role, crate::Role::System) {
+                let text = msg.text_content();
+                if !text.is_empty() {
+                    system_parts.push(text);
+                }
+            }
+        }
+        if !system_parts.is_empty() {
             messages.push(serde_json::json!({
                 "role": "system",
-                "content": request.system,
+                "content": system_parts.join("\n\n"),
             }));
         }
 
         for msg in &request.messages {
             match &msg.role {
                 crate::Role::System => {
-                    messages.push(serde_json::json!({
-                        "role": "system",
-                        "content": msg.text_content(),
-                    }));
+                    // Already merged into the single system message above
+                    continue;
                 }
                 crate::Role::User => {
                     // Check if this message contains images
@@ -250,6 +261,17 @@ impl LlmProvider for OpenAiProvider {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
 
+            // Detect context overflow from 400 responses (vLLM, Ollama, etc.)
+            let is_context_overflow = {
+                let lower = body_text.to_ascii_lowercase();
+                lower.contains("maximum context length")
+                    || lower.contains("context length exceeded")
+                    || lower.contains("context_length_exceeded")
+                    || (lower.contains("prompt") && lower.contains("too long"))
+                    || (lower.contains("maximum") && lower.contains("token"))
+                    || lower.contains("too many tokens")
+            };
+
             return match status.as_u16() {
                 401 => Err(ProviderError::AuthFailed {
                     message: body_text,
@@ -259,6 +281,10 @@ impl LlmProvider for OpenAiProvider {
                 }),
                 429 => Err(ProviderError::RateLimited {
                     retry_after_ms: None,
+                }),
+                400 if is_context_overflow => Err(ProviderError::ContextOverflow {
+                    used: 0,
+                    limit: 0,
                 }),
                 _ => Err(ProviderError::Other(format!(
                     "HTTP {}: {}",

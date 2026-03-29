@@ -1,8 +1,13 @@
 pub mod budget;
 pub mod session;
+pub mod knowledge_injection;
 
 pub use budget::ContextManager;
 pub use session::SessionTree;
+pub use knowledge_injection::{
+    InjectedKnowledge, format_knowledge_preamble, select_knowledge_units,
+    extract_knowledge_units,
+};
 
 use thiserror::Error;
 

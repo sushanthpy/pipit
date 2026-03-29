@@ -1,0 +1,80 @@
+# Pipit Daemon Configuration
+# Place this at daemon.toml, .pipit/daemon.toml, or ~/.config/pipit/daemon.toml
+
+[server]
+bind = "127.0.0.1"
+port = 3100
+
+[daemon]
+drain_timeout_secs = 30
+max_concurrent = 2
+max_queue_depth = 20
+# pid_path = "~/.pipit/pipitd.pid"
+# store_path = "~/.pipit/daemon.db"
+
+# ---------------------------------------------------------------------------
+# Authentication — bearer tokens for the HTTP API
+# If no tokens configured, all requests are allowed (dev mode).
+# ---------------------------------------------------------------------------
+[auth.tokens.admin]
+secret = "${PIPIT_ADMIN_TOKEN:-changeme}"
+permissions = ["submit", "status", "cancel", "steer"]
+
+[auth.tokens.ci]
+secret = "${PIPIT_CI_TOKEN}"
+permissions = ["submit", "status"]
+
+# ---------------------------------------------------------------------------
+# Projects — each project has its own agent with independent config
+# ---------------------------------------------------------------------------
+[projects.myapp]
+root = "/path/to/myapp"
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+mode = "balanced"
+auto_commit = true
+branch_prefix = "pipit/"
+max_turns = 100
+protected_paths = [".env", "*.pem", "secrets/**"]
+# test_command = "cargo test"
+# lint_command = "cargo clippy"
+# allowed_tools = ["read_file", "edit_file", "grep", "glob", "bash"]
+
+# [projects.frontend]
+# root = "/path/to/frontend"
+# provider = "openai"
+# model = "gpt-4o"
+# mode = "fast"
+# auto_commit = false
+
+# ---------------------------------------------------------------------------
+# Channels — message sources
+# ---------------------------------------------------------------------------
+# [channels.telegram]
+# type = "telegram"
+# bot_token = "${TELEGRAM_BOT_TOKEN}"
+# allowed_users = []  # empty = allow all (personal bot mode)
+# default_project = "myapp"
+# debounce_ms = 800
+
+# [channels.discord]
+# type = "discord"
+# bot_token = "${DISCORD_BOT_TOKEN}"
+# allowed_guilds = []
+# default_project = "myapp"
+
+# ---------------------------------------------------------------------------
+# Schedules — cron-triggered tasks
+# ---------------------------------------------------------------------------
+# [schedules.nightly_tests]
+# project = "myapp"
+# cron = "0 2 * * *"          # 2am daily
+# prompt = "Run the test suite. If any tests fail, fix the failures."
+# priority = "low"
+# notify_channel = "telegram"
+
+# [schedules.weekly_deps]
+# project = "myapp"
+# cron = "0 3 * * 1"          # 3am every Monday
+# prompt = "Check for outdated dependencies and update them."
+# priority = "low"

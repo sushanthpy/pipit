@@ -17,6 +17,37 @@ pub trait SubagentExecutor: Send + Sync {
         project_root: std::path::PathBuf,
         cancel: CancellationToken,
     ) -> Result<String, String>;
+
+    /// Run a subagent in an isolated git worktree.
+    /// Changes are made in the worktree and can be merged back selectively.
+    async fn run_subagent_isolated(
+        &self,
+        task: String,
+        context: String,
+        allowed_tools: Vec<String>,
+        project_root: std::path::PathBuf,
+        cancel: CancellationToken,
+    ) -> Result<IsolatedResult, String> {
+        // Default: fall back to non-isolated execution
+        let result = self.run_subagent(task, context, allowed_tools, project_root, cancel).await?;
+        Ok(IsolatedResult {
+            output: result,
+            worktree_path: None,
+            branch_name: None,
+            diff: None,
+            merge_ready: false,
+        })
+    }
+}
+
+/// Result from a worktree-isolated subagent execution.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IsolatedResult {
+    pub output: String,
+    pub worktree_path: Option<std::path::PathBuf>,
+    pub branch_name: Option<String>,
+    pub diff: Option<String>,
+    pub merge_ready: bool,
 }
 
 /// Subagent tool — delegates focused subtasks to a child agent.
@@ -50,6 +81,10 @@ impl Tool for SubagentTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Tools the subagent may use (default: read-only)"
+                },
+                "isolated": {
+                    "type": "boolean",
+                    "description": "Run in an isolated git worktree. Changes won't affect the main branch until explicitly merged. Use for risky modifications or parallel work."
                 }
             },
             "required": ["task"]
@@ -59,7 +94,7 @@ impl Tool for SubagentTool {
     fn description(&self) -> &str {
         "Spawn a focused subagent for an independent subtask. The subagent gets its own context \
          window and returns a summary. Use for research, reading multiple files, or any task \
-         that can run independently."
+         that can run independently. Pass isolated=true for worktree isolation."
     }
 
     fn is_mutating(&self) -> bool { false }
@@ -88,15 +123,46 @@ impl Tool for SubagentTool {
                 "read_file".into(), "grep".into(), "glob".into(), "list_directory".into(),
             ]);
 
-        match self.executor.run_subagent(
-            task.clone(),
-            context_info,
-            allowed_tools,
-            ctx.project_root.clone(),
-            cancel,
-        ).await {
-            Ok(result) => Ok(ToolResult::text(result)),
-            Err(e) => Ok(ToolResult::error(format!("Subagent failed: {}", e))),
+        let isolated = args["isolated"].as_bool().unwrap_or(false);
+
+        if isolated {
+            // Worktree-isolated execution
+            match self.executor.run_subagent_isolated(
+                task.clone(),
+                context_info,
+                allowed_tools,
+                ctx.project_root.clone(),
+                cancel,
+            ).await {
+                Ok(result) => {
+                    let mut output = result.output.clone();
+                    if let Some(ref branch) = result.branch_name {
+                        output.push_str(&format!("\n\n[Isolated on branch: {}]", branch));
+                    }
+                    if let Some(ref diff) = result.diff {
+                        if !diff.is_empty() {
+                            output.push_str(&format!("\n[Changes: {} lines]", diff.lines().count()));
+                        }
+                    }
+                    if result.merge_ready {
+                        output.push_str("\n[Ready to merge]");
+                    }
+                    Ok(ToolResult::text(output))
+                }
+                Err(e) => Ok(ToolResult::error(format!("Isolated subagent failed: {}", e))),
+            }
+        } else {
+            // Standard non-isolated execution
+            match self.executor.run_subagent(
+                task.clone(),
+                context_info,
+                allowed_tools,
+                ctx.project_root.clone(),
+                cancel,
+            ).await {
+                Ok(result) => Ok(ToolResult::text(result)),
+                Err(e) => Ok(ToolResult::error(format!("Subagent failed: {}", e))),
+            }
         }
     }
 }

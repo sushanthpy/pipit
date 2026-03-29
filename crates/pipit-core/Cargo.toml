@@ -20,3 +20,4 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+pipit-agent-mesh = { path = "../pipit-agent-mesh" }

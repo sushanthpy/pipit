@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ORIGINAL_CWD="$(pwd)"
 
 provider="${PIPIT_PROVIDER:-}"
 base_url="${PIPIT_BASE_URL:-}"
@@ -10,6 +11,7 @@ api_key=""
 has_provider=0
 has_base_url=0
 has_api_key=0
+has_root=0
 
 args=("$@")
 index=0
@@ -50,6 +52,10 @@ while [[ $index -lt ${#args[@]} ]]; do
 		--api-key=*)
 			api_key="${arg#*=}"
 			has_api_key=1
+			index=$((index + 1))
+			;;
+		--root|--root=*)
+			has_root=1
 			index=$((index + 1))
 			;;
 		*)
@@ -93,4 +99,7 @@ EOF
 fi
 
 cd "$REPO_ROOT"
+if [[ $has_root -eq 0 ]]; then
+	launch_args=(--root "$ORIGINAL_CWD" "${launch_args[@]}")
+fi
 exec cargo run -p pipit-cli --bin pipit -- "${launch_args[@]}"

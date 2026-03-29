@@ -181,6 +181,12 @@ impl Planner {
             },
             expected_value: if pivot_to_characterization {
                 0.44
+            } else if mentions_fix && verification_heavy {
+                // When both fix AND verification keywords present,
+                // reduce MinimalPatch slightly so CharacterizationFirst wins.
+                // Tasks like "fix the regression" or "fix the tests" benefit
+                // from running tests first, not blind patching.
+                0.72
             } else if mentions_fix {
                 0.82
             } else {
@@ -196,7 +202,14 @@ impl Planner {
         plans.push(CandidatePlan {
             strategy: StrategyKind::RootCauseRepair,
             rationale: "Spend additional effort to understand the underlying failure mode before editing.".to_string(),
-            expected_value: if confidence.overall() < 0.45 { 0.84 } else { 0.68 },
+            // Only boost RootCauseRepair when there IS evidence of a problem
+            // (failed tests, errors, etc.) but confidence remains low.
+            // At the start of a task, zero confidence is normal.
+            expected_value: if confidence.overall() < 0.45 && !evidence.is_empty() {
+                0.84
+            } else {
+                0.68
+            },
             estimated_cost: 0.45,
             verification_plan: vec![
                 VerificationStep {
@@ -246,8 +259,8 @@ impl Planner {
             plans.push(CandidatePlan {
                 strategy: StrategyKind::ArchitecturalRepair,
                 rationale: "The objective appears structural, so a broader but cleaner repair may be justified.".to_string(),
-                expected_value: 0.62,
-                estimated_cost: 0.75,
+                expected_value: if mentions_verify { 0.80 } else { 0.72 },
+                estimated_cost: if mentions_verify { 0.45 } else { 0.35 },
                 verification_plan: vec![VerificationStep {
                     description: "Confirm public behavior and boundaries still hold after the structural change.".to_string(),
                 }],
@@ -258,7 +271,14 @@ impl Planner {
         plans.push(CandidatePlan {
             strategy: StrategyKind::DiagnosticOnly,
             rationale: "If confidence stays too low, stop mutation and return evidence plus options.".to_string(),
-            expected_value: if !mentions_fix && confidence.overall() < 0.25 && !pivot_to_characterization {
+            // DiagnosticOnly should score high only when the agent has been running
+            // (evidence exists) but confidence is still low. At the start of a task
+            // (no evidence), zero confidence is normal and shouldn't trigger diagnostic mode.
+            expected_value: if !mentions_fix
+                && confidence.overall() < 0.25
+                && !pivot_to_characterization
+                && !evidence.is_empty()
+            {
                 0.9
             } else {
                 0.35
@@ -404,14 +424,117 @@ mod tests {
     }
 
     #[test]
-    fn keeps_minimal_patch_without_failed_verification_streak() {
+    fn keeps_characterization_first_with_verify_keywords() {
         let planner = Planner;
         let confidence = ConfidenceReport::default();
 
+        // objective() includes "verify" and "test" keywords, so
+        // CharacterizationFirst should win over MinimalPatch
         let selected = planner.select_plan_with_evidence(&objective(), &confidence, &[]);
+
+        assert_eq!(selected.strategy, StrategyKind::CharacterizationFirst);
+    }
+
+    #[test]
+    fn selects_minimal_patch_for_pure_fix() {
+        let planner = Planner;
+        let confidence = ConfidenceReport::default();
+
+        // Pure fix without verify/test keywords → MinimalPatch wins
+        let objective = Objective::from_prompt("Fix the null pointer bug in main.py");
+        let selected = planner.select_plan_with_evidence(&objective, &confidence, &[]);
 
         assert_eq!(selected.strategy, StrategyKind::MinimalPatch);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Adaptive Strategy Scoring — Thompson Sampling (Task 1.3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Bayesian multi-armed bandit for adaptive strategy scoring.
+/// Each strategy maintains a Beta(α, β) distribution updated from outcomes.
+/// Expected value: E[s] = α / (α + β). Update O(1) per task completion.
+/// Prior: Beta(1, 1) (uniform) — learns from scratch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptiveScorer {
+    /// Per-strategy Beta distribution parameters: (successes, failures)
+    strategies: std::collections::HashMap<String, (f64, f64)>,
+}
+
+impl Default for AdaptiveScorer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AdaptiveScorer {
+    pub fn new() -> Self {
+        let mut strategies = std::collections::HashMap::new();
+        // Initialize with Beta(1,1) uniform prior for each strategy
+        for kind in &["MinimalPatch", "RootCauseRepair", "ArchitecturalRepair",
+                       "DiagnosticOnly", "CharacterizationFirst"] {
+            strategies.insert(kind.to_string(), (1.0, 1.0));
+        }
+        Self { strategies }
+    }
+
+    /// Record a task outcome. O(1).
+    pub fn record_outcome(&mut self, strategy: &StrategyKind, success: bool) {
+        let key = format!("{:?}", strategy);
+        let entry = self.strategies.entry(key).or_insert((1.0, 1.0));
+        if success {
+            entry.0 += 1.0; // α += 1
+        } else {
+            entry.1 += 1.0; // β += 1
+        }
+    }
+
+    /// Get the posterior expected value for a strategy: E[s] = α / (α + β).
+    pub fn expected_value(&self, strategy: &StrategyKind) -> f64 {
+        let key = format!("{:?}", strategy);
+        if let Some(&(alpha, beta)) = self.strategies.get(&key) {
+            alpha / (alpha + beta)
+        } else {
+            0.5 // Uniform prior
+        }
+    }
+
+    /// Total observations for a strategy.
+    pub fn sample_count(&self, strategy: &StrategyKind) -> u32 {
+        let key = format!("{:?}", strategy);
+        if let Some(&(alpha, beta)) = self.strategies.get(&key) {
+            (alpha + beta - 2.0).max(0.0) as u32 // Subtract prior
+        } else {
+            0
+        }
+    }
+
+    /// Override the heuristic expected_value with the learned value
+    /// once we have enough samples (>= min_samples).
+    pub fn adjust_plan_score(&self, plan: &mut CandidatePlan, min_samples: u32) {
+        if self.sample_count(&plan.strategy) >= min_samples {
+            plan.expected_value = self.expected_value(&plan.strategy) as f32;
+        }
+    }
+}
+
+/// Generate an autonomous remediation task from health metrics.
+/// Called by the health monitor when H(t) < threshold.
+pub fn generate_remediation_plan(
+    health_prompt: &str,
+    scorer: &AdaptiveScorer,
+) -> CandidatePlan {
+    let objective = Objective::from_prompt(health_prompt);
+    let planner = Planner;
+    let confidence = ConfidenceReport::default();
+
+    let mut plan = planner.select_plan_with_evidence(&objective, &confidence, &[]);
+
+    // Apply adaptive scoring if enough data
+    scorer.adjust_plan_score(&mut plan, 10);
+
+    plan
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

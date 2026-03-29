@@ -30,6 +30,7 @@ use ratatui::{
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthStr;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Attachment model
@@ -812,7 +813,7 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
 
     // Input line(s)
     let prompt = "you› ";
-    let prompt_width = prompt.len();
+    let prompt_width = UnicodeWidthStr::width(prompt);
 
     for (row_idx, line) in composer.lines.iter().enumerate() {
         let prefix = if row_idx == 0 {
@@ -839,7 +840,8 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
         );
 
         if row_idx == composer.cursor_row {
-            let cursor_x = area.x + prompt_width as u16 + composer.cursor_col as u16;
+            let display_col = char_to_display_col(line, composer.cursor_col);
+            let cursor_x = area.x + prompt_width as u16 + display_col as u16;
             frame.set_cursor_position((cursor_x.min(area.x + area.width - 1), y));
         }
 
@@ -879,8 +881,12 @@ pub fn draw_completion_popup(frame: &mut Frame, composer_area: Rect, composer: &
         .unwrap_or(20)
         .min(composer_area.width as usize - 4) as u16;
 
-    let prompt_offset = 5u16;
-    let popup_x = (composer_area.x + prompt_offset + completion.trigger_start as u16)
+    let prompt_offset = UnicodeWidthStr::width("you› ") as u16;
+    let trigger_display_col = char_to_display_col(
+        &composer.lines[composer.cursor_row],
+        completion.trigger_start,
+    ) as u16;
+    let popup_x = (composer_area.x + prompt_offset + trigger_display_col)
         .min(composer_area.x + composer_area.width - max_width - 2);
     let popup_y = composer_area.y.saturating_sub(popup_height);
 
@@ -926,6 +932,13 @@ pub fn composer_height(composer: &Composer) -> u16 {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Helpers
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert a character index to its display column width.
+/// This accounts for CJK double-width, emoji, and multi-byte characters.
+fn char_to_display_col(s: &str, char_idx: usize) -> usize {
+    let byte_offset = char_to_byte(s, char_idx);
+    UnicodeWidthStr::width(&s[..byte_offset])
+}
 
 fn char_to_byte(s: &str, char_idx: usize) -> usize {
     s.char_indices()

@@ -73,6 +73,10 @@ pub struct TuiState {
     pub spinner_frame: u64,
     /// When the current working state began.
     pub working_since: Option<std::time::Instant>,
+    /// Whether the current streaming text is thinking/reasoning (not response).
+    pub is_thinking: bool,
+    /// Whether we're inside a code block for rendering purposes.
+    in_code_block: bool,
 }
 
 impl TuiState {
@@ -94,6 +98,8 @@ impl TuiState {
             has_received_input: false,
             spinner_frame: 0,
             working_since: None,
+            is_thinking: false,
+            in_code_block: false,
         }
     }
 
@@ -114,6 +120,7 @@ impl TuiState {
             self.streaming_text.clear();
         }
         self.is_working = false;
+        self.is_thinking = false;
         self.working_label.clear();
         self.working_since = None;
         self.auto_scroll_content();
@@ -402,42 +409,191 @@ fn draw_timeline_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
 
 fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner_height = area.height.saturating_sub(2) as usize;
+    let pane_width = area.width.saturating_sub(2) as usize;
 
-    // Build content: committed lines + streaming
-    let mut all_lines: Vec<Line> = state
-        .content_lines
-        .iter()
-        .map(|l| Line::from(Span::styled(format!(" {}", l), Style::default().fg(Color::White))))
-        .collect();
+    // Collect all raw lines: committed + streaming
+    let mut raw_lines: Vec<&str> = state.content_lines.iter().map(|s| s.as_str()).collect();
+    let streaming_lines: Vec<&str> = if !state.streaming_text.is_empty() {
+        state.streaming_text.lines().collect()
+    } else {
+        Vec::new()
+    };
+    raw_lines.extend(&streaming_lines);
 
-    // Add streaming text
-    if !state.streaming_text.is_empty() {
-        for line in state.streaming_text.lines() {
-            all_lines.push(Line::from(Span::styled(
-                format!(" {}", line),
-                Style::default().fg(Color::White),
-            )));
+    // Render with markdown awareness
+    let mut all_lines: Vec<Line> = Vec::with_capacity(raw_lines.len());
+    let mut in_code_block = state.in_code_block;
+    let mut code_lang = String::new();
+
+    for raw in &raw_lines {
+        let trimmed = raw.trim();
+
+        // ── Code fence toggle ──
+        if trimmed.starts_with("```") {
+            if in_code_block {
+                // Closing fence
+                in_code_block = false;
+                all_lines.push(Line::from(Span::styled(
+                    format!(" {}", "─".repeat(pane_width.saturating_sub(2).min(40))),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                code_lang.clear();
+                continue;
+            } else {
+                // Opening fence
+                in_code_block = true;
+                code_lang = trimmed.trim_start_matches('`').to_string();
+                let label = if code_lang.is_empty() {
+                    " code ".to_string()
+                } else {
+                    format!(" {} ", code_lang)
+                };
+                all_lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" ┌{}", "─".repeat(label.len())),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        label,
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        "─".repeat(pane_width.saturating_sub(4 + code_lang.len()).min(30)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                continue;
+            }
         }
+
+        // ── Inside code block ──
+        if in_code_block {
+            all_lines.push(Line::from(vec![
+                Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    raw.to_string(),
+                    Style::default().fg(Color::Green),
+                ),
+            ]));
+            continue;
+        }
+
+        // ── Turn separator ──
+        if trimmed.starts_with("───") || trimmed.starts_with("═══") {
+            all_lines.push(Line::from(Span::styled(
+                format!(" {}", trimmed),
+                Style::default().fg(Color::DarkGray),
+            )));
+            continue;
+        }
+
+        // ── Markdown headers ──
+        if trimmed.starts_with("### ") {
+            let heading = trimmed.trim_start_matches("### ");
+            all_lines.push(Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    format!("  {}", heading),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
+        if trimmed.starts_with("## ") {
+            let heading = trimmed.trim_start_matches("## ");
+            all_lines.push(Line::from(Span::styled(
+                format!(" ◆ {}", heading),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            continue;
+        }
+        if trimmed.starts_with("# ") {
+            let heading = trimmed.trim_start_matches("# ");
+            all_lines.push(Line::from(Span::styled(
+                format!(" ━ {} ━", heading),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            continue;
+        }
+
+        // ── Bullet points ──
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            let text = &trimmed[2..];
+            all_lines.push(Line::from(vec![
+                Span::styled("  • ", Style::default().fg(Color::Cyan)),
+                Span::raw(style_inline_markdown(text)),
+            ]));
+            continue;
+        }
+
+        // ── Numbered lists ──
+        if trimmed.len() > 2 && trimmed.as_bytes()[0].is_ascii_digit() {
+            if let Some(rest) = trimmed.strip_prefix(|c: char| c.is_ascii_digit())
+                .and_then(|s| s.strip_prefix(". "))
+            {
+                let num_str: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+                all_lines.push(Line::from(vec![
+                    Span::styled(format!("  {}. ", num_str), Style::default().fg(Color::Cyan)),
+                    Span::raw(style_inline_markdown(rest)),
+                ]));
+                continue;
+            }
+        }
+
+        // ── Blockquotes ──
+        if trimmed.starts_with("> ") {
+            let text = &trimmed[2..];
+            all_lines.push(Line::from(vec![
+                Span::styled(" ▎ ", Style::default().fg(Color::Blue)),
+                Span::styled(
+                    text.to_string(),
+                    Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+            continue;
+        }
+
+        // ── Empty line → small gap ──
+        if trimmed.is_empty() {
+            all_lines.push(Line::from(""));
+            continue;
+        }
+
+        // ── Default: inline markdown (bold, code spans, etc.) ──
+        all_lines.push(style_paragraph_line(raw));
     }
 
-    // Show thinking indicator when working with no content yet
-    if state.is_working && all_lines.is_empty() {
-        const DOTS: &[&str] = &["   ", ".  ", ".. ", "..."];
-        let frame = (state.spinner_frame / 8) as usize % DOTS.len();
-        all_lines.push(Line::from(Span::styled(
-            format!(" thinking{}", DOTS[frame]),
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else if state.is_working && state.streaming_text.is_empty() {
+    // Show progress indicator when agent is working
+    if state.is_working && state.streaming_text.is_empty() {
+        const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+        let spin_frame = (state.spinner_frame / 4) as usize % SPINNER.len();
         let elapsed = state.working_since
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(0);
-        if elapsed > 1 {
-            all_lines.push(Line::from(Span::styled(
-                format!(" generating response\u{2026} {}s", elapsed),
+        let elapsed_str = if elapsed > 0 {
+            format!(" {}s", elapsed)
+        } else {
+            String::new()
+        };
+        let label = if state.working_label.is_empty() {
+            "thinking".to_string()
+        } else {
+            state.working_label.clone()
+        };
+        all_lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", SPINNER[spin_frame]),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                label,
                 Style::default().fg(Color::DarkGray),
-            )));
-        }
+            ),
+            Span::styled(
+                elapsed_str,
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
     }
 
     let total = all_lines.len();
@@ -468,6 +624,112 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     let paragraph = Paragraph::new(visible).block(block).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+/// Style a paragraph line with inline markdown: `code`, **bold**, *italic*.
+fn style_paragraph_line(raw: &str) -> Line<'static> {
+    let spans = parse_inline_spans(raw);
+    if spans.len() == 1 {
+        // Fast path — no inline formatting
+        Line::from(Span::styled(format!(" {}", raw), Style::default().fg(Color::White)))
+    } else {
+        let mut result = vec![Span::raw(" ")];
+        result.extend(spans);
+        Line::from(result)
+    }
+}
+
+/// Parse inline markdown into styled spans: `code`, **bold**, *italic*.
+fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    let mut buf = String::new();
+
+    while let Some(&(_i, ch)) = chars.peek() {
+        match ch {
+            '`' => {
+                // Flush buffer
+                if !buf.is_empty() {
+                    spans.push(Span::styled(buf.clone(), Style::default().fg(Color::White)));
+                    buf.clear();
+                }
+                chars.next(); // consume `
+                let mut code = String::new();
+                while let Some(&(_, c)) = chars.peek() {
+                    if c == '`' { chars.next(); break; }
+                    code.push(c);
+                    chars.next();
+                }
+                spans.push(Span::styled(
+                    code,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ));
+            }
+            '*' => {
+                // Check for ** (bold) vs * (italic)
+                chars.next();
+                if chars.peek().map(|&(_, c)| c) == Some('*') {
+                    // **bold**
+                    chars.next();
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(buf.clone(), Style::default().fg(Color::White)));
+                        buf.clear();
+                    }
+                    let mut bold = String::new();
+                    while let Some(&(_, c)) = chars.peek() {
+                        if c == '*' {
+                            chars.next();
+                            if chars.peek().map(|&(_, c)| c) == Some('*') {
+                                chars.next();
+                                break;
+                            }
+                            bold.push('*');
+                            continue;
+                        }
+                        bold.push(c);
+                        chars.next();
+                    }
+                    spans.push(Span::styled(
+                        bold,
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    // *italic*
+                    if !buf.is_empty() {
+                        spans.push(Span::styled(buf.clone(), Style::default().fg(Color::White)));
+                        buf.clear();
+                    }
+                    let mut italic = String::new();
+                    while let Some(&(_, c)) = chars.peek() {
+                        if c == '*' { chars.next(); break; }
+                        italic.push(c);
+                        chars.next();
+                    }
+                    spans.push(Span::styled(
+                        italic,
+                        Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
+                    ));
+                }
+            }
+            _ => {
+                buf.push(ch);
+                chars.next();
+            }
+        }
+    }
+
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, Style::default().fg(Color::White)));
+    }
+
+    spans
+}
+
+/// Render inline markdown (simple version for list items).
+fn style_inline_markdown(text: &str) -> String {
+    // For list items, just return the text — the full span parsing
+    // is done at the Line level in style_paragraph_line.
+    text.to_string()
 }
 
 fn draw_welcome_pane(frame: &mut Frame, area: Rect, _state: &TuiState) {

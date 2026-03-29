@@ -157,6 +157,11 @@ impl SkillRegistry {
     pub fn count(&self) -> usize {
         self.skills.len()
     }
+
+    /// List all registered skill names.
+    pub fn list(&self) -> Vec<&str> {
+        self.skills.keys().map(|s| s.as_str()).collect()
+    }
 }
 
 /// Parse SKILL.md frontmatter to extract metadata.

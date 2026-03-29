@@ -183,6 +183,21 @@ enum AuthAction {
     Status,
 }
 
+fn env_var_for(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
+        ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::XAi => "XAI_API_KEY",
+        ProviderKind::Cerebras => "CEREBRAS_API_KEY",
+        ProviderKind::Groq => "GROQ_API_KEY",
+        ProviderKind::Mistral => "MISTRAL_API_KEY",
+        ProviderKind::Ollama => "OLLAMA_API_KEY",
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing with a TUI-safe writer that suppresses output
@@ -221,11 +236,14 @@ async fn main() -> Result<()> {
     // Background version check (non-blocking)
     let update_msg = tokio::spawn(update::check_for_update_background());
 
-    // First-run hint: if no config exists and no provider flag, guide the user
+    // First-run: if no config exists and no provider flag, launch setup automatically
     if !pipit_config::has_user_config() && cli.provider.is_none() {
         eprintln!();
-        eprintln!("  \x1b[1;33mFirst time?\x1b[0m Run \x1b[1mpipit setup\x1b[0m for interactive configuration.");
-        eprintln!("  \x1b[90mOr pass flags: pipit --provider openai --model gpt-4o\x1b[0m");
+        eprintln!("  \x1b[1;33m🐦 Welcome to pipit!\x1b[0m");
+        eprintln!("  \x1b[90mNo configuration found — let's set things up.\x1b[0m");
+        eprintln!();
+
+        setup::run()?;
         eprintln!();
     }
 
@@ -262,34 +280,35 @@ async fn main() -> Result<()> {
     let provider_kind = config.provider.default;
     dbg_log(&format!("[3/12] config resolved, provider={}", provider_kind));
 
-    // Resolve API key
-    let api_key = cli
-        .api_key
-        .or_else(|| pipit_config::resolve_api_key(provider_kind))
-        .ok_or_else(|| {
-            let env_var = match provider_kind {
-                ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
-                ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
-                ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
-                ProviderKind::Google => "GOOGLE_API_KEY",
-                ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
-                ProviderKind::XAi => "XAI_API_KEY",
-                ProviderKind::Cerebras => "CEREBRAS_API_KEY",
-                ProviderKind::Groq => "GROQ_API_KEY",
-                ProviderKind::Mistral => "MISTRAL_API_KEY",
-                ProviderKind::Ollama => "OLLAMA_API_KEY (not usually needed)",
-            };
-            anyhow::anyhow!(
-                "No API key found for {}.\n\n\
-                 Quick fix (pick one):\n\
-                 1. pipit setup            Interactive config wizard\n\
-                 2. export {}=<key>   Environment variable\n\
-                 3. pipit auth login {}    Store in credentials\n\
-                 4. pipit --api-key <key>  One-time flag\n\n\
-                 Config is saved to ~/.config/pipit/config.toml",
-                provider_kind, env_var, provider_kind
-            )
-        })?;
+    // Resolve API key — offer interactive setup if missing
+    let api_key = match cli.api_key.clone().or_else(|| pipit_config::resolve_api_key(provider_kind)) {
+        Some(key) => key,
+        None => {
+            if provider_kind == ProviderKind::Ollama {
+                // Ollama doesn't need a real key
+                "ollama".to_string()
+            } else {
+                eprintln!();
+                eprintln!("  \x1b[1;31m✗ No API key found for {}\x1b[0m", provider_kind);
+                eprintln!();
+                eprintln!("  \x1b[1;33mLet's set up your configuration.\x1b[0m");
+                eprintln!();
+
+                setup::run()?;
+
+                // Retry after setup
+                let prov2 = pipit_config::resolve_config(Some(&project_root), CliOverrides::default())
+                    .map(|c| c.provider.default)
+                    .unwrap_or(provider_kind);
+                pipit_config::resolve_api_key(prov2)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "Still no API key after setup.\n\
+                         Set it via: export {}=<key>",
+                        env_var_for(provider_kind),
+                    ))?
+            }
+        }
+    };
 
     dbg_log("[4/12] api_key resolved");
 
@@ -299,12 +318,46 @@ async fn main() -> Result<()> {
     // Resolve base URL: CLI flag > config file
     let base_url = cli.base_url.or(config.provider.custom_base_url.clone());
 
-    // Create provider
-    let provider: Arc<dyn LlmProvider> = Arc::from(
-        pipit_provider::create_provider(provider_kind, &model, &api_key, base_url.as_deref())
-            .map_err(|e| anyhow::anyhow!("Provider creation failed for '{}': {}", model, e))?,
+    // Create provider — on failure, offer interactive setup instead of dying
+    let provider: Arc<dyn LlmProvider> = match pipit_provider::create_provider(
+        provider_kind, &model, &api_key, base_url.as_deref(),
+    ) {
+        Ok(p) => Arc::from(p),
+        Err(e) => {
+            eprintln!();
+            eprintln!("  \x1b[1;31m✗ Provider setup incomplete\x1b[0m");
+            eprintln!("  \x1b[90m{}\x1b[0m", e);
+            eprintln!();
+            eprintln!("  \x1b[1;33mLet's fix this now.\x1b[0m");
+            eprintln!();
 
-    );
+            // Launch interactive setup
+            setup::run()?;
+
+            // Reload config and retry
+            let overrides2 = CliOverrides {
+                provider: cli_provider,
+                model: Some(model.clone()),
+                approval_mode: cli.approval.as_deref()
+                    .map(str::parse)
+                    .transpose()
+                    .map_err(|e: String| anyhow::anyhow!(e))?,
+                api_key: cli.api_key.clone(),
+            };
+            let config2 = pipit_config::resolve_config(Some(&project_root), overrides2)
+                .context("Config resolution failed after setup")?;
+            let prov2 = config2.provider.default;
+            let key2 = cli.api_key.clone()
+                .or_else(|| pipit_config::resolve_api_key(prov2))
+                .ok_or_else(|| anyhow::anyhow!("Still no API key after setup. Set it via environment variable or run `pipit auth login`."))?;
+            let model2 = config2.model.default_model.clone();
+            let url2 = config2.provider.custom_base_url.clone();
+            Arc::from(
+                pipit_provider::create_provider(prov2, &model2, &key2, url2.as_deref())
+                    .map_err(|e| anyhow::anyhow!("Provider still failed after setup: {}", e))?,
+            )
+        }
+    };
 
     dbg_log(&format!("[5/12] provider created: {} / {}", provider_kind, model));
 
@@ -428,6 +481,8 @@ async fn main() -> Result<()> {
             tool_result_reserve: config.context.tool_result_reserve,
             compression_threshold: config.context.compression_threshold,
             preserve_recent_messages: config.context.preserve_recent_messages,
+            max_output_tokens: config.model.max_output_tokens,
+            tool_result_max_chars: 32_000,
         },
     );
 
@@ -511,7 +566,11 @@ async fn main() -> Result<()> {
     let approval_mode = config.approval;
 
     // Create status bar state
-    let status = StatusBarState::new(project_name.clone(), model.clone(), approval_mode);
+    let mut status = StatusBarState::new(project_name.clone(), model.clone(), approval_mode);
+    status.provider_kind = format!("{}", provider_kind);
+    status.base_url = base_url.clone().unwrap_or_default();
+    status.agent_mode = format!("{}", agent_mode);
+    status.max_turns = config.context.max_turns;
 
     dbg_log("[11/12] agent + event_rx created");
 
@@ -881,6 +940,138 @@ async fn main() -> Result<()> {
                         handle_agent_outcome(&project_root, &mut agent, outcome);
                         continue;
                     }
+                    SlashCommand::Threat => {
+                        let prompt = "Perform a security threat analysis on the codebase:\n\
+                            1. Read the main source files.\n\
+                            2. Identify attack surfaces: HTTP endpoints, database queries, file operations, \
+                               process execution, deserialization, and authentication checks.\n\
+                            3. For each surface, classify the STRIDE threat category.\n\
+                            4. Rate severity (Critical/High/Medium/Low).\n\
+                            5. Suggest specific mitigations for each threat.\n\
+                            Output a structured threat report.".to_string();
+                        let cancel = CancellationToken::new();
+                        let cancel_clone = cancel.clone();
+                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let outcome = agent.run(prompt, cancel).await;
+                        ctrlc_handle.abort();
+                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        continue;
+                    }
+                    SlashCommand::Evolve(target) => {
+                        let target_desc = target.unwrap_or_else(|| "the current task".to_string());
+                        let prompt = format!(
+                            "Compare 3 different approaches to: {}\n\
+                             For each approach:\n\
+                             1. Describe the strategy (MinimalPatch, RootCauseRepair, or CharacterizationFirst).\n\
+                             2. Implement the solution.\n\
+                             3. Run tests to verify.\n\
+                             4. Report: correctness, diff size, and complexity.\n\
+                             Recommend the best approach with rationale.", target_desc);
+                        let cancel = CancellationToken::new();
+                        let cancel_clone = cancel.clone();
+                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let outcome = agent.run(prompt, cancel).await;
+                        ctrlc_handle.abort();
+                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        continue;
+                    }
+                    SlashCommand::Env(subcommand) => {
+                        let prompt = match subcommand.as_deref() {
+                            Some("fingerprint") | Some("fp") => {
+                                "Collect an environment fingerprint:\n\
+                                 1. Run: uname -r, rustc --version, python3 --version, node --version, \
+                                    docker --version, git --version\n\
+                                 2. Check for: Cargo.toml, package.json, pyproject.toml, Dockerfile\n\
+                                 3. Report the system info and installed tool versions.\n\
+                                 Output as structured JSON.".to_string()
+                            }
+                            Some(error_msg) => {
+                                format!(
+                                    "Diagnose this environment error:\n\
+                                     ```\n{}\n```\n\n\
+                                     1. Identify the likely cause.\n\
+                                     2. Check which tool/package is missing or misconfigured.\n\
+                                     3. Provide the exact fix command.", error_msg)
+                            }
+                            None => {
+                                "Check the development environment:\n\
+                                 1. Verify all required tools are installed (compiler, build tools, runtime).\n\
+                                 2. Check project dependencies are available.\n\
+                                 3. Report any issues found and how to fix them.".to_string()
+                            }
+                        };
+                        let cancel = CancellationToken::new();
+                        let cancel_clone = cancel.clone();
+                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let outcome = agent.run(prompt, cancel).await;
+                        ctrlc_handle.abort();
+                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        continue;
+                    }
+                    SlashCommand::Spec(spec_arg) => {
+                        let spec_source = if let Some(ref file) = spec_arg {
+                            // Load spec from file
+                            match std::fs::read_to_string(file) {
+                                Ok(content) => content,
+                                Err(e) => {
+                                    eprintln!("Cannot read spec file '{}': {}", file, e);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            // Check for PIPIT.md or .pipit/spec.md
+                            let candidates = ["PIPIT.md", ".pipit/spec.md", "spec.md"];
+                            let mut found = None;
+                            for c in &candidates {
+                                let p = project_root.join(c);
+                                if p.exists() {
+                                    if let Ok(content) = std::fs::read_to_string(&p) {
+                                        found = Some(content);
+                                        break;
+                                    }
+                                }
+                            }
+                            match found {
+                                Some(content) => content,
+                                None => {
+                                    eprintln!("No spec file found. Create PIPIT.md with ## Task sections, or run /spec <file>");
+                                    continue;
+                                }
+                            }
+                        };
+
+                        let plan = pipit_core::sdd_pipeline::parse_spec_plan(&spec_source);
+                        if plan.tasks.is_empty() {
+                            eprintln!("No tasks found in spec. Use '## Task N: title' format.");
+                            continue;
+                        }
+
+                        eprintln!("\n\x1b[1mSpec-Driven Development Plan\x1b[0m");
+                        eprintln!("Tasks: {}", plan.tasks.len());
+                        let groups = plan.parallelizable_groups();
+                        for (i, group) in groups.iter().enumerate() {
+                            let names: Vec<_> = group.iter().map(|t| format!("#{} {}", t.id, t.title)).collect();
+                            let parallel = if group.len() > 1 { " (parallel)" } else { "" };
+                            eprintln!("  Phase {}: {}{}", i + 1, names.join(", "), parallel);
+                        }
+                        if let Some(ref cmd) = plan.verification_command {
+                            eprintln!("  Verify: {}", cmd);
+                        }
+                        eprintln!("");
+
+                        // Execute tasks in dependency order
+                        for task in plan.execution_order() {
+                            eprintln!("\x1b[36m── Task #{}: {} ──\x1b[0m", task.id, task.title);
+                            let prompt = plan.task_prompt(task);
+                            let cancel = CancellationToken::new();
+                            let cancel_clone = cancel.clone();
+                            let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                            let outcome = agent.run(prompt, cancel).await;
+                            ctrlc_handle.abort();
+                            handle_agent_outcome(&project_root, &mut agent, outcome);
+                        }
+                        continue;
+                    }
                     SlashCommand::SaveSession(alias) => {
                         let session_dir = project_root.join(".pipit").join("sessions");
                         let _ = std::fs::create_dir_all(&session_dir);
@@ -972,6 +1163,104 @@ async fn main() -> Result<()> {
                     }
                     SlashCommand::Model(_) | SlashCommand::Branch(_) | SlashCommand::BranchList | SlashCommand::BranchSwitch(_) => {
                         eprintln!("\x1b[33mNot available in this build\x1b[0m");
+                        continue;
+                    }
+                    SlashCommand::Setup => {
+                        setup::run()?;
+                        eprintln!("\x1b[90mRestart pipit to use the new configuration.\x1b[0m");
+                        continue;
+                    }
+                    SlashCommand::Config(ref _key) => {
+                        let config_path = pipit_config::user_config_path()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "~/.config/pipit/config.toml".to_string());
+                        let has_config = pipit_config::has_user_config();
+
+                        eprintln!();
+                        eprintln!("  \x1b[1;33mConfiguration\x1b[0m");
+                        eprintln!();
+                        eprintln!("  \x1b[90mConfig file: \x1b[0m{} {}", config_path, if has_config { "\x1b[32m✓\x1b[0m" } else { "\x1b[31m✗ not found\x1b[0m" });
+                        eprintln!("  \x1b[90mProvider:    \x1b[0m{}", provider_kind);
+                        eprintln!("  \x1b[90mModel:       \x1b[0m{}", model);
+                        if let Some(ref url) = base_url {
+                            eprintln!("  \x1b[90mBase URL:    \x1b[0m{}", url);
+                        }
+                        eprintln!("  \x1b[90mApproval:    \x1b[0m{}", ui.status_mut().approval_mode);
+                        eprintln!("  \x1b[90mMax turns:   \x1b[0m{}", config.context.max_turns);
+                        eprintln!();
+                        eprintln!("  \x1b[90mEdit: \x1b[0m{}", config_path);
+                        eprintln!("  \x1b[90mRe-run: \x1b[0m/setup");
+                        eprintln!();
+                        continue;
+                    }
+                    SlashCommand::Doctor => {
+                        eprintln!();
+                        eprintln!("  \x1b[1;33mSystem Health Check\x1b[0m");
+                        eprintln!();
+                        eprintln!("  \x1b[90mProvider:    \x1b[0m{} \x1b[32m✓\x1b[0m", provider_kind);
+                        eprintln!("  \x1b[90mModel:       \x1b[0m{}", model);
+                        if let Some(ref url) = base_url {
+                            eprintln!("  \x1b[90mEndpoint:    \x1b[0m{}", url);
+                        }
+                        let usage = agent.context_usage();
+                        let pct = if usage.limit > 0 { usage.total * 100 / usage.limit } else { 0 };
+                        eprintln!("  \x1b[90mTokens:      \x1b[0m{}/{} ({}%)", usage.total, usage.limit, pct);
+                        eprintln!("  \x1b[90mCost:        \x1b[0m${:.4}", usage.cost);
+                        eprintln!("  \x1b[90mSkills:      \x1b[0m{}", skills.count());
+                        eprintln!("  \x1b[90mHooks:       \x1b[0m{}", workflow_assets.hook_files.len());
+                        eprintln!();
+                        continue;
+                    }
+                    SlashCommand::Skills => {
+                        eprintln!();
+                        eprintln!("  \x1b[1;33mSkills\x1b[0m");
+                        eprintln!();
+                        if skills.count() == 0 {
+                            eprintln!("  \x1b[90mNo skills found. Add .pipit/skills/<name>/SKILL.md\x1b[0m");
+                        } else {
+                            for name in skills.list() {
+                                eprintln!("  \x1b[36m/{}\x1b[0m", name);
+                            }
+                        }
+                        eprintln!();
+                        continue;
+                    }
+                    SlashCommand::Hooks => {
+                        eprintln!();
+                        eprintln!("  \x1b[1;33mHooks\x1b[0m");
+                        eprintln!();
+                        if workflow_assets.hook_files.is_empty() {
+                            eprintln!("  \x1b[90mNo hooks found. Add .pipit/hooks/<event>.sh\x1b[0m");
+                        } else {
+                            for hook in &workflow_assets.hook_files {
+                                let name = hook.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("?");
+                                eprintln!("  \x1b[36m{}\x1b[0m", name);
+                            }
+                        }
+                        eprintln!();
+                        continue;
+                    }
+                    SlashCommand::Mcp => {
+                        eprintln!();
+                        eprintln!("  \x1b[1;33mMCP Servers\x1b[0m");
+                        eprintln!();
+                        match pipit_tools::load_mcp_config(&project_root) {
+                            Some(mcp_config) => {
+                                if mcp_config.mcp_servers.is_empty() {
+                                    eprintln!("  \x1b[90mConfig found but no servers defined\x1b[0m");
+                                } else {
+                                    for (name, _server) in &mcp_config.mcp_servers {
+                                        eprintln!("  \x1b[36m{}\x1b[0m", name);
+                                    }
+                                }
+                            }
+                            None => {
+                                eprintln!("  \x1b[90mNo MCP config found. Add .pipit/mcp.json\x1b[0m");
+                            }
+                        }
+                        eprintln!();
                         continue;
                     }
                     SlashCommand::Unknown(cmd) => {

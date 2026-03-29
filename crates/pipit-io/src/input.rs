@@ -229,6 +229,29 @@ pub enum SlashCommand {
     /// Fix build errors incrementally.
     BuildFix,
 
+    /// Run threat analysis on current files.
+    Threat,
+    /// Run evolutionary variant comparison.
+    Evolve(Option<String>),
+    /// Environment fingerprint and diagnostics.
+    Env(Option<String>),
+    /// Spec-driven development: decompose spec into tasks.
+    Spec(Option<String>),
+
+    /// Re-run interactive setup wizard.
+    Setup,
+    /// Show current config or edit a key.
+    Config(Option<String>),
+
+    /// Run provider connectivity and health check.
+    Doctor,
+    /// List available skills.
+    Skills,
+    /// List active hooks.
+    Hooks,
+    /// Show MCP server status.
+    Mcp,
+
     Unknown(String),
 }
 
@@ -287,6 +310,19 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
         "tdd" => SlashCommand::Tdd(arg),
         "code-review" | "review" => SlashCommand::CodeReview,
         "build-fix" | "fix" => SlashCommand::BuildFix,
+
+        "threat" | "threats" | "security" => SlashCommand::Threat,
+        "evolve" | "evo" => SlashCommand::Evolve(arg),
+        "env" | "environment" => SlashCommand::Env(arg),
+        "spec" | "sdd" => SlashCommand::Spec(arg),
+
+        "setup" | "init" => SlashCommand::Setup,
+        "config" | "cfg" | "settings" => SlashCommand::Config(arg),
+
+        "doctor" | "doc" | "health" => SlashCommand::Doctor,
+        "skills" | "skill" => SlashCommand::Skills,
+        "hooks" | "hook" => SlashCommand::Hooks,
+        "mcp" | "servers" => SlashCommand::Mcp,
 
         _ => SlashCommand::Unknown(cmd),
     })

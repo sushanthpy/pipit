@@ -1,0 +1,561 @@
+//! Per-project AgentLoop pool with SochDB-backed context checkpointing.
+//!
+//! One `AgentLoop` per project. Context persists across tasks and
+//! survives daemon restarts via SochDB serialization.
+
+use crate::config::{DaemonConfig, ProjectConfig};
+use crate::git::GitSafety;
+use crate::store::DaemonStore;
+
+use anyhow::{anyhow, Result};
+use chrono::Utc;
+use pipit_channel::{NormalizedTask, TaskRecord, TaskStatus};
+use pipit_config::ApprovalMode;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio_util::sync::CancellationToken;
+use tracing;
+
+// ---------------------------------------------------------------------------
+// Project agent — wraps a running agent's state
+// ---------------------------------------------------------------------------
+
+/// State for a single project's agent.
+pub struct ProjectAgent {
+    pub project_name: String,
+    pub config: ProjectConfig,
+    /// Cancellation token for the currently running task.
+    pub task_cancel: Option<CancellationToken>,
+    /// Steering channel for mid-task injection.
+    pub steering_tx: Option<mpsc::Sender<String>>,
+    /// Current task ID (if running).
+    pub current_task: Option<String>,
+    /// Serialized agent context (messages) for persistence.
+    pub context_bytes: Option<Vec<u8>>,
+    /// Number of tasks completed in this session.
+    pub tasks_completed: u32,
+    /// Total cost across all tasks.
+    pub total_cost: f64,
+}
+
+impl ProjectAgent {
+    fn new(name: String, config: ProjectConfig) -> Self {
+        Self {
+            project_name: name,
+            config,
+            task_cancel: None,
+            steering_tx: None,
+            current_task: None,
+            context_bytes: None,
+            tasks_completed: 0,
+            total_cost: 0.0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent pool
+// ---------------------------------------------------------------------------
+
+pub struct AgentPool {
+    agents: RwLock<HashMap<String, Arc<Mutex<ProjectAgent>>>>,
+    idle_notify: Notify,
+    store: Arc<DaemonStore>,
+}
+
+impl AgentPool {
+    pub fn new(store: Arc<DaemonStore>, config: &DaemonConfig) -> Result<Self> {
+        let mut agents = HashMap::new();
+
+        for (name, project_config) in &config.projects {
+            let mut agent = ProjectAgent::new(name.clone(), project_config.clone());
+
+            // Restore context from store if available
+            if let Ok(Some(ctx_bytes)) = store.load_context(name) {
+                tracing::info!(project = %name, bytes = ctx_bytes.len(), "restored agent context");
+                agent.context_bytes = Some(ctx_bytes);
+            }
+
+            agents.insert(name.clone(), Arc::new(Mutex::new(agent)));
+        }
+
+        Ok(Self {
+            agents: RwLock::new(agents),
+            idle_notify: Notify::new(),
+            store,
+        })
+    }
+
+    /// Check if a project is currently running a task.
+    pub async fn is_busy(&self, project: &str) -> bool {
+        let agents = self.agents.read().await;
+        if let Some(agent) = agents.get(project) {
+            agent.lock().await.current_task.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Get the current task ID for a project.
+    pub async fn current_task(&self, project: &str) -> Option<String> {
+        let agents = self.agents.read().await;
+        if let Some(agent) = agents.get(project) {
+            agent.lock().await.current_task.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Count running tasks across all projects.
+    pub async fn running_count(&self) -> usize {
+        let agents = self.agents.read().await;
+        let mut count = 0;
+        for agent in agents.values() {
+            if agent.lock().await.current_task.is_some() {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Execute a task on the appropriate project agent.
+    ///
+    /// This is the core dispatch method. It:
+    /// 1. Marks the agent as busy
+    /// 2. Sets up cancellation + steering
+    /// 3. Runs the agent loop (headless, FullAuto)
+    /// 4. Persists results to the store
+    /// 5. Marks the agent as idle
+    pub async fn execute_task(
+        &self,
+        task: &NormalizedTask,
+        store: &DaemonStore,
+    ) -> Result<TaskRecord> {
+        let agents = self.agents.read().await;
+        let agent_arc = agents
+            .get(&task.project)
+            .ok_or_else(|| anyhow!("unknown project: {}", task.project))?
+            .clone();
+        drop(agents);
+
+        let task_cancel = CancellationToken::new();
+        let (steering_tx, _steering_rx) = mpsc::channel::<String>(16);
+
+        // Mark as running
+        {
+            let mut agent = agent_arc.lock().await;
+            agent.current_task = Some(task.task_id.clone());
+            agent.task_cancel = Some(task_cancel.clone());
+            agent.steering_tx = Some(steering_tx.clone());
+        }
+
+        store.update_task_status(&task.task_id, TaskStatus::Running, |r| {
+            r.started_at = Some(Utc::now());
+        })?;
+
+        // Create auto-branch if configured
+        let agent_guard = agent_arc.lock().await;
+        let branch = if agent_guard.config.auto_commit {
+            match GitSafety::create_task_branch(
+                &agent_guard.config.root,
+                &agent_guard.config.branch_prefix,
+                &task.task_id,
+            ) {
+                Ok(branch_name) => {
+                    tracing::info!(
+                        project = %task.project,
+                        branch = %branch_name,
+                        "created task branch"
+                    );
+                    Some(branch_name)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        project = %task.project,
+                        error = %e,
+                        "failed to create task branch (continuing on current branch)"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        drop(agent_guard);
+
+        // Execute the agent task
+        // In a full implementation, this would construct an `AgentLoop` from pipit-core
+        // using the project config (provider, model, mode, tools, etc.) and run it.
+        // For the daemon scaffold, we simulate the execution boundary:
+        let result = self.run_agent_loop(task, &agent_arc, task_cancel.clone()).await;
+
+        // Finalize
+        let mut agent = agent_arc.lock().await;
+        agent.current_task = None;
+        agent.task_cancel = None;
+        agent.steering_tx = None;
+
+        let record = match result {
+            Ok(outcome) => {
+                agent.tasks_completed += 1;
+                agent.total_cost += outcome.cost;
+
+                // Store proof + update task atomically
+                store.store_proof(
+                    &task.task_id,
+                    &outcome.proof_json,
+                    &outcome.summary,
+                    outcome.files_modified.clone(),
+                    outcome.turns,
+                    outcome.cost,
+                    outcome.total_tokens,
+                )?;
+
+                // Checkpoint context
+                if let Some(ref ctx) = outcome.context_bytes {
+                    agent.context_bytes = Some(ctx.clone());
+                    store.save_context(&task.project, ctx)?;
+                }
+
+                // Auto-commit if configured
+                if agent.config.auto_commit {
+                    if let Some(ref branch_name) = branch {
+                        if let Err(e) = GitSafety::auto_commit(
+                            &agent.config.root,
+                            &outcome.summary,
+                        ) {
+                            tracing::warn!(error = %e, "auto-commit failed");
+                        }
+                    }
+                }
+
+                store.get_task(&task.task_id)?.unwrap()
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                store.update_task_status(&task.task_id, TaskStatus::Failed, |r| {
+                    r.completed_at = Some(Utc::now());
+                    r.error = Some(error_msg);
+                })?
+            }
+        };
+
+        // Notify idle waiters
+        self.idle_notify.notify_waiters();
+
+        Ok(record)
+    }
+
+    /// Internal: run the agent loop for a task.
+    /// This is the integration point with pipit-core's `AgentLoop`.
+    async fn run_agent_loop(
+        &self,
+        task: &NormalizedTask,
+        agent: &Arc<Mutex<ProjectAgent>>,
+        cancel: CancellationToken,
+    ) -> Result<AgentOutcome> {
+        let agent_lock = agent.lock().await;
+        let project_root = agent_lock.config.root.clone();
+        let model_name = agent_lock.config.model.clone();
+        let provider_name = agent_lock.config.provider.clone();
+        let max_turns = agent_lock.config.max_turns;
+        let test_command = agent_lock.config.test_command.clone();
+        let lint_command = agent_lock.config.lint_command.clone();
+        let context_bytes = agent_lock.context_bytes.clone();
+        drop(agent_lock);
+
+        tracing::info!(
+            task_id = %task.task_id,
+            project = %task.project,
+            provider = %provider_name,
+            model = %model_name,
+            prompt_len = task.prompt.len(),
+            "executing agent task"
+        );
+
+        // 1. Parse provider kind
+        let provider_kind: pipit_config::ProviderKind = provider_name
+            .parse()
+            .map_err(|e: String| anyhow!("{}", e))?;
+
+        // 2. Resolve API key
+        let api_key = pipit_config::resolve_api_key(provider_kind)
+            .ok_or_else(|| anyhow!("no API key found for provider '{}'", provider_name))?;
+
+        // 3. Create LLM provider
+        let provider: Arc<dyn pipit_provider::LlmProvider> = Arc::from(
+            pipit_provider::create_provider(provider_kind, &model_name, &api_key, None)?
+        );
+
+        // 4. Build ModelRouter (single model for daemon tasks)
+        let models = pipit_core::pev::ModelRouter::single(provider.clone(), model_name.clone());
+
+        // 5. Create ToolRegistry with builtins
+        let tools = pipit_tools::ToolRegistry::with_builtins();
+
+        // 6. Build system prompt
+        let system_prompt = format!(
+            "You are Pipit, an expert AI coding agent running in daemon mode (headless, FullAuto).\n\n\
+             ## Environment\n\
+             - Working directory: {}\n\
+             - Project: {}\n\
+             - Platform: {}\n\n\
+             ## Rules\n\
+             - Execute the task fully without asking for confirmation.\n\
+             - Use tools to read, edit, and test code.\n\
+             - Be thorough but minimal — don't touch code you weren't asked to change.\n\
+             - After making changes, verify them (run tests, check for errors).\n",
+            project_root.display(),
+            task.project,
+            std::env::consts::OS,
+        );
+
+        // 7. Build ContextManager, restore context if available
+        let model_context_window = provider.capabilities().context_window;
+        let mut context = pipit_context::ContextManager::new(
+            system_prompt,
+            model_context_window,
+        );
+
+        if let Some(ref bytes) = context_bytes {
+            match serde_json::from_slice::<Vec<pipit_provider::Message>>(bytes) {
+                Ok(messages) => {
+                    context.restore_messages(messages);
+                    tracing::info!(
+                        project = %task.project,
+                        messages = context.messages().len(),
+                        "restored agent context from checkpoint"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        project = %task.project,
+                        error = %e,
+                        "failed to deserialize context checkpoint, starting fresh"
+                    );
+                }
+            }
+        }
+
+        // 8. Build AgentLoopConfig
+        let config = pipit_core::AgentLoopConfig {
+            max_turns,
+            max_reflections: 3,
+            loop_detection_window: 5,
+            loop_detection_threshold: 3,
+            tool_timeout_secs: 120,
+            enable_steering: true,
+            approval_mode: ApprovalMode::FullAuto,
+            pricing: Default::default(),
+            test_command,
+            lint_command,
+            pev: None,
+        };
+
+        // 9. Construct AgentLoop
+        let extensions: Arc<dyn pipit_extensions::ExtensionRunner> =
+            Arc::new(pipit_extensions::NoopExtensionRunner);
+        let approval_handler: Arc<dyn pipit_core::ApprovalHandler> =
+            Arc::new(pipit_core::AutoApproveHandler);
+
+        let (mut agent_loop, _event_rx, _steering_tx) = pipit_core::AgentLoop::new(
+            models,
+            tools,
+            context,
+            extensions,
+            approval_handler,
+            config,
+            project_root.clone(),
+        );
+
+        // 10. Execute the agent
+        let core_outcome = agent_loop.run(task.prompt.clone(), cancel).await;
+
+        // 11. Serialize context for checkpoint
+        let messages = agent_loop.context().messages().to_vec();
+        let ctx_bytes = serde_json::to_vec(&messages).ok();
+
+        // 12. Map pipit-core's outcome enum to daemon's outcome struct
+        match core_outcome {
+            pipit_core::AgentOutcome::Completed { turns, total_tokens, cost, proof } => {
+                let summary = proof.objective.statement.clone();
+                let files_modified: Vec<String> = proof.realized_edits
+                    .iter()
+                    .map(|e| e.path.clone())
+                    .collect();
+                let proof_json = serde_json::to_value(&proof)
+                    .unwrap_or_else(|_| serde_json::json!({"status": "serialization_failed"}));
+
+                Ok(AgentOutcome {
+                    summary,
+                    turns,
+                    total_tokens,
+                    cost,
+                    files_modified,
+                    proof_json,
+                    context_bytes: ctx_bytes,
+                })
+            }
+            pipit_core::AgentOutcome::MaxTurnsReached(turns) => {
+                Ok(AgentOutcome {
+                    summary: format!("Task reached max turns limit ({})", turns),
+                    turns,
+                    total_tokens: 0,
+                    cost: 0.0,
+                    files_modified: Vec::new(),
+                    proof_json: serde_json::json!({
+                        "status": "max_turns_reached",
+                        "turns": turns
+                    }),
+                    context_bytes: ctx_bytes,
+                })
+            }
+            pipit_core::AgentOutcome::Cancelled => {
+                Err(anyhow!("task cancelled"))
+            }
+            pipit_core::AgentOutcome::Error(msg) => {
+                Err(anyhow!("{}", msg))
+            }
+        }
+    }
+
+    /// Inject a steering message into a running agent.
+    pub async fn steer(&self, project: &str, message: String) -> Result<()> {
+        let agents = self.agents.read().await;
+        let agent_arc = agents
+            .get(project)
+            .ok_or_else(|| anyhow!("unknown project: {}", project))?
+            .clone();
+        drop(agents);
+
+        let agent = agent_arc.lock().await;
+        if let Some(ref tx) = agent.steering_tx {
+            tx.send(message)
+                .await
+                .map_err(|_| anyhow!("steering channel closed"))?;
+            Ok(())
+        } else {
+            Err(anyhow!("no task running on project '{}'", project))
+        }
+    }
+
+    /// Cancel a specific task.
+    pub async fn cancel_task(&self, project: &str, task_id: &str) -> Result<()> {
+        let agents = self.agents.read().await;
+        let agent_arc = agents
+            .get(project)
+            .ok_or_else(|| anyhow!("unknown project: {}", project))?
+            .clone();
+        drop(agents);
+
+        let agent = agent_arc.lock().await;
+        if agent.current_task.as_deref() == Some(task_id) {
+            if let Some(ref cancel) = agent.task_cancel {
+                cancel.cancel();
+                tracing::info!(project, task_id, "task cancellation requested");
+                Ok(())
+            } else {
+                Err(anyhow!("no cancellation token for task"))
+            }
+        } else {
+            Err(anyhow!(
+                "task '{}' is not running on project '{}'",
+                task_id,
+                project
+            ))
+        }
+    }
+
+    /// Cancel all running tasks.
+    pub fn cancel_all(&self) {
+        // Use blocking lock since this is called during shutdown
+        let agents = self.agents.blocking_read();
+        for (name, agent_arc) in agents.iter() {
+            if let Ok(agent) = agent_arc.try_lock() {
+                if let Some(ref cancel) = agent.task_cancel {
+                    cancel.cancel();
+                    tracing::info!(project = %name, "cancelled running task");
+                }
+            }
+        }
+    }
+
+    /// Wait until all project agents are idle.
+    pub async fn wait_idle(&self) {
+        loop {
+            if self.running_count().await == 0 {
+                return;
+            }
+            self.idle_notify.notified().await;
+        }
+    }
+
+    /// Checkpoint all agent contexts to the store.
+    pub fn checkpoint_all(&self, store: &DaemonStore) -> Result<()> {
+        let agents = self.agents.blocking_read();
+        for (name, agent_arc) in agents.iter() {
+            if let Ok(agent) = agent_arc.try_lock() {
+                if let Some(ref ctx) = agent.context_bytes {
+                    store.save_context(name, ctx)?;
+                    tracing::info!(project = %name, bytes = ctx.len(), "context checkpointed");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get status for all projects (for health/status endpoints).
+    pub async fn project_statuses(&self) -> Vec<ProjectStatus> {
+        let agents = self.agents.read().await;
+        let mut statuses = Vec::new();
+        for (name, agent_arc) in agents.iter() {
+            let agent = agent_arc.lock().await;
+            statuses.push(ProjectStatus {
+                name: name.clone(),
+                busy: agent.current_task.is_some(),
+                current_task: agent.current_task.clone(),
+                tasks_completed: agent.tasks_completed,
+                total_cost: agent.total_cost,
+                context_size: agent.context_bytes.as_ref().map(|b| b.len()).unwrap_or(0),
+            });
+        }
+        statuses
+    }
+
+    /// List configured project names.
+    pub async fn project_names(&self) -> Vec<String> {
+        self.agents.read().await.keys().cloned().collect()
+    }
+
+    /// Check if a project exists.
+    pub async fn has_project(&self, name: &str) -> bool {
+        self.agents.read().await.contains_key(name)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+/// Outcome of an agent execution.
+pub struct AgentOutcome {
+    pub summary: String,
+    pub turns: u32,
+    pub total_tokens: u64,
+    pub cost: f64,
+    pub files_modified: Vec<String>,
+    pub proof_json: serde_json::Value,
+    pub context_bytes: Option<Vec<u8>>,
+}
+
+/// Status snapshot for a project (returned by health endpoint).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProjectStatus {
+    pub name: String,
+    pub busy: bool,
+    pub current_task: Option<String>,
+    pub tasks_completed: u32,
+    pub total_cost: f64,
+    pub context_size: usize,
+}

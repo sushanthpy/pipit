@@ -162,6 +162,15 @@ impl Tool for BashTool {
                 )));
             }
 
+            // Prevent escaping project root
+            if !resolved.starts_with(&ctx.project_root) {
+                return Ok(ToolResult::text(format!(
+                    "cd: cannot change directory to {} (outside project root {})",
+                    resolved.display(),
+                    ctx.project_root.display()
+                )));
+            }
+
             ctx.set_cwd(resolved.clone());
             return Ok(ToolResult::text(format!(
                 "Changed directory to {}",

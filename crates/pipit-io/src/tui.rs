@@ -34,6 +34,11 @@ pub struct StatusBarState {
     pub tokens_limit: u64,
     pub cost: f64,
     pub verification: VerificationState,
+    /// Extra fields for /config display
+    pub provider_kind: String,
+    pub base_url: String,
+    pub agent_mode: String,
+    pub max_turns: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -58,6 +63,10 @@ impl StatusBarState {
             tokens_limit: 200_000,
             cost: 0.0,
             verification: VerificationState::default(),
+            provider_kind: String::new(),
+            base_url: String::new(),
+            agent_mode: String::new(),
+            max_turns: 25,
         }
     }
 
@@ -654,6 +663,9 @@ impl PipitUi {
             AgentEvent::RepairStarted { attempt, reason } => {
                 self.finish_inline_sections();
                 eprintln!("{YELLOW}repair› attempt {attempt}: {reason}{RESET}");
+            }
+            AgentEvent::Waiting { label } => {
+                eprintln!("{DIM}{label}{RESET}");
             }
             AgentEvent::TurnEnd {
                 turn_number,

@@ -11,7 +11,7 @@ use pipit_io::StatusBarState;
 use pipit_skills::SkillRegistry;
 use ratatui::style::Color;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::dbg_log;
@@ -58,6 +58,20 @@ fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
         Tdd(None) => "tdd".to_string(),
         CodeReview => "code-review".to_string(),
         BuildFix => "build-fix".to_string(),
+        Threat => "threat".to_string(),
+        Evolve(Some(s)) => format!("evolve {}", s),
+        Evolve(None) => "evolve".to_string(),
+        Env(Some(s)) => format!("env {}", s),
+        Env(None) => "env".to_string(),
+        Spec(Some(s)) => format!("spec {}", s),
+        Spec(None) => "spec".to_string(),
+        Setup => "setup".to_string(),
+        Config(Some(s)) => format!("config {}", s),
+        Config(None) => "config".to_string(),
+        Doctor => "doctor".to_string(),
+        Skills => "skills".to_string(),
+        Hooks => "hooks".to_string(),
+        Mcp => "mcp".to_string(),
         Unknown(s) => s.clone(),
     }
 }
@@ -81,7 +95,7 @@ pub async fn run(
     let _ = extensions.on_session_start().await;
     dbg_log("[tui] on_session_start done");
 
-    let tui_state = Arc::new(Mutex::new(TuiState::new(status, project_root.clone())));
+    let tui_state = Arc::new(std::sync::Mutex::new(TuiState::new(status, project_root.clone())));
     dbg_log("[tui] TuiState created, calling init_terminal…");
     let mut terminal = app::init_terminal().context("Failed to init TUI")?;
     dbg_log("[tui] init_terminal OK (alternate screen active)");
@@ -92,14 +106,15 @@ pub async fn run(
         state.agent_mode = agent_mode.to_string();
     }
 
-    // Spawn agent event handler that updates TUI state
-    let tui_state_for_events = tui_state.clone();
+    // Bridge agent events into the main loop via an mpsc channel
+    // instead of having a separate task take the TuiState mutex.
+    let (agent_event_tx, mut agent_event_rx) = tokio::sync::mpsc::channel::<pipit_core::AgentEvent>(256);
     let mut event_rx_owned = event_rx.resubscribe();
-    let _event_handle = tokio::spawn(async move {
-        use pipit_core::AgentEvent;
+    let _event_bridge = tokio::spawn(async move {
         while let Ok(event) = event_rx_owned.recv().await {
-            let mut state = tui_state_for_events.lock().unwrap();
-            apply_agent_event(&mut state, &event);
+            if agent_event_tx.send(event).await.is_err() {
+                break;
+            }
         }
     });
 
@@ -107,7 +122,7 @@ pub async fn run(
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<String>(8);
 
     // Shared cancellation token — Escape key cancels the current run
-    let cancel_token: Arc<Mutex<CancellationToken>> = Arc::new(Mutex::new(CancellationToken::new()));
+    let cancel_token: Arc<std::sync::Mutex<CancellationToken>> = Arc::new(std::sync::Mutex::new(CancellationToken::new()));
     let cancel_for_agent = cancel_token.clone();
 
     // Spawn agent runner as a separate task so the TUI keeps redrawing
@@ -145,8 +160,12 @@ pub async fn run(
 
     // Main TUI event loop
     loop {
+        // Drain pending agent events (no contention — same thread as draw)
         {
             let mut state = tui_state.lock().unwrap();
+            while let Ok(event) = agent_event_rx.try_recv() {
+                apply_agent_event(&mut state, &event);
+            }
             state.spinner_frame = state.spinner_frame.wrapping_add(1);
             terminal.draw(|f| app::draw(f, &state))?;
         }
@@ -211,42 +230,56 @@ pub async fn run(
                                         s.content_lines.clear();
                                         s.content_scroll_offset = 0;
                                         let help = vec![
-                                            "Commands",
+                                            "## Commands",
                                             "",
-                                            "  /help              Show this help",
-                                            "  /status            Show repo, model, tokens, cost",
-                                            "  /cost              Show token cost summary",
-                                            "  /clear             Reset context and chat history",
-                                            "  /quit  /q          Exit pipit",
+                                            "### Navigation",
                                             "",
-                                            "  /plans             Show proof-packet plan history",
-                                            "  /context  /ctx     Show files in working set",
-                                            "  /tokens  /tok      Token usage breakdown",
-                                            "  /compact           Compress context to free tokens",
+                                            "- `/help` — Show this help",
+                                            "- `/status` — Show repo, model, tokens, cost",
+                                            "- `/cost` — Show token cost summary",
+                                            "- `/clear` — Reset context and chat history",
+                                            "- `/quit` `/q` — Exit pipit",
                                             "",
-                                            "  /add <file>        Add file to working set",
-                                            "  /drop <file>       Remove file from working set",
-                                            "  /plan [goal]       Enter plan-first mode",
-                                            "  /verify [scope]    Run build/lint/test checks",
-                                            "  /aside <question>  Quick side question",
+                                            "### Configuration",
                                             "",
-                                            "Grammar",
+                                            "- `/config` — Show current configuration",
+                                            "- `/setup` — Setup wizard instructions",
+                                            "- `/model <name>` — Switch model",
+                                            "- `/permissions <mode>` — suggest / auto_edit / full_auto",
                                             "",
-                                            "  /command           Slash commands (see above)",
-                                            "  @file.rs           Attach file as context",
-                                            "  !ls -la            Run shell command directly",
-                                            "  Ctrl-J             Insert newline (multiline)",
-                                            "  Tab                Tab-complete /commands, @files",
-                                            "  ↑ ↓                History recall (empty input)",
-                                            "  Alt-↑/↓            Scroll content pane",
+                                            "### Context",
                                             "",
-                                            "Examples",
+                                            "- `/context` `/ctx` — Show files in working set",
+                                            "- `/tokens` `/tok` — Token usage breakdown",
+                                            "- `/compact` — Compress context to free tokens",
+                                            "- `/add <file>` — Add file to working set",
+                                            "- `/drop <file>` — Remove file from working set",
                                             "",
-                                            "  explain this codebase",
-                                            "  @src/main.rs fix the panic on line 42",
-                                            "  !cargo test -- --nocapture",
-                                            "  /add src/lib.rs",
-                                            "  /verify cargo test",
+                                            "### Workflows",
+                                            "",
+                                            "- `/plan [goal]` — Enter plan-first mode",
+                                            "- `/verify [scope]` — Run build/lint/test checks",
+                                            "- `/aside <question>` — Quick side question",
+                                            "- `/spec [file]` — Spec-driven development",
+                                            "- `/tdd [topic]` — Test-driven workflow",
+                                            "- `/review` — Code review uncommitted changes",
+                                            "- `/fix` — Auto-fix build errors",
+                                            "",
+                                            "### System",
+                                            "",
+                                            "- `/doctor` — System health check",
+                                            "- `/skills` — List available skills",
+                                            "- `/hooks` — List active hooks",
+                                            "- `/mcp` — MCP server status",
+                                            "",
+                                            "### Grammar",
+                                            "",
+                                            "- `@file.rs` — Attach file as context",
+                                            "- `!ls -la` — Run shell command directly",
+                                            "- `Ctrl-J` — Insert newline (multiline)",
+                                            "- `Tab` — Tab-complete commands and files",
+                                            "- `↑ ↓` — History recall",
+                                            "- `Alt-↑/↓` — Scroll content pane",
                                         ];
                                         for line in help {
                                             s.content_lines.push(line.to_string());
@@ -279,6 +312,137 @@ pub async fn run(
                                         drop(s);
                                         let mut s = tui_state.lock().unwrap();
                                         s.push_activity("·", Color::Cyan, info);
+                                    }
+                                    pipit_io::input::SlashCommand::Config(ref _key) => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.push_activity("⚙", Color::Cyan, "/config".to_string());
+                                        s.content_lines.clear();
+                                        s.content_scroll_offset = 0;
+
+                                        // Snapshot status values before borrowing content_lines
+                                        let config_path = pipit_config::user_config_path()
+                                            .map(|p| p.display().to_string())
+                                            .unwrap_or_else(|| "~/.config/pipit/config.toml".to_string());
+                                        let has_config = pipit_config::has_user_config();
+                                        let provider = s.status.provider_kind.clone();
+                                        let model = s.status.model.clone();
+                                        let base_url = s.status.base_url.clone();
+                                        let mode = s.status.agent_mode.clone();
+                                        let approval = format!("{}", s.status.approval_mode);
+                                        let max_turns = s.status.max_turns;
+
+                                        let lines: Vec<String> = vec![
+                                            "## Current Configuration".into(),
+                                            String::new(),
+                                            format!("**Config file:** `{}`", config_path),
+                                            format!("**Exists:** {}", if has_config { "✓ yes" } else { "✗ no" }),
+                                            String::new(),
+                                            "### Active Settings".into(),
+                                            String::new(),
+                                            format!("- **Provider:** `{}`", provider),
+                                            format!("- **Model:** `{}`", model),
+                                            if !base_url.is_empty() { format!("- **Base URL:** `{}`", base_url) } else { String::new() },
+                                            format!("- **Mode:** `{}`", mode),
+                                            format!("- **Approval:** `{}`", approval),
+                                            format!("- **Max turns:** `{}`", max_turns),
+                                            String::new(),
+                                            "### Config Sources (priority order)".into(),
+                                            String::new(),
+                                            "1. CLI flags (`--provider`, `--model`, etc.)".into(),
+                                            "2. Environment variables (`PIPIT_PROVIDER`, etc.)".into(),
+                                            "3. Project config (`.pipit/config.toml`)".into(),
+                                            format!("4. User config (`{}`)", config_path),
+                                            String::new(),
+                                            "### Quick Actions".into(),
+                                            String::new(),
+                                            "- `/setup` — Re-run interactive setup wizard".into(),
+                                            "- `/model <name>` — Switch model".into(),
+                                            "- `/permissions <mode>` — Switch approval mode".into(),
+                                        ];
+                                        s.content_lines.extend(lines.into_iter().filter(|l| !l.is_empty() || true));
+
+                                        s.has_received_input = true;
+                                    }
+                                    pipit_io::input::SlashCommand::Setup => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.push_activity("⚙", Color::Yellow, "/setup".to_string());
+                                        s.content_lines.clear();
+                                        s.content_scroll_offset = 0;
+
+                                        s.content_lines.push("## Setup Wizard".to_string());
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("The interactive setup wizard runs outside the TUI.".to_string());
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("### To reconfigure:".to_string());
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("1. Press `Ctrl-C` to exit".to_string());
+                                        s.content_lines.push("2. Run `pipit setup`".to_string());
+                                        s.content_lines.push("3. Run `pipit` to start with new config".to_string());
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("### Quick changes (no restart needed):".to_string());
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("- `/model <name>` — Switch model".to_string());
+                                        s.content_lines.push("- `/permissions <mode>` — suggest / auto_edit / full_auto".to_string());
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("### Config file:".to_string());
+                                        s.content_lines.push(String::new());
+                                        let cfg_path = pipit_config::user_config_path()
+                                            .map(|p| p.display().to_string())
+                                            .unwrap_or_else(|| "~/.config/pipit/config.toml".to_string());
+                                        s.content_lines.push(format!("  `{}`", cfg_path));
+                                        s.content_lines.push(String::new());
+                                        s.content_lines.push("Edit this file directly for advanced settings.".to_string());
+
+                                        s.has_received_input = true;
+                                    }
+                                    pipit_io::input::SlashCommand::Doctor => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.push_activity("🏥", Color::Cyan, "/doctor".to_string());
+                                        s.content_lines.clear();
+                                        s.content_scroll_offset = 0;
+
+                                        let provider = s.status.provider_kind.clone();
+                                        let model = s.status.model.clone();
+                                        let base_url = s.status.base_url.clone();
+                                        let tokens_used = s.status.tokens_used;
+                                        let tokens_limit = s.status.tokens_limit;
+
+                                        let lines: Vec<String> = vec![
+                                            "## System Health Check".into(),
+                                            String::new(),
+                                            "### Provider".into(),
+                                            String::new(),
+                                            format!("- **Provider:** `{}`", provider),
+                                            format!("- **Model:** `{}`", model),
+                                            if !base_url.is_empty() { format!("- **Endpoint:** `{}`", base_url) } else { "- **Endpoint:** default".into() },
+                                            format!("- **Status:** ✓ connected (you're using it right now)"),
+                                            String::new(),
+                                            "### Context Budget".into(),
+                                            String::new(),
+                                            format!("- **Tokens used:** `{}`", tokens_used),
+                                            format!("- **Token limit:** `{}`", tokens_limit),
+                                            format!("- **Usage:** `{}%`", if tokens_limit > 0 { tokens_used * 100 / tokens_limit } else { 0 }),
+                                            String::new(),
+                                            "### Extensions".into(),
+                                            String::new(),
+                                            "- Use `/skills` to list available skills".into(),
+                                            "- Use `/hooks` to list active hooks".into(),
+                                            "- Use `/mcp` to show MCP server status".into(),
+                                            String::new(),
+                                            "> To test provider connectivity from terminal: `pipit setup`".into(),
+                                        ];
+                                        s.content_lines.extend(lines);
+                                        s.has_received_input = true;
+                                    }
+                                    pipit_io::input::SlashCommand::Skills => {
+                                        // Delegate to agent — it will list skills
+                                        let _ = prompt_tx.send("/skills".to_string()).await;
+                                    }
+                                    pipit_io::input::SlashCommand::Hooks => {
+                                        let _ = prompt_tx.send("/hooks".to_string()).await;
+                                    }
+                                    pipit_io::input::SlashCommand::Mcp => {
+                                        let _ = prompt_tx.send("/mcp".to_string()).await;
                                     }
                                     other => {
                                         let cmd_str = format!("/{}", slash_command_to_str(&other));
@@ -330,12 +494,43 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
     match event {
         AgentEvent::TurnStart { turn_number } => {
             state.finish_working();
+            // Add a visual turn separator in the content pane
+            if !state.content_lines.is_empty() {
+                state.content_lines.push(String::new());
+                state.content_lines.push(format!(
+                    "─── turn {} ───────────────────────────",
+                    turn_number
+                ));
+                state.content_lines.push(String::new());
+            }
             state.begin_working(&format!("Turn {}", turn_number));
         }
         AgentEvent::ContentDelta { text } => {
-            let cleaned = text.replace("</think>", "").replace("<think>", "");
-            if !cleaned.trim().is_empty() || !text.contains("think>") {
-                state.push_content(&cleaned);
+            // Handle <think> tags: toggle thinking mode, strip tags
+            let mut remaining = text.as_str();
+            while !remaining.is_empty() {
+                if state.is_thinking {
+                    if let Some(end) = remaining.find("</think>") {
+                        // Thinking portion before close tag — discard (it's reasoning)
+                        remaining = &remaining[end + 8..];
+                        state.is_thinking = false;
+                    } else {
+                        // Still thinking — discard entire chunk
+                        break;
+                    }
+                } else if let Some(start) = remaining.find("<think>") {
+                    // Content before <think> is real response
+                    let before = &remaining[..start];
+                    if !before.is_empty() {
+                        state.push_content(before);
+                    }
+                    remaining = &remaining[start + 7..];
+                    state.is_thinking = true;
+                } else {
+                    // No tags — normal response content
+                    state.push_content(remaining);
+                    break;
+                }
             }
         }
         AgentEvent::ContentComplete { .. } => {
@@ -370,6 +565,15 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             match result {
                 pipit_core::ToolCallOutcome::Success { mutated: true, .. } => {
                     state.push_activity("✓", Color::Green, format!("{} done", name));
+                }
+                pipit_core::ToolCallOutcome::Success { mutated: false, content, .. } => {
+                    // Show abbreviated result in content pane for read operations
+                    if matches!(name.as_str(), "bash" | "read_file" | "grep" | "glob" | "list_directory") {
+                        let preview: String = content.lines().take(3).collect::<Vec<_>>().join("\n");
+                        if !preview.trim().is_empty() {
+                            state.content_lines.push(format!("> {}", preview.lines().next().unwrap_or("")));
+                        }
+                    }
                 }
                 pipit_core::ToolCallOutcome::Error { message } => {
                     let msg = if message.len() > 80 {
@@ -408,6 +612,9 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
         AgentEvent::RepairStarted { attempt, reason } => {
             state.push_activity("↻", Color::Yellow, format!("repair #{}: {}", attempt, reason));
             state.begin_working("Repairing…");
+        }
+        AgentEvent::Waiting { label } => {
+            state.begin_working(label);
         }
         AgentEvent::TurnEnd { turn_number, .. } => {
             state.finish_working();
