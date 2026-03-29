@@ -1,6 +1,7 @@
 pub mod budget;
 pub mod session;
 pub mod knowledge_injection;
+pub mod federated_knowledge;
 
 pub use budget::ContextManager;
 pub use session::SessionTree;

@@ -52,12 +52,24 @@ impl AnthropicProvider {
             "stream": true,
             "messages": messages,
         });
-        if !request.system.is_empty() { body["system"] = serde_json::json!(request.system); }
+        if !request.system.is_empty() {
+            // Use structured system prompt with cache_control for Anthropic prompt caching.
+            // This can reduce input costs by ~90% for repeated system prompts.
+            body["system"] = serde_json::json!([{
+                "type": "text",
+                "text": request.system,
+                "cache_control": {"type": "ephemeral"}
+            }]);
+        }
         if let Some(temp) = request.temperature { body["temperature"] = serde_json::json!(temp); }
         if !request.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = request.tools.iter().map(|t| serde_json::json!({
+            let mut tools: Vec<serde_json::Value> = request.tools.iter().map(|t| serde_json::json!({
                 "name": t.name, "description": t.description, "input_schema": t.input_schema,
             })).collect();
+            // Mark the last tool with cache_control for prompt caching
+            if let Some(last_tool) = tools.last_mut() {
+                last_tool["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
             body["tools"] = serde_json::json!(tools);
         }
         body

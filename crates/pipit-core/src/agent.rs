@@ -147,6 +147,15 @@ impl AgentLoop {
         &self.models.for_role(crate::pev::ModelRole::Executor).provider
     }
 
+    /// Hot-swap the model at runtime (from /model command).
+    /// Creates a new provider with the given model string, keeping the same provider kind and API key.
+    pub fn set_model(&mut self, provider_kind: pipit_config::ProviderKind, model: &str, api_key: &str, base_url: Option<&str>) -> Result<(), String> {
+        let new_provider = pipit_provider::create_provider(provider_kind, model, api_key, base_url)
+            .map_err(|e| format!("Failed to create provider for model '{}': {}", model, e))?;
+        self.models = crate::ModelRouter::single(Arc::from(new_provider), model.to_string());
+        Ok(())
+    }
+
     /// Update the approval mode at runtime (from /permissions command).
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
         self.tool_context.approval_mode = mode;

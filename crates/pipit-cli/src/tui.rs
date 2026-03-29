@@ -72,6 +72,26 @@ fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
         Skills => "skills".to_string(),
         Hooks => "hooks".to_string(),
         Mcp => "mcp".to_string(),
+        Diff => "diff".to_string(),
+        Commit(Some(s)) => format!("commit {}", s),
+        Commit(None) => "commit".to_string(),
+        Search(s) => if s.is_empty() { "search".to_string() } else { format!("search {}", s) },
+        Loop(Some(s)) => format!("loop {}", s),
+        Loop(None) => "loop".to_string(),
+        Memory(Some(s)) => format!("memory {}", s),
+        Memory(None) => "memory".to_string(),
+        Background(Some(s)) => format!("bg {}", s),
+        Background(None) => "bg".to_string(),
+        Bench(Some(s)) => format!("bench {}", s),
+        Bench(None) => "bench".to_string(),
+        Browse(Some(s)) => format!("browse {}", s),
+        Browse(None) => "browse".to_string(),
+        Mesh(Some(s)) => format!("mesh {}", s),
+        Mesh(None) => "mesh".to_string(),
+        Watch(Some(s)) => format!("watch {}", s),
+        Watch(None) => "watch".to_string(),
+        Deps(Some(s)) => format!("deps {}", s),
+        Deps(None) => "deps".to_string(),
         Unknown(s) => s.clone(),
     }
 }
@@ -255,6 +275,15 @@ pub async fn run(
                                             "- `/add <file>` — Add file to working set",
                                             "- `/drop <file>` — Remove file from working set",
                                             "",
+                                            "### Git & Version Control",
+                                            "",
+                                            "- `/diff` — Show uncommitted changes",
+                                            "- `/commit [msg]` — Commit with AI-generated message",
+                                            "- `/undo` — Undo last agent edits",
+                                            "- `/branch [name]` — Create branch or show current",
+                                            "- `/branches` — List all branches",
+                                            "- `/switch <branch>` — Switch branch",
+                                            "",
                                             "### Workflows",
                                             "",
                                             "- `/plan [goal]` — Enter plan-first mode",
@@ -264,6 +293,15 @@ pub async fn run(
                                             "- `/tdd [topic]` — Test-driven workflow",
                                             "- `/review` — Code review uncommitted changes",
                                             "- `/fix` — Auto-fix build errors",
+                                            "- `/search <query>` — Search codebase",
+                                            "- `/loop [N] <prompt>` — Repeat every N seconds",
+                                            "- `/bg <prompt>` — Background task via daemon",
+                                            "",
+                                            "### Session & Memory",
+                                            "",
+                                            "- `/save [name]` — Save current session",
+                                            "- `/resume [name]` — Resume saved session",
+                                            "- `/memory [add|list|clear]` — Persistent knowledge",
                                             "",
                                             "### System",
                                             "",
@@ -271,6 +309,14 @@ pub async fn run(
                                             "- `/skills` — List available skills",
                                             "- `/hooks` — List active hooks",
                                             "- `/mcp` — MCP server status",
+                                            "- `/deps` — Dependency health scan",
+                                            "",
+                                            "### Advanced",
+                                            "",
+                                            "- `/bench [run|list|history]` — Benchmark runner",
+                                            "- `/browse <url>` — Headless browser testing",
+                                            "- `/mesh [status|nodes|join]` — Distributed mesh",
+                                            "- `/watch [start|deps|tests]` — Ambient monitor",
                                             "",
                                             "### Grammar",
                                             "",
@@ -444,6 +490,171 @@ pub async fn run(
                                     pipit_io::input::SlashCommand::Mcp => {
                                         let _ = prompt_tx.send("/mcp".to_string()).await;
                                     }
+                                    pipit_io::input::SlashCommand::Undo | pipit_io::input::SlashCommand::Rewind => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.push_activity("↩", Color::Yellow, "/undo".to_string());
+                                        // Check git for recently modified files by the agent
+                                        let output = std::process::Command::new("git")
+                                            .args(["diff", "--name-only", "HEAD~1"])
+                                            .current_dir(project_root)
+                                            .output();
+                                        match output {
+                                            Ok(o) if o.status.success() => {
+                                                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                                                let files: Vec<&str> = stdout.lines().collect();
+                                                if files.is_empty() {
+                                                    s.push_activity("·", Color::DarkGray, "Nothing to undo".to_string());
+                                                } else {
+                                                    drop(s); // release lock for git ops
+                                                    let head = std::process::Command::new("git")
+                                                        .args(["rev-parse", "HEAD~1"])
+                                                        .current_dir(project_root)
+                                                        .output()
+                                                        .ok()
+                                                        .and_then(|o| if o.status.success() {
+                                                            Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                                                        } else { None });
+                                                    if let Some(sha) = head {
+                                                        let mut restored = 0;
+                                                        for file in &files {
+                                                            let r = std::process::Command::new("git")
+                                                                .args(["checkout", &sha, "--", file])
+                                                                .current_dir(project_root)
+                                                                .output();
+                                                            if r.map(|o| o.status.success()).unwrap_or(false) {
+                                                                restored += 1;
+                                                            }
+                                                        }
+                                                        let mut s = tui_state.lock().unwrap();
+                                                        s.push_activity("✓", Color::Green, format!("Restored {} file(s) to {}", restored, &sha[..8]));
+                                                    } else {
+                                                        let mut s = tui_state.lock().unwrap();
+                                                        s.push_activity("✗", Color::Red, "Could not determine rollback point".to_string());
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                s.push_activity("✗", Color::Red, "Not in a git repo".to_string());
+                                            }
+                                        }
+                                    }
+                                    pipit_io::input::SlashCommand::Branch(ref name) => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        if let Some(ref branch_name) = name {
+                                            drop(s);
+                                            let output = std::process::Command::new("git")
+                                                .args(["checkout", "-b", branch_name])
+                                                .current_dir(project_root)
+                                                .output();
+                                            let mut s = tui_state.lock().unwrap();
+                                            match output {
+                                                Ok(o) if o.status.success() => {
+                                                    s.push_activity("🌿", Color::Green, format!("Created branch '{}'", branch_name));
+                                                    s.status.branch = branch_name.clone();
+                                                }
+                                                Ok(o) => {
+                                                    let err = String::from_utf8_lossy(&o.stderr);
+                                                    s.push_activity("✗", Color::Red, err.trim().to_string());
+                                                }
+                                                Err(e) => s.push_activity("✗", Color::Red, format!("git: {}", e)),
+                                            }
+                                        } else {
+                                            let branch = s.status.branch.clone();
+                                            s.push_activity("🌿", Color::Cyan, format!("Current branch: {}", branch));
+                                        }
+                                    }
+                                    pipit_io::input::SlashCommand::BranchList => {
+                                        let output = std::process::Command::new("git")
+                                            .args(["branch", "-a", "--no-color"])
+                                            .current_dir(project_root)
+                                            .output();
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.content_lines.clear();
+                                        s.content_scroll_offset = 0;
+                                        s.content_lines.push("## Branches".to_string());
+                                        s.content_lines.push(String::new());
+                                        match output {
+                                            Ok(o) => {
+                                                let branches = String::from_utf8_lossy(&o.stdout);
+                                                for line in branches.lines() {
+                                                    s.content_lines.push(format!("`{}`", line.trim()));
+                                                }
+                                            }
+                                            Err(e) => s.content_lines.push(format!("Error: {}", e)),
+                                        }
+                                        s.has_received_input = true;
+                                    }
+                                    pipit_io::input::SlashCommand::BranchSwitch(ref target) => {
+                                        if target.is_empty() {
+                                            let mut s = tui_state.lock().unwrap();
+                                            s.push_activity("⚠", Color::Yellow, "Usage: /switch <branch>".to_string());
+                                        } else {
+                                            let output = std::process::Command::new("git")
+                                                .args(["checkout", target])
+                                                .current_dir(project_root)
+                                                .output();
+                                            let mut s = tui_state.lock().unwrap();
+                                            match output {
+                                                Ok(o) if o.status.success() => {
+                                                    s.push_activity("✓", Color::Green, format!("Switched to '{}'", target));
+                                                    s.status.branch = target.clone();
+                                                }
+                                                Ok(o) => {
+                                                    let err = String::from_utf8_lossy(&o.stderr);
+                                                    s.push_activity("✗", Color::Red, err.trim().to_string());
+                                                }
+                                                Err(e) => s.push_activity("✗", Color::Red, format!("git: {}", e)),
+                                            }
+                                        }
+                                    }
+                                    pipit_io::input::SlashCommand::Diff => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.push_activity("±", Color::Cyan, "/diff".to_string());
+                                        s.content_lines.clear();
+                                        s.content_scroll_offset = 0;
+                                        s.content_lines.push("## Uncommitted Changes".to_string());
+                                        s.content_lines.push(String::new());
+                                        drop(s);
+
+                                        let staged = std::process::Command::new("git")
+                                            .args(["diff", "--staged"])
+                                            .current_dir(project_root)
+                                            .output();
+                                        let unstaged = std::process::Command::new("git")
+                                            .args(["diff"])
+                                            .current_dir(project_root)
+                                            .output();
+
+                                        let mut s = tui_state.lock().unwrap();
+                                        if let Ok(ref o) = staged {
+                                            let text = String::from_utf8_lossy(&o.stdout);
+                                            if !text.trim().is_empty() {
+                                                s.content_lines.push("### Staged".to_string());
+                                                s.content_lines.push("```diff".to_string());
+                                                for line in text.lines().take(200) {
+                                                    s.content_lines.push(line.to_string());
+                                                }
+                                                s.content_lines.push("```".to_string());
+                                                s.content_lines.push(String::new());
+                                            }
+                                        }
+                                        if let Ok(ref o) = unstaged {
+                                            let text = String::from_utf8_lossy(&o.stdout);
+                                            if !text.trim().is_empty() {
+                                                s.content_lines.push("### Unstaged".to_string());
+                                                s.content_lines.push("```diff".to_string());
+                                                for line in text.lines().take(200) {
+                                                    s.content_lines.push(line.to_string());
+                                                }
+                                                s.content_lines.push("```".to_string());
+                                            }
+                                        }
+                                        let has_content = s.content_lines.len() > 2;
+                                        if !has_content {
+                                            s.content_lines.push("*No uncommitted changes*".to_string());
+                                        }
+                                        s.has_received_input = true;
+                                    }
                                     other => {
                                         let cmd_str = format!("/{}", slash_command_to_str(&other));
                                         let _ = prompt_tx.send(cmd_str).await;
@@ -458,9 +669,53 @@ pub async fn run(
                                 {
                                     let mut s = tui_state.lock().unwrap();
                                     s.composer.push_shell_history(&cmd);
+                                    s.push_activity("$", Color::Green, format!("$ {}", cmd));
                                 }
-                                let enriched = format!("Run this shell command and show the output: `{}`", cmd);
-                                let _ = prompt_tx.send(enriched).await;
+                                // Execute directly in shell — NOT through the AI
+                                let output = tokio::process::Command::new("sh")
+                                    .arg("-c")
+                                    .arg(&cmd)
+                                    .current_dir(project_root)
+                                    .output()
+                                    .await;
+                                let mut s = tui_state.lock().unwrap();
+                                // Add a visual header in the content pane
+                                s.content_lines.push(String::new());
+                                s.content_lines.push(format!("$ {}", cmd));
+                                match output {
+                                    Ok(o) => {
+                                        let stdout = String::from_utf8_lossy(&o.stdout);
+                                        let stderr = String::from_utf8_lossy(&o.stderr);
+                                        if !stdout.is_empty() {
+                                            for line in stdout.lines() {
+                                                s.content_lines.push(line.to_string());
+                                            }
+                                        }
+                                        if !stderr.is_empty() {
+                                            s.content_lines.push("[stderr]".to_string());
+                                            for line in stderr.lines() {
+                                                s.content_lines.push(line.to_string());
+                                            }
+                                        }
+                                        if stdout.is_empty() && stderr.is_empty() {
+                                            s.content_lines.push("(no output)".to_string());
+                                        }
+                                        if !o.status.success() {
+                                            if let Some(code) = o.status.code() {
+                                                s.content_lines.push(format!("exit code: {}", code));
+                                                s.push_activity("✗", Color::Red, format!("exit {}", code));
+                                            }
+                                        } else {
+                                            s.push_activity("✓", Color::Green, "done".to_string());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        s.content_lines.push(format!("Error: {}", e));
+                                        s.push_activity("✗", Color::Red, format!("error: {}", e));
+                                    }
+                                }
+                                s.has_received_input = true;
+                                s.auto_scroll_content();
                             }
                             pipit_io::input::UserInput::PromptWithFiles { prompt, files } => {
                                 let enriched = format!("First read these files: {}. Then: {}", files.join(", "), prompt);
@@ -494,6 +749,7 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
     match event {
         AgentEvent::TurnStart { turn_number } => {
             state.finish_working();
+            state.current_turn = *turn_number;
             // Add a visual turn separator in the content pane
             if !state.content_lines.is_empty() {
                 state.content_lines.push(String::new());

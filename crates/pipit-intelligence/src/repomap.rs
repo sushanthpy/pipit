@@ -2,8 +2,18 @@ use crate::discovery;
 use crate::graph::ReferenceGraph;
 use crate::tags::{self, FileTag, TagKind};
 use crate::IntelligenceConfig;
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Cached tag data with per-file mtime tracking.
+#[derive(Serialize, Deserialize)]
+struct TagCache {
+    /// Tags keyed by relative file path.
+    file_tags: HashMap<PathBuf, Vec<FileTag>>,
+    /// Mtime (seconds since epoch) per file.
+    file_mtimes: HashMap<PathBuf, u64>,
+}
 
 /// The complete RepoMap: structural understanding of the codebase.
 pub struct RepoMap {
@@ -21,11 +31,75 @@ pub struct RankedFile {
 }
 
 impl RepoMap {
-    /// Build a RepoMap from scratch.
+    /// Build a RepoMap, using cached tags when available.
+    /// The cache is stored at `.pipit/repomap.cache` and
+    /// invalidated per-file based on mtime.
     pub fn build(root: &Path, config: IntelligenceConfig) -> Self {
         let files = discovery::discover_files(root, config.max_file_size);
-        let all_tags = tags::extract_all_tags(root, &files);
+        let cache_path = root.join(".pipit").join("repomap.cache");
+
+        // Try loading the cache
+        let cached = Self::load_cache(&cache_path);
+
+        // Determine which files need re-parsing
+        let mut cached_tags: HashMap<PathBuf, Vec<FileTag>> = cached
+            .as_ref()
+            .map(|c| c.file_tags.clone())
+            .unwrap_or_default();
+        let cached_mtimes: HashMap<PathBuf, u64> = cached
+            .map(|c| c.file_mtimes)
+            .unwrap_or_default();
+
+        let mut dirty: Vec<PathBuf> = Vec::new();
+        let mut current_mtimes: HashMap<PathBuf, u64> = HashMap::new();
+
+        for file in &files {
+            let abs = root.join(file);
+            let mtime = abs.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            current_mtimes.insert(file.clone(), mtime);
+
+            let needs_reparse = cached_mtimes.get(file)
+                .map(|&cached_mtime| cached_mtime != mtime)
+                .unwrap_or(true);
+
+            if needs_reparse {
+                dirty.push(file.clone());
+            }
+        }
+
+        // Remove tags for files that no longer exist
+        let file_set: HashSet<&PathBuf> = files.iter().collect();
+        cached_tags.retain(|k, _| file_set.contains(k));
+
+        // Only re-parse dirty files
+        if !dirty.is_empty() {
+            let new_tags = tags::extract_all_tags(root, &dirty);
+            // Group new tags by file
+            let mut by_file: HashMap<PathBuf, Vec<FileTag>> = HashMap::new();
+            for tag in new_tags {
+                by_file.entry(tag.rel_path.clone()).or_default().push(tag);
+            }
+            // Merge into cached tags
+            for (file, file_tags) in by_file {
+                cached_tags.insert(file, file_tags);
+            }
+        }
+
+        // Flatten all tags and build graph
+        let all_tags: Vec<FileTag> = cached_tags.values().flatten().cloned().collect();
         let graph = ReferenceGraph::build(&all_tags);
+
+        // Persist updated cache
+        let new_cache = TagCache {
+            file_tags: cached_tags,
+            file_mtimes: current_mtimes,
+        };
+        Self::save_cache(&cache_path, &new_cache);
 
         Self {
             root: root.to_path_buf(),
@@ -33,6 +107,20 @@ impl RepoMap {
             graph,
             files,
             dirty_files: HashSet::new(),
+        }
+    }
+
+    fn load_cache(path: &Path) -> Option<TagCache> {
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    fn save_cache(path: &Path, cache: &TagCache) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(data) = serde_json::to_string(cache) {
+            let _ = std::fs::write(path, data);
         }
     }
 

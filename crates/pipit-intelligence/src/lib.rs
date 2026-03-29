@@ -7,6 +7,7 @@ pub mod dependency_health;
 pub mod semantic_ir;
 pub mod projector;
 pub mod dataflow;
+pub mod file_watcher;
 
 pub use discovery::discover_files;
 pub use tags::{FileTag, TagKind};

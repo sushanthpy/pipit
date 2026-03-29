@@ -181,19 +181,23 @@ impl FitnessEngine {
         }
     }
 
-    /// NSGA-II non-dominated sorting. O(k · N²).
+    /// NSGA-II non-dominated sorting.
+    /// Optimized: only compare i < j pairs (each pair checked once, both directions).
+    /// Reduces constant factor by ~2x vs naive O(k·N²).
     fn non_dominated_sort(&self, scored: &mut [(ArchGenome, FitnessScores)]) {
         let n = scored.len();
         let mut ranks = vec![0usize; n];
         let mut domination_count = vec![0usize; n];
         let mut dominated_by: Vec<Vec<usize>> = vec![Vec::new(); n];
 
+        // Compare each pair only once (upper triangle)
         for i in 0..n {
-            for j in 0..n {
-                if i == j { continue; }
+            for j in (i + 1)..n {
                 if self.dominates(&scored[i].1, &scored[j].1) {
                     dominated_by[i].push(j);
+                    domination_count[j] += 1;
                 } else if self.dominates(&scored[j].1, &scored[i].1) {
+                    dominated_by[j].push(i);
                     domination_count[i] += 1;
                 }
             }

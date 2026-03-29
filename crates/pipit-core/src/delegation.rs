@@ -113,6 +113,20 @@ impl DelegationProxy {
         let latency_cost = time_cost_coefficient * (estimated_latency_ms as f64 / 1000.0);
         expected_remote_value > expected_local_value + latency_cost
     }
+
+    /// Create an isolated git worktree for a subagent.
+    /// Returns the worktree handle for the agent to work in, and handles
+    /// merge-back when the handle is dropped or explicitly merged.
+    pub fn create_isolated_worktree(
+        &self,
+        project_root: &std::path::Path,
+        agent_name: Option<&str>,
+    ) -> Result<crate::worktree::WorktreeHandle, String> {
+        let manager = crate::worktree::WorktreeManager::new(project_root)
+            .map_err(|e| format!("Worktree setup failed: {}", e))?;
+        manager.create(agent_name)
+            .map_err(|e| format!("Worktree creation failed: {}", e))
+    }
 }
 
 /// Build the tool declaration for the delegation tool.

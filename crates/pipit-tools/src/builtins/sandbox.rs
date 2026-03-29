@@ -14,7 +14,7 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            enabled: cfg!(target_os = "linux"), // auto-enable on Linux where bwrap is common
+            enabled: cfg!(any(target_os = "linux", target_os = "macos")),
             mode: SandboxMode::AutoAllow,
             filesystem: FilesystemPolicy::default(),
             network: NetworkPolicy::default(),
@@ -206,6 +206,8 @@ fn shellexpand_tilde(path: &str) -> String {
 }
 
 /// Load sandbox config from .pipit/sandbox.toml.
+/// If no config file exists, sandbox is auto-enabled only when a `.pipit/` directory
+/// is present (indicating a pipit-managed project, not a temp/test dir).
 pub fn load_sandbox_config(project_root: &Path) -> SandboxConfig {
     let config_path = project_root.join(".pipit").join("sandbox.toml");
     if config_path.exists() {
@@ -215,5 +217,10 @@ pub fn load_sandbox_config(project_root: &Path) -> SandboxConfig {
             }
         }
     }
-    SandboxConfig::default()
+    // Only auto-enable sandbox for real projects with .pipit/ dir
+    let mut config = SandboxConfig::default();
+    if !project_root.join(".pipit").exists() {
+        config.enabled = false;
+    }
+    config
 }

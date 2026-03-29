@@ -1687,7 +1687,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pipit-agent-mesh"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-arch-evolution"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -1711,8 +1711,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipit-bench"
+version = "0.1.8"
+dependencies = [
+ "chrono",
+ "pipit-config",
+ "pipit-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "pipit-browser"
+version = "0.1.8"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "pipit-channel"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1727,19 +1754,23 @@ dependencies = [
 
 [[package]]
 name = "pipit-cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "clap",
  "crossterm",
  "dirs",
+ "pipit-bench",
+ "pipit-browser",
  "pipit-config",
  "pipit-context",
  "pipit-core",
+ "pipit-deps",
  "pipit-edit",
  "pipit-extensions",
  "pipit-intelligence",
  "pipit-io",
+ "pipit-mcp",
  "pipit-provider",
  "pipit-skills",
  "pipit-tools",
@@ -1756,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-compliance"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "serde",
@@ -1766,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-config"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "dirs",
  "reqwest",
@@ -1780,9 +1811,10 @@ dependencies = [
 
 [[package]]
 name = "pipit-context"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "pipit-provider",
  "serde",
@@ -1796,7 +1828,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "futures",
@@ -1819,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-daemon"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1858,8 +1890,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipit-deps"
+version = "0.1.8"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "pipit-edit"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "pipit-provider",
  "serde",
@@ -1872,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-env"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "serde",
@@ -1883,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-evolve"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -1897,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-extensions"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "serde",
@@ -1910,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-hw-codesign"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -1920,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-intelligence"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "dashmap",
  "ignore",
@@ -1943,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-io"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "crossterm",
@@ -1961,8 +2006,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipit-lsp"
+version = "0.1.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "pipit-mcp"
+version = "0.1.8"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "pipit-config",
+ "pipit-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "pipit-mesh"
+version = "0.1.8"
+dependencies = [
+ "chrono",
+ "pipit-agent-mesh",
+ "pipit-config",
+ "pipit-core",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "pipit-perf"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -1972,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-provider"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "base64",
@@ -1994,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-skills"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -2004,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-spec"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -2013,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-test-universe"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -2025,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-tools"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "globset",
@@ -2045,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-verify"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "rand 0.8.5",

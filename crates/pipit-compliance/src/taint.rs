@@ -99,6 +99,9 @@ fn detect_sources(file: &str, code: &str) -> Vec<TaintSource> {
     for (line_num, line) in code.lines().enumerate() {
         let t = line.trim();
 
+        // Skip comments and string-only lines
+        if is_comment_or_string_line(t) { continue; }
+
         for (pattern, kind) in &[
             ("request.form", SourceKind::HttpRequest),
             ("request.json", SourceKind::HttpRequest),
@@ -114,7 +117,7 @@ fn detect_sources(file: &str, code: &str) -> Vec<TaintSource> {
             ("env::var", SourceKind::EnvironmentVariable),
             ("process.env", SourceKind::EnvironmentVariable),
         ] {
-            if t.contains(pattern) && !t.starts_with('#') && !t.starts_with("//") {
+            if contains_outside_strings(t, pattern) {
                 id += 1;
                 sources.push(TaintSource {
                     id: format!("src-{}", id),
@@ -135,6 +138,9 @@ fn detect_sinks(file: &str, code: &str) -> Vec<TaintSink> {
 
     for (line_num, line) in code.lines().enumerate() {
         let t = line.trim();
+
+        // Skip comments and string-only lines
+        if is_comment_or_string_line(t) { continue; }
 
         for (pattern, kind) in &[
             ("cursor.execute", SinkKind::DatabaseWrite),
@@ -157,7 +163,7 @@ fn detect_sinks(file: &str, code: &str) -> Vec<TaintSink> {
             ("send_email", SinkKind::EmailSend),
             ("send_mail", SinkKind::EmailSend),
         ] {
-            if t.contains(pattern) && !t.starts_with('#') && !t.starts_with("//") {
+            if contains_outside_strings(t, pattern) {
                 id += 1;
                 sinks.push(TaintSink {
                     id: format!("sink-{}", id),
@@ -189,6 +195,36 @@ fn compute_paths(sources: &[TaintSource], sinks: &[TaintSink], _code: &str) -> V
     }
     paths.sort_by_key(|p| p.length);
     paths
+}
+
+/// Check if a line is a comment or doc-comment (handles //, #, /*, */, ///, """, ''').
+fn is_comment_or_string_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("//")
+        || t.starts_with('#')
+        || t.starts_with("/*")
+        || t.starts_with("* ")
+        || t.starts_with("*/")
+        || t.starts_with("///")
+        || t.starts_with("\"\"\"")
+        || t.starts_with("'''")
+        || (t.starts_with('"') && t.ends_with('"') && t.len() > 2 && t.matches('"').count() == 2)
+        || (t.starts_with('\'') && t.ends_with('\'') && t.len() > 2)
+}
+
+/// Check if `pattern` appears in `line` outside of string literals.
+/// Handles single-quoted, double-quoted, and backtick strings.
+fn contains_outside_strings(line: &str, pattern: &str) -> bool {
+    // Find the pattern's position
+    let Some(pos) = line.find(pattern) else { return false };
+
+    // Count unescaped quotes before the position to determine if we're inside a string
+    let prefix = &line[..pos];
+    let double_quotes = prefix.chars().filter(|&c| c == '"').count();
+    let single_quotes = prefix.chars().filter(|&c| c == '\'').count();
+
+    // If both quote types are even, we're outside strings
+    double_quotes % 2 == 0 && single_quotes % 2 == 0
 }
 
 #[cfg(test)]

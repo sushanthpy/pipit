@@ -12,6 +12,8 @@ pub mod sdd_pipeline;
 pub mod verifier;
 pub mod verifier_llm;
 pub mod worktree;
+pub mod cost_oracle;
+pub mod speculative;
 
 pub use agent::{AgentLoop, AgentLoopConfig, PlanningState};
 pub use events::{

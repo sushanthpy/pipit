@@ -294,36 +294,72 @@ impl PipitUi {
         eprintln!(
             r#"
 {BOLD}Commands{RESET}
+  {BOLD}Navigation{RESET}
   /help, /h            Show this help
   /status              Show session state and workflow assets
-  /plans               Show ranked plans and pivot history
-  /context             View current working set and token usage
-  /tokens              Show context pressure and cost
-  /permissions         Show approval modes
-  /permissions <mode>  Switch mode (plan, edit, cmd, full)
-  /plan [topic]        Discuss before editing (no changes)
-  /tdd [topic]         Test-driven development workflow
-  /code-review         Review uncommitted changes (severity-categorized)
-  /build-fix           Fix build errors incrementally
+  /cost                Show token usage and cost
+  /clear, /c           Clear conversation context
+  /quit, /q            Exit pipit
+
+  {BOLD}Configuration{RESET}
+  /config              Show current configuration
+  /setup               Run setup wizard
+  /model <name>        Switch model at runtime
+  /permissions <mode>  Switch approval mode (suggest/auto_edit/full_auto)
+
+  {BOLD}Context{RESET}
+  /context, /ctx       View current working set
+  /tokens, /tok        Show context pressure and token usage
+  /compact             Compress context history
   /add <file>          Add file to working set
   /drop <file>         Remove file from working set
-  /compact             Compress context history
+
+  {BOLD}Git & Version Control{RESET}
+  /diff                Show uncommitted changes
+  /commit [msg]        Commit with AI-generated message
+  /undo                Undo last agent edits
+  /branch [name]       Create branch or show current
+  /branches            List all branches
+  /switch <branch>     Switch branch
+
+  {BOLD}Workflows{RESET}
+  /plan [topic]        Discuss before editing (plan-first mode)
   /verify [scope]      Run verification (quick, full, pre-commit)
   /aside <question>    Quick question without losing task context
+  /spec [file]         Spec-driven development
+  /tdd [topic]         Test-driven development workflow
+  /code-review         Review uncommitted changes
+  /build-fix           Fix build errors incrementally
+  /search <query>      Search codebase
+  /loop [N] <prompt>   Re-run prompt every N seconds
+  /bg <prompt>         Background task via daemon
+
+  {BOLD}Session & Memory{RESET}
+  /save [name]         Save session for later resumption
+  /resume [name]       Resume or list saved sessions
+  /memory [add|list]   Persistent cross-session knowledge
   /checkpoint [action] Create/restore/list git checkpoints
-  /save-session [name] Save session for later resumption
-  /resume-session [n]  Resume or list saved sessions
-  /clear, /c           Clear conversation context
-  /cost                Show token usage and cost
-  /quit, /q            Exit pipit
+
+  {BOLD}System{RESET}
+  /doctor              System health check
+  /skills              List available skills
+  /hooks               List active hooks
+  /mcp                 MCP server status
+  /deps                Dependency health scan
+
+  {BOLD}Advanced{RESET}
+  /bench [run|list]    Benchmark runner
+  /browse <url>        Headless browser testing
+  /mesh [status|join]  Distributed mesh management
+  /watch [start|stop]  Ambient file watcher
 
 {BOLD}Grammar{RESET}
   /command           Control the agent
   @file              Include file or folder in context
-  !command           Shell passthrough
+  !command           Run shell command directly (no AI)
   Tab                Autocomplete
-  Esc Esc            Rewind / history
-  ?                  Keyboard map
+  Ctrl-J             Insert newline (multiline input)
+  ↑ ↓                History recall
 "#
         );
     }

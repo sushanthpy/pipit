@@ -4,6 +4,7 @@
 //! channel registry, agent pool, task queue, reporter, and daemon lifecycle.
 
 mod channels;
+mod ci_fix;
 mod config;
 mod cron;
 mod git;

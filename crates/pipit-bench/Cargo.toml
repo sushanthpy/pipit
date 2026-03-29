@@ -1,0 +1,14 @@
+[package]
+name = "pipit-bench"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pipit-core = { path = "../pipit-core" }
+pipit-config = { path = "../pipit-config" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }

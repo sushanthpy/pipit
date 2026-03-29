@@ -3,6 +3,17 @@ use pipit_provider::{CompletionRequest, ContentEvent, LlmProvider, Message};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
+/// Estimate tokens from raw text using content-aware heuristics.
+/// Accounts for code (high punctuation → ~3 bytes/token) vs prose (~4 bytes/token).
+fn estimate_text_tokens(text: &str) -> u64 {
+    if text.is_empty() { return 0; }
+    let len = text.len();
+    let punct = text.bytes().filter(|b| b.is_ascii_punctuation()).count();
+    let ratio = punct as f64 / len as f64;
+    let divisor = if ratio > 0.15 { 3.0 } else { 4.0 };
+    (len as f64 / divisor) as u64
+}
+
 /// Token budget model.
 #[derive(Debug, Clone)]
 pub struct TokenBudget {
@@ -107,7 +118,7 @@ impl ContextManager {
         model_limit: u64,
         settings: ContextSettings,
     ) -> Self {
-        let system_tokens = (system_prompt.len() as u64) / 4;
+        let system_tokens = estimate_text_tokens(&system_prompt);
         let budget = TokenBudget::compute(
             model_limit,
             system_tokens,
@@ -192,8 +203,8 @@ impl ContextManager {
     /// Pre-flight check: estimate total request size and return how much over budget we are.
     /// Returns (estimated_input_tokens, model_limit, over_by) where over_by > 0 means overflow.
     pub fn preflight_check(&self, tools_count: usize, repo_map: Option<&str>) -> (u64, u64, i64) {
-        let system_tokens = (self.system_prompt.len() as u64) / 4;
-        let repo_map_tokens = repo_map.map(|m| (m.len() as u64) / 4).unwrap_or(self.budget.repo_map);
+        let system_tokens = estimate_text_tokens(&self.system_prompt);
+        let repo_map_tokens = repo_map.map(|m| estimate_text_tokens(m)).unwrap_or(self.budget.repo_map);
         let history_tokens = self.estimate_token_usage();
         let tools_tokens = (tools_count as u64) * 50;
         let output_reserve = self.settings.max_output_tokens as u64;
@@ -211,7 +222,7 @@ impl ContextManager {
             for block in &mut msg.content {
                 if let pipit_provider::ContentBlock::ToolResult { content, .. } = block {
                     if content.len() > target_chars {
-                        let old_tokens = (content.len() as u64) / 4;
+                        let old_tokens = estimate_text_tokens(content);
                         let lines: Vec<&str> = content.lines().collect();
                         let total = lines.len();
                         let head = 20.min(total);
@@ -227,7 +238,7 @@ impl ContextManager {
                         } else {
                             *content = content[..target_chars].to_string();
                         }
-                        let new_tokens = (content.len() as u64) / 4;
+                        let new_tokens = estimate_text_tokens(content);
                         freed += old_tokens.saturating_sub(new_tokens);
                     }
                 }

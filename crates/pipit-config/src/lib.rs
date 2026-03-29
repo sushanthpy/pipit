@@ -107,12 +107,26 @@ fn apply_cli_overrides(config: &mut PipitConfig, overrides: CliOverrides) {
 }
 
 /// Detect the project root by walking up from cwd looking for .git or .pipit/
+///
+/// Note: `~/.pipit` is the global config directory and does NOT count as a
+/// project root marker. Only `.pipit` directories outside the home directory
+/// are treated as project indicators.
 pub fn detect_project_root() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
+    let home = dirs::home_dir();
     let mut dir = cwd.as_path();
     loop {
-        if dir.join(".git").exists() || dir.join(".pipit").exists() {
+        // .git is always a valid project root marker
+        if dir.join(".git").exists() {
             return Some(dir.to_path_buf());
+        }
+        // .pipit is a project root marker ONLY if this is not the home directory
+        // (because ~/.pipit is the global config directory, not a project)
+        if dir.join(".pipit").exists() {
+            let is_home = home.as_ref().map_or(false, |h| h.as_path() == dir);
+            if !is_home {
+                return Some(dir.to_path_buf());
+            }
         }
         dir = dir.parent()?;
     }

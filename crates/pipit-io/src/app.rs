@@ -32,7 +32,22 @@ use ratatui::{
 };
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Cached syntect highlighting resources.
+fn syntax_set() -> &'static syntect::parsing::SyntaxSet {
+    static SS: OnceLock<syntect::parsing::SyntaxSet> = OnceLock::new();
+    SS.get_or_init(syntect::parsing::SyntaxSet::load_defaults_newlines)
+}
+
+fn highlight_theme() -> &'static syntect::highlighting::Theme {
+    static TH: OnceLock<syntect::highlighting::Theme> = OnceLock::new();
+    TH.get_or_init(|| {
+        let ts = syntect::highlighting::ThemeSet::load_defaults();
+        ts.themes.get("base16-ocean.dark").cloned()
+            .unwrap_or_else(|| ts.themes.into_values().next().unwrap())
+    })
+}
 
 /// Lines displayed in the timeline (left pane: tool actions, plans, turns).
 #[derive(Debug, Clone)]
@@ -77,6 +92,14 @@ pub struct TuiState {
     pub is_thinking: bool,
     /// Whether we're inside a code block for rendering purposes.
     in_code_block: bool,
+    /// Pre-parsed content lines for O(1) draw cost (ARCH-6 optimization).
+    cached_parsed_lines: Vec<Line<'static>>,
+    /// Length of content_lines when cache was last built.
+    cached_lines_count: usize,
+    /// Current turn number for progress indicator.
+    pub current_turn: u32,
+    /// Max turns configured for the session.
+    pub max_turns: u32,
 }
 
 impl TuiState {
@@ -100,6 +123,10 @@ impl TuiState {
             working_since: None,
             is_thinking: false,
             in_code_block: false,
+            cached_parsed_lines: Vec::new(),
+            cached_lines_count: 0,
+            current_turn: 0,
+            max_turns: 10,
         }
     }
 
@@ -149,7 +176,7 @@ impl TuiState {
         }
     }
 
-    fn auto_scroll_content(&mut self) {
+    pub fn auto_scroll_content(&mut self) {
         let total = self.content_lines.len() as u16;
         if total > 10 {
             self.content_scroll_offset = total.saturating_sub(10);
@@ -287,8 +314,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
-    if state.task_label.is_empty() && state.phase_label.is_empty() {
-        // Empty state — just a thin border
+    if state.task_label.is_empty() && state.phase_label.is_empty() && state.current_turn == 0 {
         let block = Block::default()
             .borders(Borders::BOTTOM)
             .border_style(Style::default().fg(Color::DarkGray));
@@ -296,8 +322,15 @@ fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
         return;
     }
 
-    let task_display = if state.task_label.len() > 60 {
-        format!("{}…", &state.task_label.chars().take(58).collect::<String>())
+    // Split area: left for task info, right for progress
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(30), Constraint::Length(20)])
+        .split(area);
+
+    // Left: task + phase labels
+    let task_display = if state.task_label.len() > 50 {
+        format!("{}…", &state.task_label.chars().take(48).collect::<String>())
     } else {
         state.task_label.clone()
     };
@@ -317,7 +350,38 @@ fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::DarkGray));
     let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, chunks[0]);
+
+    // Right: turn progress gauge
+    if state.current_turn > 0 && state.max_turns > 0 {
+        let ratio = (state.current_turn as f64 / state.max_turns as f64).min(1.0);
+        let pct = (ratio * 100.0) as u16;
+        let gauge_label = format!("{}/{}", state.current_turn, state.max_turns);
+
+        // Simple text-based progress bar (ratatui Gauge needs a different layout)
+        let bar_width = chunks[1].width.saturating_sub(4) as usize;
+        let filled = (ratio * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar = format!(" {}{}  {}",
+            "█".repeat(filled),
+            "░".repeat(empty),
+            gauge_label,
+        );
+
+        let bar_color = if pct > 80 { Color::Yellow } else { Color::Cyan };
+        let bar_line = Line::from(Span::styled(bar, Style::default().fg(bar_color)));
+
+        let block = Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray));
+        let p = Paragraph::new(bar_line).block(block);
+        frame.render_widget(p, chunks[1]);
+    } else {
+        let block = Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(block, chunks[1]);
+    }
 }
 
 fn draw_timeline_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -468,13 +532,16 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
 
         // ── Inside code block ──
         if in_code_block {
-            all_lines.push(Line::from(vec![
-                Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    raw.to_string(),
-                    Style::default().fg(Color::Green),
-                ),
-            ]));
+            // Attempt syntax highlighting via syntect
+            let mut spans = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+            let highlighted = highlight_code_line(raw, &code_lang);
+            if highlighted.is_empty() {
+                // Fallback: plain green
+                spans.push(Span::styled(raw.to_string(), Style::default().fg(Color::Green)));
+            } else {
+                spans.extend(highlighted);
+            }
+            all_lines.push(Line::from(spans));
             continue;
         }
 
@@ -835,4 +902,35 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
     }
+}
+
+/// Highlight a single line of code using syntect.
+/// Returns an empty vec if the language is unknown.
+fn highlight_code_line<'a>(line: &str, lang: &str) -> Vec<Span<'a>> {
+    use syntect::easy::HighlightLines;
+    use syntect::highlighting::FontStyle;
+
+    let ss = syntax_set();
+    let syntax = ss.find_syntax_by_token(lang)
+        .or_else(|| ss.find_syntax_by_extension(lang))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let theme = highlight_theme();
+
+    let mut h = HighlightLines::new(syntax, theme);
+    let regions = match h.highlight_line(line, ss) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    regions.into_iter().map(|(style, text)| {
+        let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+        let mut ratatui_style = Style::default().fg(fg);
+        if style.font_style.contains(FontStyle::BOLD) {
+            ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
+        }
+        if style.font_style.contains(FontStyle::ITALIC) {
+            ratatui_style = ratatui_style.add_modifier(Modifier::ITALIC);
+        }
+        Span::styled(text.to_string(), ratatui_style)
+    }).collect()
 }

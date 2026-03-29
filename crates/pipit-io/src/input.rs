@@ -252,6 +252,30 @@ pub enum SlashCommand {
     /// Show MCP server status.
     Mcp,
 
+    /// Show uncommitted changes (git diff).
+    Diff,
+    /// AI-authored commit with generated message.
+    Commit(Option<String>),
+    /// Search the codebase.
+    Search(String),
+    /// Persistent cross-session memory.
+    Memory(Option<String>),
+    /// Continuous polling mode: re-run a prompt at intervals.
+    Loop(Option<String>),
+    /// Background a task to the daemon.
+    Background(Option<String>),
+
+    /// Benchmark runner.
+    Bench(Option<String>),
+    /// Headless browser control.
+    Browse(Option<String>),
+    /// Mesh network management.
+    Mesh(Option<String>),
+    /// Ambient watch mode.
+    Watch(Option<String>),
+    /// Dependency health check.
+    Deps(Option<String>),
+
     Unknown(String),
 }
 
@@ -319,10 +343,25 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
         "setup" | "init" => SlashCommand::Setup,
         "config" | "cfg" | "settings" => SlashCommand::Config(arg),
 
-        "doctor" | "doc" | "health" => SlashCommand::Doctor,
+        "doctor" | "health" => SlashCommand::Doctor,
         "skills" | "skill" => SlashCommand::Skills,
         "hooks" | "hook" => SlashCommand::Hooks,
         "mcp" | "servers" => SlashCommand::Mcp,
+
+        "diff" | "d" => SlashCommand::Diff,
+        "commit" | "ci" => SlashCommand::Commit(arg),
+        "search" | "find" | "s" => SlashCommand::Search(arg.unwrap_or_default()),
+        "loop" => SlashCommand::Loop(arg),
+        "memory" | "mem" => SlashCommand::Memory(arg),
+        "bg" | "background" => SlashCommand::Background(arg),
+
+        "bench" | "benchmark" => SlashCommand::Bench(arg),
+        "browse" | "browser" => SlashCommand::Browse(arg),
+        "mesh" | "cluster" => SlashCommand::Mesh(arg),
+        "watch" => SlashCommand::Watch(arg),
+        "deps" | "dependencies" | "audit" => SlashCommand::Deps(arg),
+
+        "doc" => SlashCommand::Unknown("doc".to_string()), // Reserved for future /doc [topic]
 
         _ => SlashCommand::Unknown(cmd),
     })

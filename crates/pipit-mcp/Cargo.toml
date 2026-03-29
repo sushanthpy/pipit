@@ -1,0 +1,17 @@
+[package]
+name = "pipit-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pipit-tools = { path = "../pipit-tools" }
+pipit-config = { path = "../pipit-config" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }

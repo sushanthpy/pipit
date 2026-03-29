@@ -661,6 +661,32 @@ impl Composer {
             }
         }
 
+        // Git branch completion for /switch and /branch arguments
+        if candidates.is_empty() && self.cursor_row == 0 {
+            let full_line = &self.lines[0];
+            let needs_branch = full_line.starts_with("/switch ") || full_line.starts_with("/branch ");
+            if needs_branch {
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(["branch", "--no-color", "-a"])
+                    .current_dir(&self.project_root)
+                    .output()
+                {
+                    let branches = String::from_utf8_lossy(&output.stdout);
+                    let branch_prefix = token.to_lowercase();
+                    for line in branches.lines() {
+                        let branch = line.trim().trim_start_matches("* ");
+                        if branch.to_lowercase().starts_with(&branch_prefix) {
+                            candidates.push(CompletionItem {
+                                insert_text: branch.to_string(),
+                                description: "branch".to_string(),
+                                kind: CompletionKind::FilePath,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // @file completion
         if token.starts_with('@') {
             let path_prefix = &token[1..];
@@ -982,6 +1008,27 @@ fn default_slash_commands() -> Vec<(String, String)> {
         ("tdd".into(), "Test-driven development workflow".into()),
         ("code-review".into(), "Review uncommitted changes".into()),
         ("build-fix".into(), "Fix build errors incrementally".into()),
+        ("model".into(), "Switch model".into()),
+        ("diff".into(), "Show uncommitted changes".into()),
+        ("commit".into(), "AI-authored commit".into()),
+        ("search".into(), "Search codebase".into()),
+        ("branch".into(), "Create or show branch".into()),
+        ("branches".into(), "List all branches".into()),
+        ("switch".into(), "Switch branch".into()),
+        ("undo".into(), "Undo last agent edits".into()),
+        ("memory".into(), "Persistent knowledge store".into()),
+        ("loop".into(), "Continuous polling mode".into()),
+        ("doctor".into(), "System health check".into()),
+        ("config".into(), "Show configuration".into()),
+        ("spec".into(), "Spec-driven development".into()),
+        ("skills".into(), "List available skills".into()),
+        ("hooks".into(), "List active hooks".into()),
+        ("mcp".into(), "MCP server status".into()),
+        ("bench".into(), "Benchmark runner".into()),
+        ("browse".into(), "Headless browser testing".into()),
+        ("mesh".into(), "Distributed mesh management".into()),
+        ("watch".into(), "Ambient file watcher".into()),
+        ("deps".into(), "Dependency health scan".into()),
     ]
 }
 

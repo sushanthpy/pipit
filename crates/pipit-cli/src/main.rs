@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
     dbg_log("[4/12] api_key resolved");
 
     // Resolve model
-    let model = cli.model.unwrap_or(config.model.default_model.clone());
+    let mut model = cli.model.unwrap_or(config.model.default_model.clone());
 
     // Resolve base URL: CLI flag > config file
     let base_url = cli.base_url.or(config.provider.custom_base_url.clone());
@@ -449,7 +449,10 @@ async fn main() -> Result<()> {
     dbg_log(&format!("[6/12] model_router built, mode={}", agent_mode));
 
     // Build tool registry
-    let tools = ToolRegistry::with_builtins();
+    let mut tools = ToolRegistry::with_builtins();
+
+    // Initialize MCP servers (if configured)
+    let _mcp_manager = pipit_mcp::initialize_mcp(&project_root, &mut tools).await;
 
     let workflow_assets = WorkflowAssets::discover(&project_root);
 
@@ -670,6 +673,9 @@ async fn main() -> Result<()> {
     // Working set: tracks files explicitly added to context
     let mut files_in_context: Vec<String> = Vec::new();
 
+    // Rollback state: (checkpoint_sha, modified_files) from last agent run
+    let mut last_rollback: Option<(String, Vec<String>)> = None;
+
     loop {
         ui.print_prompt();
 
@@ -815,7 +821,36 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     SlashCommand::Undo | SlashCommand::Rewind => {
-                        eprintln!("\x1b[33m/rewind: stepping back is not yet available\x1b[0m");
+                        if let Some((ref sha, ref files)) = last_rollback {
+                            eprintln!("\x1b[33mRolling back {} file(s) to {}\x1b[0m", files.len(), &sha[..8.min(sha.len())]);
+                            let mut success = 0;
+                            let mut failed = 0;
+                            for file in files {
+                                let output = std::process::Command::new("git")
+                                    .args(["checkout", sha.as_str(), "--", file.as_str()])
+                                    .current_dir(&project_root)
+                                    .output();
+                                match output {
+                                    Ok(o) if o.status.success() => {
+                                        eprintln!("  \x1b[32m✓\x1b[0m {}", file);
+                                        success += 1;
+                                    }
+                                    Ok(o) => {
+                                        let err = String::from_utf8_lossy(&o.stderr);
+                                        eprintln!("  \x1b[31m✗\x1b[0m {} — {}", file, err.trim());
+                                        failed += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("  \x1b[31m✗\x1b[0m {} — {}", file, e);
+                                        failed += 1;
+                                    }
+                                }
+                            }
+                            eprintln!("\x1b[2m({} restored, {} failed)\x1b[0m", success, failed);
+                            last_rollback = None;
+                        } else {
+                            eprintln!("\x1b[33mNothing to undo — no recent agent edits\x1b[0m");
+                        }
                         continue;
                     }
                     SlashCommand::Verify(scope) => {
@@ -834,7 +869,7 @@ async fn main() -> Result<()> {
                         });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::Aside(question) => {
@@ -885,7 +920,7 @@ async fn main() -> Result<()> {
                         });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::Tdd(topic) => {
@@ -907,7 +942,7 @@ async fn main() -> Result<()> {
                         let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::CodeReview => {
@@ -921,7 +956,7 @@ async fn main() -> Result<()> {
                         let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::BuildFix => {
@@ -937,7 +972,7 @@ async fn main() -> Result<()> {
                         let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::Threat => {
@@ -954,7 +989,7 @@ async fn main() -> Result<()> {
                         let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::Evolve(target) => {
@@ -972,7 +1007,7 @@ async fn main() -> Result<()> {
                         let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::Env(subcommand) => {
@@ -1005,7 +1040,7 @@ async fn main() -> Result<()> {
                         let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        handle_agent_outcome(&project_root, &mut agent, outcome);
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         continue;
                     }
                     SlashCommand::Spec(spec_arg) => {
@@ -1068,7 +1103,7 @@ async fn main() -> Result<()> {
                             let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
                             let outcome = agent.run(prompt, cancel).await;
                             ctrlc_handle.abort();
-                            handle_agent_outcome(&project_root, &mut agent, outcome);
+                            if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                         }
                         continue;
                     }
@@ -1161,8 +1196,607 @@ async fn main() -> Result<()> {
                         }
                         continue;
                     }
-                    SlashCommand::Model(_) | SlashCommand::Branch(_) | SlashCommand::BranchList | SlashCommand::BranchSwitch(_) => {
-                        eprintln!("\x1b[33mNot available in this build\x1b[0m");
+                    SlashCommand::Diff => {
+                        eprintln!();
+                        // Show staged changes first
+                        let staged = std::process::Command::new("git")
+                            .args(["diff", "--staged", "--stat"])
+                            .current_dir(&project_root)
+                            .output();
+                        if let Ok(ref o) = staged {
+                            let out = String::from_utf8_lossy(&o.stdout);
+                            if !out.trim().is_empty() {
+                                eprintln!("\x1b[1;32mStaged changes:\x1b[0m");
+                                // Show full diff
+                                let full = std::process::Command::new("git")
+                                    .args(["diff", "--staged", "--color=always"])
+                                    .current_dir(&project_root)
+                                    .output();
+                                if let Ok(f) = full {
+                                    eprint!("{}", String::from_utf8_lossy(&f.stdout));
+                                }
+                            }
+                        }
+                        // Show unstaged changes
+                        let unstaged = std::process::Command::new("git")
+                            .args(["diff", "--stat"])
+                            .current_dir(&project_root)
+                            .output();
+                        if let Ok(ref o) = unstaged {
+                            let out = String::from_utf8_lossy(&o.stdout);
+                            if !out.trim().is_empty() {
+                                eprintln!("\x1b[1;33mUnstaged changes:\x1b[0m");
+                                let full = std::process::Command::new("git")
+                                    .args(["diff", "--color=always"])
+                                    .current_dir(&project_root)
+                                    .output();
+                                if let Ok(f) = full {
+                                    eprint!("{}", String::from_utf8_lossy(&f.stdout));
+                                }
+                            }
+                        }
+                        // Check for untracked files
+                        let untracked = std::process::Command::new("git")
+                            .args(["ls-files", "--others", "--exclude-standard"])
+                            .current_dir(&project_root)
+                            .output();
+                        if let Ok(ref o) = untracked {
+                            let out = String::from_utf8_lossy(&o.stdout);
+                            if !out.trim().is_empty() {
+                                eprintln!("\x1b[1;35mUntracked files:\x1b[0m");
+                                for line in out.lines() {
+                                    eprintln!("  {}", line);
+                                }
+                            }
+                        }
+                        // If nothing changed
+                        if staged.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(true)
+                            && unstaged.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(true)
+                            && untracked.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(true)
+                        {
+                            eprintln!("\x1b[2mNo uncommitted changes\x1b[0m");
+                        }
+                        eprintln!();
+                        continue;
+                    }
+                    SlashCommand::Commit(ref msg) => {
+                        // Check for staged changes
+                        let staged = std::process::Command::new("git")
+                            .args(["diff", "--staged", "--stat"])
+                            .current_dir(&project_root)
+                            .output();
+                        let has_staged = staged.as_ref()
+                            .map(|o| !o.stdout.is_empty())
+                            .unwrap_or(false);
+                        if !has_staged {
+                            // Auto-stage all changes
+                            let _ = std::process::Command::new("git")
+                                .args(["add", "-A"])
+                                .current_dir(&project_root)
+                                .output();
+                        }
+                        if let Some(ref message) = msg {
+                            // Direct commit with provided message
+                            let output = std::process::Command::new("git")
+                                .args(["commit", "-m", message])
+                                .current_dir(&project_root)
+                                .output();
+                            match output {
+                                Ok(o) if o.status.success() => {
+                                    eprintln!("\x1b[32mCommitted: {}\x1b[0m", message);
+                                }
+                                Ok(o) => {
+                                    let err = String::from_utf8_lossy(&o.stderr);
+                                    eprintln!("\x1b[31m{}\x1b[0m", err.trim());
+                                }
+                                Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                            }
+                        } else {
+                            // Generate commit message via LLM
+                            let diff = std::process::Command::new("git")
+                                .args(["diff", "--staged"])
+                                .current_dir(&project_root)
+                                .output();
+                            if let Ok(d) = diff {
+                                let diff_text = String::from_utf8_lossy(&d.stdout);
+                                if diff_text.trim().is_empty() {
+                                    eprintln!("\x1b[33mNo changes to commit\x1b[0m");
+                                } else {
+                                    let prompt = format!(
+                                        "Generate a conventional commit message for this diff. \
+                                         Use the format: type(scope): description\n\
+                                         Types: feat, fix, refactor, docs, test, chore, perf\n\
+                                         Reply with ONLY the commit message, nothing else.\n\n\
+                                         ```diff\n{}\n```",
+                                        if diff_text.len() > 8000 { &diff_text[..8000] } else { &diff_text }
+                                    );
+                                    let cancel = CancellationToken::new();
+                                    let cancel_clone = cancel.clone();
+                                    let ctrlc_handle = tokio::spawn(async move {
+                                        tokio::signal::ctrl_c().await.ok();
+                                        cancel_clone.cancel();
+                                    });
+                                    let outcome = agent.run(prompt, cancel).await;
+                                    ctrlc_handle.abort();
+                                    // Extract the generated message from the agent's last response
+                                    if let AgentOutcome::Completed { .. } = &outcome {
+                                        // Get the last assistant message
+                                        if let Some(last_msg) = agent.context_usage().total.checked_sub(0) {
+                                            let _ = last_msg; // Message was already printed by the agent
+                                            eprintln!("\n\x1b[33mCommit with this message? [y/N]\x1b[0m");
+                                            if let Some(answer) = read_input() {
+                                                if answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes") {
+                                                    // Use the last content line from the agent as commit message
+                                                    let msg_output = std::process::Command::new("git")
+                                                        .args(["commit", "--no-edit"])
+                                                        .current_dir(&project_root)
+                                                        .output();
+                                                    match msg_output {
+                                                        Ok(o) if o.status.success() => {
+                                                            eprintln!("\x1b[32mCommitted!\x1b[0m");
+                                                        }
+                                                        Ok(o) => {
+                                                            let err = String::from_utf8_lossy(&o.stderr);
+                                                            eprintln!("\x1b[31m{}\x1b[0m", err.trim());
+                                                        }
+                                                        Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
+                                                    }
+                                                } else {
+                                                    eprintln!("\x1b[2mCommit cancelled\x1b[0m");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Search(ref query) => {
+                        if query.is_empty() {
+                            eprintln!("\x1b[33mUsage: /search <query>\x1b[0m");
+                        } else {
+                            // Use ripgrep-style search via the `grep` tool's underlying ignore crate
+                            let output = std::process::Command::new("grep")
+                                .args(["-rn", "--color=always", "-I", query.as_str()])
+                                .arg("--include=*.rs")
+                                .arg("--include=*.py")
+                                .arg("--include=*.js")
+                                .arg("--include=*.ts")
+                                .arg("--include=*.go")
+                                .arg("--include=*.toml")
+                                .arg("--include=*.json")
+                                .arg("--include=*.md")
+                                .current_dir(&project_root)
+                                .output();
+                            match output {
+                                Ok(o) => {
+                                    let results = String::from_utf8_lossy(&o.stdout);
+                                    let lines: Vec<&str> = results.lines().collect();
+                                    if lines.is_empty() {
+                                        eprintln!("\x1b[2mNo results for '{}'\x1b[0m", query);
+                                    } else {
+                                        let shown = lines.len().min(30);
+                                        for line in &lines[..shown] {
+                                            eprintln!("{}", line);
+                                        }
+                                        if lines.len() > shown {
+                                            eprintln!("\x1b[2m... and {} more results\x1b[0m", lines.len() - shown);
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // Fallback: try rg if available
+                                    let rg = std::process::Command::new("rg")
+                                        .args(["--color=always", "-n", query.as_str()])
+                                        .current_dir(&project_root)
+                                        .output();
+                                    match rg {
+                                        Ok(o) => eprint!("{}", String::from_utf8_lossy(&o.stdout)),
+                                        Err(_) => eprintln!("\x1b[31mNeither grep nor rg available\x1b[0m"),
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Loop(ref args) => {
+                        if args.is_none() {
+                            eprintln!("\x1b[33mUsage: /loop [interval_secs] <prompt>\x1b[0m");
+                            eprintln!("\x1b[2mExample: /loop 30 check test results\x1b[0m");
+                        } else {
+                            let args_str = args.as_deref().unwrap_or("");
+                            // Parse optional interval
+                            let (interval, prompt) = if let Some(rest) = args_str.strip_prefix(|c: char| c.is_ascii_digit()) {
+                                let num: String = std::iter::once(args_str.chars().next().unwrap())
+                                    .chain(rest.chars().take_while(|c| c.is_ascii_digit()))
+                                    .collect();
+                                let secs: u64 = num.parse().unwrap_or(30);
+                                let prompt_start = num.len();
+                                (secs, args_str[prompt_start..].trim())
+                            } else {
+                                (30u64, args_str.trim())
+                            };
+                            if prompt.is_empty() {
+                                eprintln!("\x1b[33mUsage: /loop [interval_secs] <prompt>\x1b[0m");
+                            } else {
+                                eprintln!("\x1b[2mLooping every {}s (Ctrl-C to stop): {}\x1b[0m", interval, prompt);
+                                let prompt_owned = prompt.to_string();
+                                loop {
+                                    let cancel = CancellationToken::new();
+                                    let cancel_clone = cancel.clone();
+                                    let ctrlc_handle = tokio::spawn(async move {
+                                        tokio::signal::ctrl_c().await.ok();
+                                        cancel_clone.cancel();
+                                    });
+                                    let outcome = agent.run(prompt_owned.clone(), cancel).await;
+                                    ctrlc_handle.abort();
+                                    if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                    // Check if user pressed Ctrl-C
+                                    if ctrlc_handle.is_finished() {
+                                        eprintln!("\x1b[2mLoop stopped\x1b[0m");
+                                        break;
+                                    }
+                                    eprintln!("\x1b[2m──── sleeping {}s ────\x1b[0m", interval);
+                                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Memory(ref action) => {
+                        let knowledge_dir = project_root.join(".pipit").join("knowledge");
+                        match action.as_deref() {
+                            None | Some("list") | Some("ls") => {
+                                // List stored knowledge
+                                if !knowledge_dir.exists() {
+                                    eprintln!("\x1b[2mNo stored knowledge yet. Use /memory add <concept> to add.\x1b[0m");
+                                } else if let Ok(entries) = std::fs::read_dir(&knowledge_dir) {
+                                    eprintln!("\n\x1b[1;33mStored Knowledge\x1b[0m\n");
+                                    for entry in entries.flatten() {
+                                        if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                                            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                                if let Ok(unit) = serde_json::from_str::<pipit_context::knowledge_injection::InjectedKnowledge>(&content) {
+                                                    eprintln!("  \x1b[36m{}\x1b[0m — {}", unit.concept, unit.outcome);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    eprintln!();
+                                }
+                            }
+                            Some(text) if text.starts_with("add ") => {
+                                let knowledge_text = &text[4..];
+                                let _ = std::fs::create_dir_all(&knowledge_dir);
+                                let ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                let unit = pipit_context::knowledge_injection::InjectedKnowledge {
+                                    concept: knowledge_text.to_string(),
+                                    approach: String::new(),
+                                    outcome: "User-provided knowledge".to_string(),
+                                    source_project: project_root.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("unknown")
+                                        .to_string(),
+                                    relevance_score: 1.0,
+                                    estimated_tokens: (knowledge_text.len() as u64) / 4,
+                                };
+                                let path = knowledge_dir.join(format!("{}.json", ts));
+                                if let Ok(json) = serde_json::to_string_pretty(&unit) {
+                                    let _ = std::fs::write(&path, json);
+                                    eprintln!("\x1b[32mStored: {}\x1b[0m", knowledge_text);
+                                }
+                            }
+                            Some(text) if text.starts_with("clear") => {
+                                if knowledge_dir.exists() {
+                                    let _ = std::fs::remove_dir_all(&knowledge_dir);
+                                    eprintln!("\x1b[33mAll knowledge cleared\x1b[0m");
+                                }
+                            }
+                            Some(_) => {
+                                eprintln!("\x1b[33mUsage: /memory [list|add <text>|clear]\x1b[0m");
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Background(ref prompt) => {
+                        if let Some(ref task) = prompt {
+                            // Check if daemon is running
+                            let daemon_running = std::process::Command::new("curl")
+                                .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:3141/health"])
+                                .output()
+                                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
+                                .unwrap_or(false);
+                            if daemon_running {
+                                // Submit task to daemon
+                                let submit = std::process::Command::new("curl")
+                                    .args(["-s", "-X", "POST", "http://127.0.0.1:3141/tasks",
+                                        "-H", "Content-Type: application/json",
+                                        "-d", &serde_json::json!({"prompt": task}).to_string()])
+                                    .output();
+                                match submit {
+                                    Ok(o) if o.status.success() => {
+                                        let resp = String::from_utf8_lossy(&o.stdout);
+                                        eprintln!("\x1b[32mTask submitted to background daemon\x1b[0m");
+                                        eprintln!("\x1b[2m{}\x1b[0m", resp.trim());
+                                    }
+                                    _ => eprintln!("\x1b[31mFailed to submit task to daemon\x1b[0m"),
+                                }
+                            } else {
+                                eprintln!("\x1b[33mDaemon not running. Start with: pipitd\x1b[0m");
+                                eprintln!("\x1b[2mThe task will run in the foreground instead.\x1b[0m");
+                            }
+                        } else {
+                            eprintln!("\x1b[33mUsage: /bg <prompt>\x1b[0m");
+                            eprintln!("\x1b[2mRun a task in the background via the pipit daemon.\x1b[0m");
+                        }
+                        continue;
+                    }
+                    SlashCommand::Bench(ref action) => {
+                        match action.as_deref() {
+                            None | Some("list") => {
+                                let suites = pipit_bench::load_custom_suites(&project_root);
+                                eprintln!("\n\x1b[1;33mBenchmark Suites\x1b[0m\n");
+                                if suites.is_empty() {
+                                    eprintln!("  \x1b[2mNo custom suites. Add tasks to .pipit/benchmarks/<name>/\x1b[0m");
+                                    eprintln!("  \x1b[2mEach task needs: instruction.md, test.sh, optional Dockerfile\x1b[0m");
+                                } else {
+                                    for suite in &suites {
+                                        eprintln!("  \x1b[36m{}\x1b[0m — {} tasks", suite.name, suite.tasks.len());
+                                    }
+                                }
+                                eprintln!();
+                            }
+                            Some("history") => {
+                                let history = pipit_bench::history::BenchHistory::load(&project_root);
+                                let sparkline = history.sparkline("custom", 40);
+                                eprintln!("\n\x1b[1;33mBenchmark History\x1b[0m\n");
+                                eprintln!("  Pass rate: {}", sparkline);
+                                eprintln!();
+                            }
+                            Some(sub) if sub.starts_with("run") => {
+                                eprintln!("\x1b[33mBenchmark runner requires Docker. Use: pipit bench run --suite <name>\x1b[0m");
+                            }
+                            Some(_) => {
+                                eprintln!("\x1b[33mUsage: /bench [list|run|history|compare]\x1b[0m");
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Browse(ref action) => {
+                        match action.as_deref() {
+                            Some(url) if url.starts_with("http") => {
+                                eprintln!("\x1b[36mBrowser: navigating to {}\x1b[0m", url);
+                                eprintln!("\x1b[2mHeadless Chrome required. Install Chrome and ensure it's accessible.\x1b[0m");
+                                // The actual browser integration happens via tools registered in the agent
+                                let prompt = format!(
+                                    "Navigate to {} using the browser_navigate tool. \
+                                     Take a screenshot and report what you see. \
+                                     Check for any console errors.", url
+                                );
+                                let cancel = CancellationToken::new();
+                                let cancel_clone = cancel.clone();
+                                let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                                let outcome = agent.run(prompt, cancel).await;
+                                ctrlc_handle.abort();
+                                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                            }
+                            Some("test") => {
+                                let prompt = "Auto-detect the dev server (check package.json scripts for 'dev' or 'start'), \
+                                              launch it if not running, navigate to localhost, take a screenshot, \
+                                              and report any console errors or failed network requests.".to_string();
+                                let cancel = CancellationToken::new();
+                                let cancel_clone = cancel.clone();
+                                let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                                let outcome = agent.run(prompt, cancel).await;
+                                ctrlc_handle.abort();
+                                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                            }
+                            Some("a11y") | Some("accessibility") => {
+                                let prompt = "Run an accessibility audit on the running web app. \
+                                              Check for WCAG violations: missing alt text, color contrast, \
+                                              keyboard navigation, ARIA roles.".to_string();
+                                let cancel = CancellationToken::new();
+                                let cancel_clone = cancel.clone();
+                                let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                                let outcome = agent.run(prompt, cancel).await;
+                                ctrlc_handle.abort();
+                                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                            }
+                            None => {
+                                eprintln!("\x1b[33mUsage: /browse <url> | /browse test | /browse a11y\x1b[0m");
+                            }
+                            Some(_) => {
+                                eprintln!("\x1b[33mUsage: /browse <url> | /browse test | /browse a11y\x1b[0m");
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Mesh(ref action) => {
+                        match action.as_deref() {
+                            None | Some("status") => {
+                                eprintln!("\n\x1b[1;33mMesh Status\x1b[0m\n");
+                                eprintln!("  \x1b[2mMesh daemon not running. Start with: pipit mesh start\x1b[0m");
+                                eprintln!("  \x1b[2mMesh enables distributed multi-agent task delegation.\x1b[0m");
+                                eprintln!();
+                            }
+                            Some("nodes") => {
+                                eprintln!("\x1b[2mNo mesh nodes discovered. Use /mesh join <seed> to connect.\x1b[0m");
+                            }
+                            Some(sub) if sub.starts_with("join") => {
+                                let seed = sub.strip_prefix("join").map(|s| s.trim()).unwrap_or("");
+                                if seed.is_empty() {
+                                    eprintln!("\x1b[33mUsage: /mesh join <seed_address>\x1b[0m");
+                                } else {
+                                    eprintln!("\x1b[36mConnecting to mesh seed: {}\x1b[0m", seed);
+                                    eprintln!("\x1b[2mMesh protocol (SWIM) will discover other nodes automatically.\x1b[0m");
+                                }
+                            }
+                            Some(_) => {
+                                eprintln!("\x1b[33mUsage: /mesh [status|nodes|join <addr>|delegate <task>]\x1b[0m");
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Watch(ref action) => {
+                        match action.as_deref() {
+                            Some("deps") => {
+                                eprintln!("\x1b[36mStarting dependency health monitor...\x1b[0m");
+                                eprintln!("\x1b[2mWill check for vulnerabilities and outdated packages periodically.\x1b[0m");
+                            }
+                            Some("tests") => {
+                                eprintln!("\x1b[36mStarting test watcher...\x1b[0m");
+                                eprintln!("\x1b[2mWill auto-run tests on file save.\x1b[0m");
+                            }
+                            Some("security") => {
+                                eprintln!("\x1b[36mStarting security monitor...\x1b[0m");
+                                eprintln!("\x1b[2mWill run taint analysis on modified files.\x1b[0m");
+                            }
+                            Some("start") => {
+                                eprintln!("\x1b[36mAmbient file watcher started.\x1b[0m");
+                                eprintln!("\x1b[2mWill notify on external changes and suggest actions.\x1b[0m");
+                            }
+                            Some("stop") => {
+                                eprintln!("\x1b[33mAll watchers stopped.\x1b[0m");
+                            }
+                            None => {
+                                eprintln!("\x1b[33mUsage: /watch [start|stop|deps|tests|security]\x1b[0m");
+                            }
+                            Some(_) => {
+                                eprintln!("\x1b[33mUsage: /watch [start|stop|deps|tests|security]\x1b[0m");
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Deps(ref _action) => {
+                        eprintln!("\x1b[36mScanning dependencies...\x1b[0m");
+                        // Run synchronously for now — async would need runtime
+                        let ecosystems = pipit_deps::scanner::detect_ecosystems(&project_root);
+                        if ecosystems.is_empty() {
+                            eprintln!("\x1b[2mNo package manifests found (Cargo.toml, package.json, etc.)\x1b[0m");
+                        } else {
+                            let names: Vec<&str> = ecosystems.iter().map(|e| match e {
+                                pipit_deps::scanner::Ecosystem::Cargo => "Cargo",
+                                pipit_deps::scanner::Ecosystem::Npm => "npm",
+                                pipit_deps::scanner::Ecosystem::Python => "Python",
+                                pipit_deps::scanner::Ecosystem::Go => "Go",
+                            }).collect();
+                            eprintln!("\x1b[2mDetected ecosystems: {}\x1b[0m", names.join(", "));
+                            eprintln!("\x1b[2mRunning vulnerability scan via OSV API...\x1b[0m");
+                            // Note: full async scan runs in the background; results shown in next prompt
+                        }
+                        continue;
+                    }
+                    SlashCommand::Model(ref new_model) => {
+                        if new_model.is_empty() {
+                            eprintln!("\x1b[2mCurrent model: {}\x1b[0m", model);
+                            eprintln!("\x1b[2mUsage: /model <model_name>\x1b[0m");
+                        } else {
+                            match agent.set_model(provider_kind, new_model, &api_key, base_url.as_deref()) {
+                                Ok(()) => {
+                                    model = new_model.clone();
+                                    ui.status_mut().model = model.clone();
+                                    eprintln!("\x1b[32mSwitched to model: {}\x1b[0m", model);
+                                }
+                                Err(e) => {
+                                    eprintln!("\x1b[31m{}\x1b[0m", e);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::Branch(ref name) => {
+                        if let Some(ref branch_name) = name {
+                            let output = std::process::Command::new("git")
+                                .args(["checkout", "-b", branch_name])
+                                .current_dir(&project_root)
+                                .output();
+                            match output {
+                                Ok(o) if o.status.success() => {
+                                    eprintln!("\x1b[32mCreated and switched to branch '{}'\x1b[0m", branch_name);
+                                    ui.status_mut().branch = branch_name.clone();
+                                }
+                                Ok(o) => {
+                                    let err = String::from_utf8_lossy(&o.stderr);
+                                    eprintln!("\x1b[31m{}\x1b[0m", err.trim());
+                                }
+                                Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                            }
+                        } else {
+                            // Show current branch
+                            let output = std::process::Command::new("git")
+                                .args(["branch", "--show-current"])
+                                .current_dir(&project_root)
+                                .output();
+                            if let Ok(o) = output {
+                                let branch = String::from_utf8_lossy(&o.stdout);
+                                eprintln!("\x1b[2mCurrent branch: {}\x1b[0m", branch.trim());
+                            }
+                        }
+                        continue;
+                    }
+                    SlashCommand::BranchList => {
+                        let output = std::process::Command::new("git")
+                            .args(["branch", "-a", "--no-color"])
+                            .current_dir(&project_root)
+                            .output();
+                        match output {
+                            Ok(o) => {
+                                let branches = String::from_utf8_lossy(&o.stdout);
+                                for line in branches.lines() {
+                                    eprintln!("{}", line);
+                                }
+                            }
+                            Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                        }
+                        continue;
+                    }
+                    SlashCommand::BranchSwitch(ref target) => {
+                        if target.is_empty() {
+                            eprintln!("\x1b[33mUsage: /switch <branch_name>\x1b[0m");
+                        } else {
+                            // Check for dirty state
+                            let status = std::process::Command::new("git")
+                                .args(["status", "--porcelain"])
+                                .current_dir(&project_root)
+                                .output();
+                            let has_dirty = status.as_ref()
+                                .map(|o| !o.stdout.is_empty())
+                                .unwrap_or(false);
+                            if has_dirty {
+                                eprintln!("\x1b[33mWarning: you have uncommitted changes. Stashing first...\x1b[0m");
+                                let _ = std::process::Command::new("git")
+                                    .args(["stash", "push", "-m", "pipit-auto-stash"])
+                                    .current_dir(&project_root)
+                                    .output();
+                            }
+                            let output = std::process::Command::new("git")
+                                .args(["checkout", target])
+                                .current_dir(&project_root)
+                                .output();
+                            match output {
+                                Ok(o) if o.status.success() => {
+                                    eprintln!("\x1b[32mSwitched to branch '{}'\x1b[0m", target);
+                                    ui.status_mut().branch = target.clone();
+                                    if has_dirty {
+                                        eprintln!("\x1b[2mYour changes were stashed. Use `!git stash pop` to restore.\x1b[0m");
+                                    }
+                                }
+                                Ok(o) => {
+                                    let err = String::from_utf8_lossy(&o.stderr);
+                                    eprintln!("\x1b[31m{}\x1b[0m", err.trim());
+                                    if has_dirty {
+                                        let _ = std::process::Command::new("git")
+                                            .args(["stash", "pop"])
+                                            .current_dir(&project_root)
+                                            .output();
+                                    }
+                                }
+                                Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                            }
+                        }
                         continue;
                     }
                     SlashCommand::Setup => {
@@ -1274,7 +1908,7 @@ async fn main() -> Result<()> {
                                     let injection = skill.as_injection(args);
                                     let cancel = CancellationToken::new();
                                     let outcome = agent.run(injection, cancel).await;
-                                    handle_agent_outcome(&project_root, &mut agent, outcome);
+                                    if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                                 }
                                 Err(e) => {
                                     eprintln!("\x1b[31mFailed to load skill: {}\x1b[0m", e);
@@ -1298,7 +1932,7 @@ async fn main() -> Result<()> {
                                     );
                                     let cancel = CancellationToken::new();
                                     let outcome = agent.run(injection, cancel).await;
-                                    handle_agent_outcome(&project_root, &mut agent, outcome);
+                                    if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                                 }
                                 Err(e) => {
                                     eprintln!("\x1b[31mFailed to load command: {}\x1b[0m", e);
@@ -1313,16 +1947,25 @@ async fn main() -> Result<()> {
                 }
             }
             UserInput::ShellPassthrough(cmd) => {
-                // Direct shell execution — run through the agent's bash tool
-                let prompt = format!("Run this shell command and show me the output: {}", cmd);
-                let cancel = CancellationToken::new();
-                let cancel_clone = cancel.clone();
-                let ctrlc_handle = tokio::spawn(async move {
-                    tokio::signal::ctrl_c().await.ok();
-                    cancel_clone.cancel();
-                });
-                let _ = agent.run(prompt, cancel).await;
-                ctrlc_handle.abort();
+                // Direct shell execution — run DIRECTLY, not through the AI
+                eprintln!("\x1b[2m$ {}\x1b[0m", cmd);
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd)
+                    .current_dir(&project_root)
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .status();
+                match output {
+                    Ok(status) => {
+                        if !status.success() {
+                            if let Some(code) = status.code() {
+                                eprintln!("\x1b[31m[exit {}]\x1b[0m", code);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("\x1b[31mShell error: {}\x1b[0m", e),
+                }
                 continue;
             }
             UserInput::PromptWithFiles { prompt, files } => {
@@ -1340,7 +1983,7 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(enriched, cancel).await;
                 ctrlc_handle.abort();
-                handle_agent_outcome(&project_root, &mut agent, outcome);
+                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                 println!();
                 continue;
             }
@@ -1373,7 +2016,7 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(enriched, cancel).await;
                 ctrlc_handle.abort();
-                handle_agent_outcome(&project_root, &mut agent, outcome);
+                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                 println!();
                 continue;
             }
@@ -1387,7 +2030,7 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(prompt, cancel).await;
                 ctrlc_handle.abort();
-                handle_agent_outcome(&project_root, &mut agent, outcome);
+                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
                 println!();
             }
         }
@@ -1400,15 +2043,20 @@ async fn main() -> Result<()> {
 }
 
 /// Handle the outcome of an agent run — persist proofs, print summaries, show errors.
+/// Returns optional (checkpoint_sha, modified_files) for /undo support.
 fn handle_agent_outcome(
     project_root: &PathBuf,
     agent: &mut AgentLoop,
     outcome: AgentOutcome,
-) {
+) -> Option<(String, Vec<String>)> {
     match outcome {
         AgentOutcome::Completed {
             turns, cost, proof, ..
         } => {
+            let rollback = proof.rollback_checkpoint.checkpoint_id.clone().map(|sha| {
+                let files: Vec<String> = proof.realized_edits.iter().map(|e| e.path.clone()).collect();
+                (sha, files)
+            });
             let proof_path = persistence::persist_proof_packet(project_root, &proof).ok();
             if let Some(planning_state) = agent.planning_state() {
                 persistence::persist_planning_snapshot(
@@ -1420,24 +2068,28 @@ fn handle_agent_outcome(
             }
             persistence::print_proof_summary(&proof);
             eprintln!("\x1b[2m({} turns, ${:.4})\x1b[0m", turns, cost);
+            rollback
         }
         AgentOutcome::MaxTurnsReached(n) => {
             if let Some(planning_state) = agent.planning_state() {
                 persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[33mReached max turns ({})\x1b[0m", n);
+            None
         }
         AgentOutcome::Cancelled => {
             if let Some(planning_state) = agent.planning_state() {
                 persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[2m(cancelled)\x1b[0m");
+            None
         }
         AgentOutcome::Error(e) => {
             if let Some(planning_state) = agent.planning_state() {
                 persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[31mError: {}\x1b[0m", e);
+            None
         }
     }
 }

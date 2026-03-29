@@ -194,6 +194,14 @@ Type these in the composer:
 | `/plan [goal]` | Enter plan-first mode |
 | `/verify [scope]` | Run build/lint/test checks |
 | `/aside <question>` | Quick side question |
+| `/bench <cmd>` | Run benchmarks (run/results/compare) |
+| `/browse <url>` | Browser automation |
+| `/mesh <cmd>` | Multi-agent mesh (status/delegate) |
+| `/mcp <cmd>` | MCP server management (status/tools) |
+| `/plugins <cmd>` | Plugin marketplace (list/install/uninstall) |
+| `/deps <cmd>` | Dependency management (audit/outdated/tree) |
+| `/watch <cmd>` | File watcher (start/stop/deps) |
+| `/loop [n]` | Re-run last prompt N times |
 
 ### Grammar
 
@@ -402,6 +410,110 @@ Place files in `.pipit/` for project-specific customization:
 - `.pipit/agents/` — custom agent definitions
 - `.pipit/hooks/` — lifecycle hooks (on session start, before edit, etc.)
 - `.pipit/rules/` — project rules and constraints
+
+---
+
+## Advanced features
+
+### Multi-agent mesh (`pipit-mesh`)
+
+Distribute tasks across multiple pipit instances using a gossip-based mesh network. Nodes discover each other via the SWIM protocol, resolve conflicts with CRDTs, and delegate tasks based on capability scoring and affinity rules.
+
+```sh
+/mesh status          # Show discovered mesh nodes
+/mesh delegate <task> # Delegate a task to the best-fit node
+```
+
+### MCP & A2A protocol (`pipit-mcp`)
+
+Connect to external tool servers using the Model Context Protocol (MCP). Pipit also implements Google's Agent-to-Agent (A2A) protocol for inter-agent communication.
+
+```sh
+/mcp status           # Show connected MCP servers
+/mcp tools            # List available MCP tools
+```
+
+Configure MCP servers in `.pipit/mcp.json`:
+```json
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+    }
+  }
+}
+```
+
+### Plugin marketplace (`pipit-mcp`)
+
+Install and manage community extensions:
+
+```sh
+/plugins list         # List installed plugins
+/plugins install <path>  # Install a plugin from a directory
+/plugins uninstall <name>
+```
+
+### LSP integration (`pipit-lsp`)
+
+IDE-grade code intelligence through Language Server Protocol. Pipit auto-detects and manages LSP servers for your project languages, providing goto-definition, find-references, and hover info to the agent.
+
+### Benchmarking (`pipit-bench`)
+
+Built-in benchmarking framework for evaluating agent performance on SWE-bench style tasks:
+
+```sh
+/bench run <suite>    # Run a benchmark suite
+/bench results        # Show latest results
+/bench compare        # Compare runs side-by-side
+```
+
+### Browser automation (`pipit-browser`)
+
+Headless browser control for web testing, with visual regression via SSIM-based screenshot comparison:
+
+```sh
+/browse <url>         # Open a URL in headless browser
+/browse screenshot    # Take a screenshot
+/browse visual-diff   # Compare against baseline
+```
+
+### Dependency management (`pipit-deps`)
+
+Cross-ecosystem dependency analysis and management:
+
+```sh
+/deps audit           # Security audit of dependencies
+/deps outdated        # Show outdated packages
+/deps tree            # Dependency tree visualization
+```
+
+### File watcher (`pipit-intelligence`)
+
+Ambient file monitoring that detects changes and proactively suggests actions (e.g., run tests when test files change, update deps when manifests change):
+
+```sh
+/watch start          # Start watching for file changes
+/watch stop           # Stop the watcher
+/watch deps           # Watch dependency manifests
+```
+
+### Federated knowledge (`pipit-context`)
+
+Cross-repository learning with privacy-preserving federation. Pipit can merge knowledge across repos with TF-IDF similarity matching and configurable federation policies.
+
+### Self-healing CI (`pipit-daemon`)
+
+Automatically classify and fix CI pipeline failures. Supports build errors, test failures, lint issues, deploy problems, and type-check errors with auto-generated fix branches.
+
+### Cost oracle (`pipit-core`)
+
+Predictive task cost estimation from historical data. Before running a task, get an estimate of token usage, cost, and time based on similar past tasks.
+
+### Speculative execution (`pipit-core`)
+
+Race multiple solution strategies in parallel using git worktrees — MinimalPatch, RootCause, and TestFirst — and pick the winner.
 
 ---
 

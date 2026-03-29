@@ -93,7 +93,17 @@ impl CredentialStore {
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(std::io::Error::other)?;
-        std::fs::write(&path, json)
+        std::fs::write(&path, &json)?;
+
+        // SEC-1: Restrict credential file to owner-only (0600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&path, perms)?;
+        }
+
+        Ok(())
     }
 
     /// Store a credential for a provider.

@@ -99,6 +99,22 @@ You have these tools. Choose the RIGHT one on the FIRST try:
         boot_listing = boot_listing,
     );
 
+    // PIPIT.md — project root instructions (like Claude Code's CLAUDE.md)
+    let pipit_md_candidates = [
+        project_root.join("PIPIT.md"),
+        project_root.join(".pipit").join("PIPIT.md"),
+    ];
+    for candidate in &pipit_md_candidates {
+        if candidate.exists() {
+            if let Ok(content) = std::fs::read_to_string(candidate) {
+                prompt.push_str("\n## Project instructions (PIPIT.md)\n\n");
+                prompt.push_str(&content);
+                prompt.push_str("\n");
+                break;
+            }
+        }
+    }
+
     // Tool declarations with approval annotations
     prompt.push_str("\n## Available tools\n");
     for (decl, needs_approval) in tools.declarations_annotated(approval_mode) {
