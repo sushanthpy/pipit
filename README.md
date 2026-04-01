@@ -29,16 +29,18 @@ Most coding agents stop at code generation. Pipit keeps going into execution, mo
 | Capability | What Pipit does |
 |---|---|
 | **Code** | Read, edit, refactor, and generate code across any language |
-| **Execute** | Run shell commands, build projects, execute tests |
+| **Execute** | Run shell commands, build projects, execute tests — with conflict-aware concurrent scheduling |
+| **Plan** | Complexity-driven plan gates with expected-cost model; explicit Plan/Execute/Verify phases |
 | **Monitor** | Watch files for changes, auto-run tests, detect dependency drift |
-| **Secure** | Scan dependencies for vulnerabilities, run taint analysis on modified files |
-| **Verify** | Machine-checkable proof artifacts for auth, payments, and safety-critical paths |
-| **Comply** | Generate code changes for GDPR deletion handlers, audit logging, encryption, consent |
-| **Test** | Open URLs, take screenshots, check console errors, run accessibility audits |
-| **Benchmark** | Compare models, prompts, and tools over repeatable task suites |
-| **Delegate** | Route tasks to specialist agents via capability-based mesh discovery |
-| **Evolve** | Generate and score architecture candidates against latency, cost, reliability |
-| **Learn** | Persist knowledge across sessions, share patterns across repos without leaking code |
+| **Secure** | Capability-lattice permissions, taint analysis, vulnerability scanning, signed plugin manifests |
+| **Verify** | Cost-gated verification surface, proof packets, confidence scoring, automated repair loops |
+| **Comply** | Generate GDPR deletion handlers, audit logging, encryption, consent enforcement |
+| **Test** | Headless browser QA: screenshots, console errors, accessibility audits, visual regression |
+| **Benchmark** | Compare models, prompts, and tools with checkpoint telemetry and latency budgets |
+| **Delegate** | Subagent lineage DAG with merge contracts, capability inheritance, and hard-gate predicates |
+| **Evolve** | NSGA-II architecture evolution, Pareto-optimal candidate scoring, scaffold generation |
+| **Integrate** | GitHub PRs, Slack/Discord messaging, MCP servers, IDE bridge with session teleportation |
+| **Learn** | Event-sourced session ledger, adaptive 4-tier context memory, cross-repo federated knowledge |
 
 ---
 
@@ -244,23 +246,46 @@ pipit --classic
 | **Navigation** | |
 | `/help` | Show full help with examples |
 | `/status` | Show repo, model, tokens, cost |
-| `/cost` | Token cost summary |
+| `/cost` | Token cost summary with sparkline |
 | `/clear` | Reset context and chat history |
 | `/quit` or `/q` | Exit pipit |
 | **Context** | |
-| `/context` or `/ctx` | Show files in working set |
+| `/context` or `/ctx` | Show context window with 4-tier budget visualization |
 | `/add <file>` | Add file to working set |
 | `/drop <file>` | Remove file from working set |
 | `/tokens` | Token usage breakdown |
 | `/compact` | Compress context to free tokens |
 | `/memory` | Persistent cross-session knowledge |
 | **Workflows** | |
-| `/plan [goal]` | Enter plan-first mode |
-| `/verify [scope]` | Run build/lint/test checks |
+| `/plan [goal]` | Enter plan-first mode (auto-gated for complex tasks) |
+| `/verify [scope]` | Run build/lint/test checks (cost-gated triggering) |
 | `/aside <question>` | Quick side question without changing context |
 | `/bg` | Send current task to background |
 | `/loop [n]` | Re-run last prompt N times |
-| `/save` / `/load` | Save and restore sessions |
+| `/save` / `/resume` | Save and restore sessions via ledger replay |
+| `/undo` | Undo last agent edit with rollback checkpoint |
+| `/export` | Export conversation to markdown/JSON |
+| **Git** | |
+| `/commit` | Stage and commit changes |
+| `/push` | Push commits to remote |
+| `/pr` | Create or manage pull requests |
+| `/diff` | Show changes in working tree |
+| `/branch` | Create or switch branches |
+| **Review** | |
+| `/review` | Code review with structured findings |
+| `/security-review` | Security audit |
+| `/lint` | Run linter |
+| `/test` | Run tests |
+| **Config** | |
+| `/config` | Edit configuration |
+| `/model` | Switch model at runtime |
+| `/provider` | Switch provider |
+| `/approval` | Change approval mode / permission rules |
+| `/skills` | List discovered skills |
+| **Diagnostics** | |
+| `/doctor` | System diagnostics (git, config, API keys, skills, MCP) |
+| `/bench run <suite>` | Run a benchmark suite |
+| `/bench results` | Show latest results |
 | **Monitoring** | |
 | `/watch start` | Start file watcher with proactive suggestions |
 | `/watch stop` | Stop the watcher |
@@ -269,18 +294,15 @@ pipit --classic
 | `/browse <url>` | Navigate headless browser |
 | `/browse screenshot` | Take a screenshot |
 | `/browse visual-diff` | SSIM visual regression |
-| `/bench run <suite>` | Run a benchmark suite |
-| `/bench results` | Show latest results |
-| **Security** | |
-| `/deps audit` | Vulnerability scan via OSV |
-| `/deps outdated` | Show outdated packages |
-| `/deps tree` | Dependency tree |
+| **Integration** | |
+| `/github` or `/gh` | GitHub operations (PR, issues, CI status) |
+| `/slack` | Slack integration |
+| `/mcp status` | Show connected MCP servers |
+| `/mcp tools` | List available MCP tools |
+| `/bridge` | IDE bridge management |
 | **Mesh** | |
 | `/mesh status` | Show discovered mesh nodes |
 | `/mesh delegate <task>` | Delegate to best-fit node |
-| `/mcp status` | Show connected MCP servers |
-| `/mcp tools` | List available MCP tools |
-| `/plugins list` | List installed plugins |
 
 ### Grammar
 
@@ -470,12 +492,14 @@ pipit --approval full_auto --max-turns 10 "run the tests and fix any failures"
 
 ### Agent runtime
 
-Pipit is not a one-shot assistant. It supports background execution, loops, saved sessions, checkpoints, and persistent memory. The daemon processes tasks continuously, dispatches work, and manages concurrent execution with project-aware waitlisting so busy projects don't get stepped on by conflicting work.
+Pipit is not a one-shot assistant. It has a hexagonal kernel architecture where every subsystem communicates through typed ports — zero global mutable state.
 
+- **Event-sourced sessions** — Every mutation is a typed `SessionEvent` in a hash-chained ledger. Crash recovery is deterministic replay. Resume is a real feature, not "restore messages and hope."
+- **Capability-lattice permissions** — Tool authorization is a single `PolicyKernel::evaluate()` call with O(1) bitset subset checks. Scoped rules support path prefix, command pattern, and per-run/permanent duration.
+- **Concurrent tool scheduling** — The scheduler builds a resource-conflict graph and runs independent tool calls concurrently. Reads overlap; writes serialize.
 - **Background tasks** — `/bg` to send work to the background
 - **Loop execution** — `/loop [n]` to re-run prompts on a cadence
-- **Saved sessions** — `/save`, `/load` to persist and resume
-- **Checkpoints** — undo and replay from any point in a session
+- **Checkpoints** — Undo and replay from any point via ledger snapshots
 
 ### RepoMap and code intelligence
 
@@ -497,7 +521,7 @@ Every run produces a proof packet — a structured record of what the agent plan
 
 ### Context survival
 
-The transport layer shrinks older history into a local summary when the provider rejects oversized requests. The loop handles max-token truncation and continues generation with assistant prefill where supported. Longer-running autonomous sessions don't die — they degrade gracefully.
+The adaptive context controller manages a 4-tier memory hierarchy: Pinned (user objective, plan — never evicted), Active (recent edits, tool results), Historical (older turns, summaries), and Exhaust (stale readings — evict first). Retention uses greedy knapsack by utility-per-token with recency decay. The transport layer shrinks older history into a local summary when the provider rejects oversized requests. Longer-running autonomous sessions don't die — they degrade gracefully.
 
 ### Cross-session memory
 
@@ -510,10 +534,11 @@ The transport layer shrinks older history into a local summary when the provider
 ### Skills, agents, and hooks
 
 Place files in `.pipit/` for project-specific customization:
-- `.pipit/skills/` — reusable instructions the agent can load
-- `.pipit/agents/` — custom agent definitions
-- `.pipit/hooks/` — lifecycle hooks (on session start, before edit, etc.)
-- `.pipit/rules/` — project rules and constraints
+- `.pipit/skills/` — Compiled skills with trigger matching (path, language, dependency), sandbox contracts, trust tiers, and budget allocation
+- `.pipit/agents/` — Custom agent definitions
+- `.pipit/hooks/` — Lifecycle hooks (PreToolUse, PostToolUse, SessionStart, etc.) with shell/command execution and environment variables
+- `.pipit/rules/` — Project rules and constraints
+- `.pipit/permissions.json` — Persisted permission rules with scope, duration, and resource restrictions
 
 ---
 
@@ -711,12 +736,67 @@ Options:
 
 ## Architecture
 
-Pipit is a Rust workspace with 30+ crates:
+Pipit is a Rust workspace with 31 crates and a hexagonal kernel architecture. All subsystems communicate through typed ports — no global mutable state.
+
+### Kernel & Control Plane
+
+| Subsystem | Module | What it does |
+|---|---|---|
+| **Policy Kernel** | `capability.rs` | Capability-lattice permission system with O(1) bitset subset checks. All tool authorization flows through `PolicyKernel::evaluate()` — no per-tool approval logic. Permission rules support scoped grants: path prefix, command pattern, MCP server, with per-run or permanent duration. |
+| **Session Ledger** | `ledger.rs` | Append-only, hash-chained event log. Every state mutation is a typed `SessionEvent`. Crash recovery is deterministic replay via `SessionState::reduce()`. Snapshot acceleration gives O(k+Δ) restore. |
+| **Scheduler** | `scheduler.rs` | Conflict-aware concurrent tool execution. Builds a resource-conflict graph, partitions into maximal independent sets, runs batches concurrently. Read-read is parallel; any write serializes. |
+| **Semantic Types** | `tool_semantics.rs` | Closed `SemanticClass` sum type (`Read|Edit|Exec|Delegate|External|Pure`). Single derivation point for policy, evidence, risk, and scheduling — replaces all string dispatch. |
+| **Turn Kernel** | `turn_kernel.rs` | Pure Mealy machine over turn phases (Idle→Planning→Requesting→Streaming→ToolRunning→Verifying→Done). Side-effect free for deterministic simulation tests. |
+| **Lineage DAG** | `lineage.rs` | Subagent execution branches with capability inheritance (lattice meet), token budgets, merge contracts, and hard-gate predicates. |
+| **Two-Phase Commit** | `two_phase.rs` | Speculative execution with verification gating. File snapshot checkpointing for rollback. |
+
+### Tool & Skill System
+
+| Subsystem | Module | What it does |
+|---|---|---|
+| **Tool Trait** | `pipit-tools/lib.rs` | `is_mutating()` and `requires_approval()` are default methods derived from the semantic type system. Individual tools never override authorization. |
+| **MCP Lazy Loading** | `pipit-mcp/lib.rs` | Servers with >20 tools are indexed, not eagerly registered. An `mcp_search` meta-tool does BM25 search + on-demand invocation. |
+| **Skill Kernel** | `skill_kernel.rs` | Compiled skills with trigger matching (path, language, dependency), sandbox contracts, trust tiers, and budget allocation via greedy knapsack. |
+| **Skill Runtime** | `skill_runtime.rs` | Bridges discovery→kernel→activation→budget→prompt injection. Skills are typed control objects, not loose prompt content. |
+| **Tool Interrupt** | `tool_interrupt.rs` | Per-tool interrupt semantics: CancelImmediate (reads), MustComplete (atomic writes), FinishUnit (shell), CancelAndRollback (destructive). |
+
+### Observability & Verification
+
+| Subsystem | Module | What it does |
+|---|---|---|
+| **Runtime Events** | `events.rs` | `RuntimeEvent` with monotonic sequence numbers and `RuntimeEventBuffer` for replayable multi-consumer fanout. |
+| **Engine Protocol** | `sdk.rs` | Versioned wire protocol (v2) with 20+ typed events covering the full turn lifecycle. All surfaces (CLI/TUI/SDK/daemon) consume the same stream. |
+| **Telemetry Facade** | `telemetry_facade.rs` | OTel-compatible spans, per-session counters with Kahan summation for cost precision, reservoir sampling for high-cardinality metrics. |
+| **Query Profiler** | `query_profiler.rs` | Checkpoint-based latency tracking (TTFT, tool time, verification time) with percentile computation and budget violation detection. |
+| **Verification Surface** | `verification_surface.rs` | Cost-gated verification: triggers when `C_v < p × R_e`. Adaptive defect probability. Renders structured findings. |
+
+### Integration Ports
+
+| Port | Module | What it does |
+|---|---|---|
+| **ForgePort** | `integration_ports.rs` | PR create, review comments, CI status, issue management, GitHub App installation. Forge-agnostic (GitHub/GitLab/Bitbucket). |
+| **MessagingPort** | `integration_ports.rs` | Send/notify/install for Slack, Discord, Telegram. Session-to-thread mapping. |
+| **TeamPort** | `integration_ports.rs` | Team CRUD, RBAC with capability mask intersection, cost budgets, path restrictions. |
+| **Bridge Protocol** | `bridge_protocol.rs` | JWT auth, transport negotiation (WebSocket→SSE→HTTP-poll fallback), bounded replay buffer, session teleportation via ledger snapshot+replay. |
+
+### Developer Experience
+
+| Subsystem | Module | What it does |
+|---|---|---|
+| **Command Registry** | `command_registry.rs` | 38 built-in slash commands with trie-prefix matching, Levenshtein fuzzy completion, typed args, category grouping. |
+| **Plugin Registry** | `plugin_registry.rs` | Signed manifests (Ed25519 + SHA-256), install/uninstall lifecycle, dependency resolution. |
+| **DX Surface** | `dx_surface.rs` | `/doctor` diagnostics (6 checks), cost sparkline visualization, context budget stacked bar, theme system. |
+| **Plan Gate** | `plan_gate.rs` | Expected-cost model: require plan review when `C_plan < p × R`. Complexity scoring from file count, ambiguity, scope. |
+| **Adaptive Context** | `adaptive_context.rs` | 4-tier memory (Pinned/Active/Historical/Exhaust) with utility-per-token scoring and greedy knapsack retention. |
+| **Editor Integration** | `editor_integration.rs` | Vim state machine + agent runtime composition. Approval review mode, read-only mode, agent-assisted edit tracking. |
+| **Worktree Sessions** | `worktree_session.rs` | `pipit worktree up/down` with git isolation, tmux layout, session restoration, clean merge semantics. |
+
+### Crate Map
 
 | Layer | Crates |
 |---|---|
 | **CLI + TUI** | `pipit-cli`, `pipit-io` |
-| **Core runtime** | `pipit-core`, `pipit-config`, `pipit-context`, `pipit-extensions` |
+| **Core runtime** | `pipit-core` (50 modules), `pipit-config`, `pipit-context`, `pipit-extensions` |
 | **Agent intelligence** | `pipit-intelligence`, `pipit-skills`, `pipit-edit`, `pipit-lsp` |
 | **Providers** | `pipit-provider` (Anthropic, OpenAI, Google, DeepSeek, Ollama, etc.) |
 | **Tools** | `pipit-tools`, `pipit-browser`, `pipit-deps`, `pipit-mcp` |
@@ -724,6 +804,7 @@ Pipit is a Rust workspace with 30+ crates:
 | **Mesh** | `pipit-mesh`, `pipit-agent-mesh`, `pipit-channel` |
 | **Evolution** | `pipit-arch-evolution`, `pipit-evolve`, `pipit-hw-codesign` |
 | **Operations** | `pipit-daemon`, `pipit-bench`, `pipit-perf`, `pipit-env` |
+| **Integration** | `pipit-bridge`, `pipit-voice` |
 
 ---
 
