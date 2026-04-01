@@ -1,5 +1,7 @@
 use crate::events::{AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler, ToolCallOutcome, TurnEndReason};
+use crate::capability::{PolicyKernel, CapabilityRequest, CapabilitySet, PolicyDecision, ResourceScope, ExecutionLineage};
 use crate::governor::{Governor, RiskReport};
+use crate::ledger::{SessionLedger, SessionEvent};
 use crate::loop_detector::LoopDetector;
 use crate::pev::{ModelRouter, PevConfig};
 use crate::planner::{CandidatePlan, Planner, PlanStrategy, VerifyStrategy};
@@ -7,6 +9,7 @@ use crate::proof::{
     ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, PlanPivot, ProofPacket,
     PolicyStage, RealizedEdit, VerificationKind,
 };
+use crate::tool_semantics::{builtin_semantics, classify_semantically, SemanticClass};
 use crate::verifier::Verifier;
 use pipit_context::ContextManager;
 use pipit_extensions::ExtensionRunner;
@@ -77,6 +80,12 @@ pub struct AgentLoop {
     planning_state: Option<PlanningState>,
     /// How many consecutive turns the loop detector has fired.
     consecutive_loop_hits: u32,
+    /// Centralized permission kernel — single authority for tool authorization.
+    policy_kernel: PolicyKernel,
+    /// Optional session ledger for durable event sourcing.
+    /// When present, all state-changing events are appended for crash recovery and audit.
+    /// Uses Mutex for interior mutability so emit() can work from &self contexts.
+    session_ledger: Option<std::sync::Mutex<SessionLedger>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +111,9 @@ impl AgentLoop {
         let loop_detector =
             LoopDetector::new(config.loop_detection_window, config.loop_detection_threshold);
 
-        let tool_context = ToolContext::new(project_root, config.approval_mode);
+        let tool_context = ToolContext::new(project_root.clone(), config.approval_mode);
+
+        let policy_kernel = PolicyKernel::from_approval_mode(config.approval_mode, project_root);
 
         let agent = Self {
             models,
@@ -118,9 +129,28 @@ impl AgentLoop {
             repo_map: None,
             planning_state: None,
             consecutive_loop_hits: 0,
+            policy_kernel,
+            session_ledger: None,
         };
 
         (agent, event_rx, steering_tx)
+    }
+
+    /// Enable durable session logging. All state-changing events will be
+    /// appended to the ledger for crash recovery, audit, and replay.
+    pub fn enable_session_ledger(&mut self, ledger: SessionLedger) {
+        self.session_ledger = Some(std::sync::Mutex::new(ledger));
+    }
+
+    /// Record a session event to the ledger (if enabled). Non-blocking.
+    fn record(&self, event: SessionEvent) {
+        if let Some(ref mtx) = self.session_ledger {
+            if let Ok(mut ledger) = mtx.lock() {
+                if let Err(e) = ledger.append(event) {
+                    tracing::warn!("Ledger append failed: {}", e);
+                }
+            }
+        }
     }
 
     pub fn set_repo_map(&mut self, map: String) {
@@ -160,6 +190,11 @@ impl AgentLoop {
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
         self.tool_context.approval_mode = mode;
         self.config.approval_mode = mode;
+        // Rebuild the policy kernel so the granted capability set matches the new mode.
+        self.policy_kernel = PolicyKernel::from_approval_mode(
+            mode,
+            self.tool_context.project_root.clone(),
+        );
     }
 
     /// Inject an image into the conversation context as a user message.
@@ -192,6 +227,10 @@ impl AgentLoop {
         };
 
         let objective = Objective::from_prompt(&processed);
+        // Record user message to ledger
+        self.record(SessionEvent::UserMessageAccepted {
+            content: processed.clone(),
+        });
         let mut claim = ChangeClaim::from_objective(objective.clone());
         let planner: Box<dyn PlanStrategy> = Box::new(Planner);
         let verifier: Box<dyn VerifyStrategy> = Box::new(Verifier);
@@ -236,6 +275,10 @@ impl AgentLoop {
         // Only emit plan selected event if this isn't a trivial Q&A
         if !is_qa {
             self.emit_plan_selected(&selected_plan, &candidate_plans, false);
+            self.record(SessionEvent::PlanSelected {
+                strategy: format!("{:?}", selected_plan.strategy),
+                rationale: selected_plan.rationale.clone(),
+            });
         }
 
         // Add user message to context
@@ -763,6 +806,7 @@ impl AgentLoop {
     }
 
     /// Execute tool calls with concurrent read / sequential write.
+    /// Authorization is handled by the centralized PolicyKernel.
     async fn execute_tools(
         &mut self,
         calls: &[pipit_provider::ToolCall],
@@ -793,6 +837,8 @@ impl AgentLoop {
             }
         }
 
+        let lineage = ExecutionLineage::default();
+
         for call in calls {
             let Some(tool) = self.tools.get(&call.tool_name) else {
                 results.push((
@@ -804,137 +850,198 @@ impl AgentLoop {
                 continue;
             };
 
-            if tool.requires_approval(self.tool_context.approval_mode) {
-                self.emit(AgentEvent::ToolApprovalNeeded {
-                    call_id: call.call_id.clone(),
-                    name: call.tool_name.clone(),
-                    args: call.args.clone(),
-                });
+            // ── Semantic authorization via PolicyKernel (single oracle) ──
+            let semantics = builtin_semantics(&call.tool_name);
+            let mut resource_scopes = Vec::new();
+            if let Some(path) = call.args.get("path").and_then(|v| v.as_str()) {
+                resource_scopes.push(ResourceScope::Path(std::path::PathBuf::from(path)));
+            }
+            if let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) {
+                resource_scopes.push(ResourceScope::Command(cmd.to_string()));
+            }
 
-                // Block until the user responds
-                let decision = self
-                    .approval_handler
-                    .request_approval(&call.call_id, &call.tool_name, &call.args)
-                    .await;
+            let cap_request = CapabilityRequest {
+                required: semantics.required_capabilities,
+                resource_scopes,
+                justification: Some(format!("Tool '{}' invocation", call.tool_name)),
+            };
 
-                match decision {
-                    ApprovalDecision::Approve => {
-                        // Fall through to execute the tool below
+            let decision = self.policy_kernel.evaluate(
+                &call.tool_name,
+                &cap_request,
+                &lineage,
+            );
+
+            match decision {
+                PolicyDecision::Deny { reason } => {
+                    results.push((
+                        call.call_id.clone(),
+                        ToolCallOutcome::PolicyBlocked {
+                            message: format!(
+                                "Policy denied '{}': {}. The tool requires capabilities that are not granted in the current approval mode.",
+                                call.tool_name, reason
+                            ),
+                            stage: PolicyStage::PreToolUse,
+                            mutated: false,
+                        },
+                    ));
+                    evidence.push(EvidenceArtifact::PolicyViolation {
+                        tool_name: call.tool_name.clone(),
+                        stage: PolicyStage::PreToolUse,
+                        summary: format!("Policy denied: {}", reason),
+                        mutation_applied: false,
+                        path: call.args.get("path").and_then(|v| v.as_str()).map(str::to_string),
+                    });
+                    continue;
+                }
+                PolicyDecision::Ask { reason } => {
+                    self.emit(AgentEvent::ToolApprovalNeeded {
+                        call_id: call.call_id.clone(),
+                        name: call.tool_name.clone(),
+                        args: call.args.clone(),
+                    });
+
+                    let approval = self
+                        .approval_handler
+                        .request_approval(&call.call_id, &call.tool_name, &call.args)
+                        .await;
+
+                    match approval {
+                        ApprovalDecision::Approve => { /* fall through */ }
+                        ApprovalDecision::Deny => {
+                            results.push((
+                                call.call_id.clone(),
+                                ToolCallOutcome::PolicyBlocked {
+                                    message: format!(
+                                        "User denied approval for '{}'. Try a different approach or ask the user for guidance.",
+                                        call.tool_name
+                                    ),
+                                    stage: PolicyStage::PreToolUse,
+                                    mutated: false,
+                                },
+                            ));
+                            evidence.push(EvidenceArtifact::ApprovalBlocked {
+                                tool_name: call.tool_name.clone(),
+                                reason: format!("User denied (policy reason: {})", reason),
+                            });
+                            continue;
+                        }
                     }
-                    ApprovalDecision::Deny => {
-                        results.push((
-                            call.call_id.clone(),
-                            ToolCallOutcome::PolicyBlocked {
-                                message: format!(
-                                    "User denied approval for '{}'. Try a different approach or ask the user for guidance.",
-                                    call.tool_name
-                                ),
-                                stage: PolicyStage::PreToolUse,
-                                mutated: false,
-                            },
-                        ));
-                        evidence.push(EvidenceArtifact::ApprovalBlocked {
-                            tool_name: call.tool_name.clone(),
-                            reason: "User denied approval".to_string(),
-                        });
-                        continue;
-                    }
+                }
+                PolicyDecision::Allow | PolicyDecision::Sandbox { .. } => {
+                    // Proceed directly
                 }
             }
 
-            if tool.is_mutating() {
-                approved_writes.push(call.clone());
-            } else {
+            // Classify as read or write based on semantic purity for scheduling
+            if semantics.purity <= crate::tool_semantics::Purity::Idempotent {
                 approved_reads.push(call.clone());
+            } else {
+                approved_writes.push(call.clone());
             }
         }
 
-        // Run reads concurrently
-        let read_futures: Vec<_> = approved_reads
-            .into_iter()
-            .map(|call| {
-                let call = call.clone();
-                let tools = self.tools.clone();
-                let ctx = self.tool_context.clone();
-                let cancel = cancel.clone();
-                let extensions = self.extensions.clone();
-                async move {
-                    // Fix #4: Call extension hooks before/after tool execution
-                    let modified_args = match extensions.on_before_tool(&call.tool_name, &call.args).await {
+        // ── Schedule via conflict-aware scheduler (single authority for batching) ──
+        // Combine all approved calls, then let the scheduler partition them.
+        let mut all_approved: Vec<pipit_provider::ToolCall> = Vec::new();
+        all_approved.extend(approved_reads);
+        all_approved.extend(approved_writes);
+
+        let batches = crate::scheduler::schedule(&all_approved);
+        tracing::debug!(
+            total_calls = all_approved.len(),
+            batches = batches.len(),
+            "Scheduler partitioned tool calls into {} batch(es)",
+            batches.len()
+        );
+
+        // ── Execute batches: concurrent within batch, sequential across batches ──
+        for batch in &batches {
+            if cancel.is_cancelled() { break; }
+
+            let batch_calls: Vec<&pipit_provider::ToolCall> = batch.indices.iter()
+                .map(|&i| &all_approved[i])
+                .collect();
+
+            if batch_calls.len() == 1 || !batch.all_read_only {
+                // Sequential: execute one at a time (writes, or mixed)
+                for call in batch_calls {
+                    if cancel.is_cancelled() { break; }
+
+                    let modified_args = match self.extensions.on_before_tool(&call.tool_name, &call.args).await {
                         Ok(Some(new_args)) => new_args,
                         Ok(None) => call.args.clone(),
                         Err(err) => {
-                            return (
-                                call.call_id.clone(),
-                                ToolCallOutcome::Error {
-                                    message: err.to_string(),
-                                },
-                            );
+                            let outcome = ToolCallOutcome::Error { message: err.to_string() };
+                            evidence.push(evidence_from_tool(call, &outcome));
+                            self.emit(AgentEvent::ToolCallEnd {
+                                call_id: call.call_id.clone(), name: call.tool_name.clone(), result: outcome.clone(),
+                            });
+                            results.push((call.call_id.clone(), outcome));
+                            continue;
                         }
                     };
                     let mut modified_call = call.clone();
                     modified_call.args = modified_args;
-                    let outcome = execute_single_tool(&tools, &modified_call, &ctx, cancel).await;
-                    let outcome = apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
-                    (call.call_id.clone(), outcome)
-                }
-            })
-            .collect();
 
-        let read_results = futures::future::join_all(read_futures).await;
-        for (call_id, outcome) in &read_results {
-            let name = calls.iter().find(|c| c.call_id == *call_id)
-                .map(|c| c.tool_name.as_str()).unwrap_or("unknown");
-            self.emit(AgentEvent::ToolCallEnd {
-                call_id: call_id.clone(), name: name.to_string(), result: outcome.clone(),
-            });
-            if let Some(call) = calls.iter().find(|c| c.call_id == *call_id) {
-                evidence.push(evidence_from_tool(call, outcome));
-            }
-        }
-        results.extend(read_results);
-
-        // Run writes sequentially
-        for call in approved_writes {
-            if cancel.is_cancelled() { break; }
-
-            // Fix #4: Extension hooks for writes too
-            let modified_args = match self.extensions.on_before_tool(&call.tool_name, &call.args).await {
-                Ok(Some(new_args)) => new_args,
-                Ok(None) => call.args.clone(),
-                Err(err) => {
-                    let outcome = ToolCallOutcome::Error {
-                        message: err.to_string(),
-                    };
-                    evidence.push(evidence_from_tool(&call, &outcome));
+                    let outcome = execute_single_tool(&self.tools, &modified_call, &self.tool_context, cancel.clone()).await;
+                    let mutation_applied = matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
+                    let outcome = apply_after_tool_hook(&*self.extensions, &call.tool_name, outcome).await;
+                    if mutation_applied {
+                        if let Some(path) = call.args.get("path").and_then(|value| value.as_str()) {
+                            modified_files.push(path.to_string());
+                            realized_edits.push(RealizedEdit {
+                                path: path.to_string(),
+                                summary: summarize_tool_outcome(&call.tool_name, &outcome),
+                            });
+                        }
+                    }
+                    evidence.push(evidence_from_tool(call, &outcome));
                     self.emit(AgentEvent::ToolCallEnd {
                         call_id: call.call_id.clone(), name: call.tool_name.clone(), result: outcome.clone(),
                     });
                     results.push((call.call_id.clone(), outcome));
-                    continue;
                 }
-            };
-            let mut modified_call = call.clone();
-            modified_call.args = modified_args;
+            } else {
+                // Concurrent: all calls in this batch are independent reads
+                let concurrent_futures: Vec<_> = batch_calls
+                    .into_iter()
+                    .map(|call| {
+                        let call = call.clone();
+                        let tools = self.tools.clone();
+                        let ctx = self.tool_context.clone();
+                        let cancel = cancel.clone();
+                        let extensions = self.extensions.clone();
+                        async move {
+                            let modified_args = match extensions.on_before_tool(&call.tool_name, &call.args).await {
+                                Ok(Some(new_args)) => new_args,
+                                Ok(None) => call.args.clone(),
+                                Err(err) => {
+                                    return (call.call_id.clone(), ToolCallOutcome::Error { message: err.to_string() });
+                                }
+                            };
+                            let mut modified_call = call.clone();
+                            modified_call.args = modified_args;
+                            let outcome = execute_single_tool(&tools, &modified_call, &ctx, cancel).await;
+                            let outcome = apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
+                            (call.call_id.clone(), outcome)
+                        }
+                    })
+                    .collect();
 
-            let outcome = execute_single_tool(&self.tools, &modified_call, &self.tool_context, cancel.clone()).await;
-            let mutation_applied = matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
-            let outcome = apply_after_tool_hook(&*self.extensions, &call.tool_name, outcome).await;
-            if mutation_applied {
-                if let Some(path) = call.args.get("path").and_then(|value| value.as_str()) {
-                    modified_files.push(path.to_string());
-                    realized_edits.push(RealizedEdit {
-                        path: path.to_string(),
-                        summary: summarize_tool_outcome(&call.tool_name, &outcome),
+                let batch_results = futures::future::join_all(concurrent_futures).await;
+                for (call_id, outcome) in &batch_results {
+                    let name = calls.iter().find(|c| c.call_id == *call_id)
+                        .map(|c| c.tool_name.as_str()).unwrap_or("unknown");
+                    self.emit(AgentEvent::ToolCallEnd {
+                        call_id: call_id.clone(), name: name.to_string(), result: outcome.clone(),
                     });
+                    if let Some(call) = calls.iter().find(|c| c.call_id == *call_id) {
+                        evidence.push(evidence_from_tool(call, outcome));
+                    }
                 }
+                results.extend(batch_results);
             }
-            evidence.push(evidence_from_tool(&call, &outcome));
-
-            self.emit(AgentEvent::ToolCallEnd {
-                call_id: call.call_id.clone(), name: call.tool_name.clone(), result: outcome.clone(),
-            });
-            results.push((call.call_id.clone(), outcome));
         }
 
         (results, modified_files, evidence, realized_edits, highest_risk)
@@ -955,6 +1062,52 @@ impl AgentLoop {
     }
 
     fn emit(&self, event: AgentEvent) {
+        // Record significant events to the session ledger for crash recovery.
+        match &event {
+            AgentEvent::ToolCallStart { call_id, name, args } => {
+                self.record(SessionEvent::ToolCallProposed {
+                    call_id: call_id.clone(),
+                    tool_name: name.clone(),
+                    args: args.clone(),
+                });
+            }
+            AgentEvent::ToolCallEnd { call_id, name, result, .. } => {
+                let (success, mutated) = match result {
+                    ToolCallOutcome::Success { mutated, .. } => (true, *mutated),
+                    _ => (false, false),
+                };
+                self.record(SessionEvent::ToolCompleted {
+                    call_id: call_id.clone(),
+                    success,
+                    mutated,
+                    result_summary: summarize_tool_outcome(name, result),
+                    result_blob_hash: None,
+                });
+            }
+            AgentEvent::CompressionEnd { messages_removed, tokens_freed } => {
+                self.record(SessionEvent::ContextCompressed {
+                    messages_removed: *messages_removed,
+                    tokens_freed: *tokens_freed,
+                    strategy: "auto".to_string(),
+                });
+            }
+            AgentEvent::TurnStart { turn_number } => {
+                self.record(SessionEvent::AssistantResponseStarted { turn: *turn_number });
+            }
+            AgentEvent::SteeringMessageInjected { text } => {
+                self.record(SessionEvent::UserMessageAccepted { content: text.clone() });
+            }
+            AgentEvent::PlanSelected { strategy, rationale, pivoted, .. } => {
+                if *pivoted {
+                    self.record(SessionEvent::PlanPivoted {
+                        from_strategy: String::new(),
+                        to_strategy: strategy.clone(),
+                        trigger: rationale.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
         let _ = self.event_tx.send(event);
     }
 
@@ -1097,7 +1250,7 @@ struct RequestReduction {
     summary: String,
 }
 
-fn summarize_tool_outcome(tool_name: &str, outcome: &ToolCallOutcome) -> String {
+pub(crate) fn summarize_tool_outcome(tool_name: &str, outcome: &ToolCallOutcome) -> String {
     match outcome {
         ToolCallOutcome::Success { content, .. } => {
             format!("{} succeeded: {}", tool_name, truncate(content, 160))
@@ -1125,7 +1278,10 @@ fn summarize_tool_outcome(tool_name: &str, outcome: &ToolCallOutcome) -> String 
     }
 }
 
-fn evidence_from_tool(
+/// Classify a tool call into an evidence artifact based on its canonical
+/// `SemanticClass` — the same algebraic type used by governor and scheduler.
+/// Evidence is a function of semantics, not of spelling.
+pub(crate) fn evidence_from_tool(
     call: &pipit_provider::ToolCall,
     outcome: &ToolCallOutcome,
 ) -> EvidenceArtifact {
@@ -1144,40 +1300,46 @@ fn evidence_from_tool(
         };
     }
 
-    match call.tool_name.as_str() {
-        "read_file" => EvidenceArtifact::FileRead {
-            path: call.args.get("path").and_then(|value| value.as_str()).map(str::to_string),
-            summary: summarize_tool_outcome(&call.tool_name, outcome),
-        },
-        "bash" => EvidenceArtifact::CommandResult {
-            kind: classify_verification_command(
-                call.args
-                    .get("command")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(""),
-            ),
-            command: call
-                .args
-                .get("command")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string(),
-            output: match outcome {
-                ToolCallOutcome::Success { content, .. } => truncate(content, 240),
-                ToolCallOutcome::PolicyBlocked { message, .. } => truncate(message, 240),
-                ToolCallOutcome::Error { message } => truncate(message, 240),
-            },
-            success: matches!(outcome, ToolCallOutcome::Success { .. }),
-        },
-        "edit_file" | "write_file" => EvidenceArtifact::EditApplied {
-            path: call.args.get("path").and_then(|value| value.as_str()).map(str::to_string),
-            summary: summarize_tool_outcome(&call.tool_name, outcome),
-        },
-        _ => EvidenceArtifact::ToolExecution {
-            tool_name: call.tool_name.clone(),
-            summary: summarize_tool_outcome(&call.tool_name, outcome),
-            success: matches!(outcome, ToolCallOutcome::Success { .. }),
-        },
+    let semantic_class = classify_semantically(&call.tool_name, &call.args);
+
+    match semantic_class {
+        SemanticClass::Read { paths } => {
+            EvidenceArtifact::FileRead {
+                path: paths.into_iter().next(),
+                summary: summarize_tool_outcome(&call.tool_name, outcome),
+            }
+        }
+        SemanticClass::Search { .. } | SemanticClass::Pure => {
+            EvidenceArtifact::FileRead {
+                path: call.args.get("path").and_then(|v| v.as_str()).map(str::to_string),
+                summary: summarize_tool_outcome(&call.tool_name, outcome),
+            }
+        }
+        SemanticClass::Edit { paths } => {
+            EvidenceArtifact::EditApplied {
+                path: paths.into_iter().next(),
+                summary: summarize_tool_outcome(&call.tool_name, outcome),
+            }
+        }
+        SemanticClass::Exec { command } => {
+            EvidenceArtifact::CommandResult {
+                kind: classify_verification_command(&command),
+                command,
+                output: match outcome {
+                    ToolCallOutcome::Success { content, .. } => truncate(content, 240),
+                    ToolCallOutcome::PolicyBlocked { message, .. } => truncate(message, 240),
+                    ToolCallOutcome::Error { message } => truncate(message, 240),
+                },
+                success: matches!(outcome, ToolCallOutcome::Success { .. }),
+            }
+        }
+        SemanticClass::Delegate { .. } | SemanticClass::External { .. } => {
+            EvidenceArtifact::ToolExecution {
+                tool_name: call.tool_name.clone(),
+                summary: summarize_tool_outcome(&call.tool_name, outcome),
+                success: matches!(outcome, ToolCallOutcome::Success { .. }),
+            }
+        }
     }
 }
 
@@ -1387,7 +1549,7 @@ fn latest_failed_verification(evidence: &[EvidenceArtifact]) -> Option<(String, 
     })
 }
 
-async fn apply_after_tool_hook(
+pub(crate) async fn apply_after_tool_hook(
     extensions: &dyn ExtensionRunner,
     tool_name: &str,
     outcome: ToolCallOutcome,
@@ -1546,7 +1708,7 @@ mod tests {
     }
 }
 
-async fn execute_single_tool(
+pub(crate) async fn execute_single_tool(
     tools: &ToolRegistry,
     call: &pipit_provider::ToolCall,
     ctx: &ToolContext,

@@ -40,16 +40,6 @@ impl Tool for EditFileTool {
          (whitespace-normalized fuzzy matching is used as fallback). Uses atomic writes."
     }
 
-    fn is_mutating(&self) -> bool {
-        true
-    }
-
-    fn requires_approval(&self, mode: ApprovalMode) -> bool {
-        // Edits need approval in Plan mode and AutoEdit (edit-with-review).
-        // In CommandReview and FullAuto, edits are auto-approved.
-        matches!(mode, ApprovalMode::Suggest | ApprovalMode::AutoEdit)
-    }
-
     async fn execute(
         &self,
         args: Value,

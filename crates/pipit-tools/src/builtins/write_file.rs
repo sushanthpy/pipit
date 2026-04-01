@@ -34,14 +34,6 @@ impl Tool for WriteFileTool {
         "Create or overwrite a file with the given content. Uses atomic writes."
     }
 
-    fn is_mutating(&self) -> bool {
-        true
-    }
-
-    fn requires_approval(&self, mode: ApprovalMode) -> bool {
-        matches!(mode, ApprovalMode::Suggest | ApprovalMode::AutoEdit)
-    }
-
     async fn execute(
         &self,
         args: Value,

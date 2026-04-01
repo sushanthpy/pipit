@@ -1,6 +1,10 @@
 pub mod registry;
 pub mod builtins;
+pub mod file_history;
+pub mod lazy_index;
 pub mod mcp;
+pub mod typed_output;
+pub mod tool_semantics_bridge;
 
 pub use registry::*;
 pub use mcp::{McpConfig, McpManager, McpClient, load_mcp_config};
@@ -30,6 +34,11 @@ pub enum ToolError {
 }
 
 /// The core tool trait. Every tool implements this.
+///
+/// Authorization is NOT decided by individual tools. The `is_mutating()` and
+/// `requires_approval()` methods exist only as backward-compatible defaults
+/// derived from the semantic type system (`tool_semantics_bridge`). The
+/// canonical permission oracle is `PolicyKernel::evaluate()` in pipit-core.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Unique name matching the LLM tool declaration.
@@ -42,10 +51,17 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
 
     /// Whether this tool modifies the filesystem.
-    fn is_mutating(&self) -> bool;
+    /// Default: derived from the semantic type system. Tools should NOT override.
+    fn is_mutating(&self) -> bool {
+        tool_semantics_bridge::builtin_descriptor(self.name()).is_mutating()
+    }
 
     /// Whether this tool requires user approval at the given level.
-    fn requires_approval(&self, mode: ApprovalMode) -> bool;
+    /// Default: derived from the semantic type system. Tools should NOT override.
+    /// The actual approval decision is made by PolicyKernel in the agent loop.
+    fn requires_approval(&self, mode: ApprovalMode) -> bool {
+        tool_semantics_bridge::builtin_descriptor(self.name()).requires_approval(mode)
+    }
 
     /// Execute the tool.
     async fn execute(

@@ -1,18 +1,24 @@
 mod read_file;
 mod write_file;
 mod edit_file;
+mod multi_edit;
 mod list_directory;
 mod grep;
 mod glob;
 mod bash;
+pub mod analysis;
 pub mod sandbox;
 pub mod subagent;
+pub mod structured_output;
 
 pub use read_file::ReadFileTool;
 pub use write_file::WriteFileTool;
 pub use edit_file::EditFileTool;
+pub use multi_edit::MultiEditTool;
 pub use list_directory::ListDirectoryTool;
 pub use grep::GrepTool;
 pub use glob::GlobTool;
 pub use bash::BashTool;
+pub use analysis::{SymbolXrefTool, ChangeImpactTool, TestSelectorTool, ApiSurfaceTool};
 pub use subagent::SubagentTool;
+pub use structured_output::StructuredOutputTool;

@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 //  MCP Configuration
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// MCP server configuration, compatible with Claude Code's format.
+/// MCP server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfig {
     #[serde(rename = "mcpServers", default)]
@@ -315,16 +315,6 @@ impl crate::Tool for McpToolWrapper {
         &self.tool_def.description
     }
 
-    fn is_mutating(&self) -> bool {
-        // Conservative: treat all MCP tools as potentially mutating
-        true
-    }
-
-    fn requires_approval(&self, mode: ApprovalMode) -> bool {
-        // MCP tools require approval in non-FullAuto modes
-        !matches!(mode, ApprovalMode::FullAuto)
-    }
-
     async fn execute(
         &self,
         args: Value,
@@ -389,6 +379,54 @@ impl McpManager {
                 );
             }
         }
+    }
+
+    /// Two-stage registration: eagerly register tools for small servers,
+    /// lazily index tools for servers above the threshold.
+    /// Returns Some(LazyToolIndex) if any servers were lazily indexed.
+    pub fn register_tools_lazy(
+        &self,
+        registry: &mut crate::ToolRegistry,
+        threshold: usize,
+    ) -> Option<crate::lazy_index::LazyToolIndex> {
+        let mut lazy_index = crate::lazy_index::LazyToolIndex::new();
+        let mut has_lazy = false;
+
+        for client in &self.clients {
+            if client.tools.len() <= threshold {
+                // Eager: register all tools directly
+                for tool_def in &client.tools {
+                    let wrapper = McpToolWrapper::new(Arc::clone(client), tool_def.clone());
+                    registry.register(Arc::new(wrapper));
+                    tracing::debug!(
+                        server = %client.name,
+                        tool = %tool_def.name,
+                        "Eagerly registered MCP tool"
+                    );
+                }
+            } else {
+                // Lazy: index tools without registering them
+                let tools: Vec<(String, String)> = client.tools.iter()
+                    .map(|t| (t.name.clone(), t.description.clone()))
+                    .collect();
+                lazy_index.index_server(&client.name, &tools);
+                has_lazy = true;
+                tracing::info!(
+                    server = %client.name,
+                    tools = client.tools.len(),
+                    "Lazily indexed MCP server ({} tools > {} threshold)",
+                    client.tools.len(),
+                    threshold
+                );
+            }
+        }
+
+        if has_lazy { Some(lazy_index) } else { None }
+    }
+
+    /// Clone the client Arcs for use by the mcp_search meta-tool.
+    pub fn clone_clients(&self) -> Vec<Arc<McpClient>> {
+        self.clients.clone()
     }
 
     /// Get total tool count across all servers.

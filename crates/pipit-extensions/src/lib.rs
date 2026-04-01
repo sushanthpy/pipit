@@ -14,7 +14,7 @@ pub enum ExtensionError {
     HookBlocked(String),
 }
 
-/// Hook points in the agent lifecycle — mirrors Claude Code's hook events.
+/// Hook points in the agent lifecycle — mirrors Code's hook events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Hook {
     /// Before a tool executes. Can block (exit code 2) or warn.
@@ -471,7 +471,7 @@ fn load_hook_manifest(path: &Path) -> Result<HookManifest, ExtensionError> {
     Err(ExtensionError::Other(format!("Failed to parse hook {}", path.display())))
 }
 
-/// Load ALL hook manifests from a file, supporting the Claude Code grouped format.
+/// Load ALL hook manifests from a file, supporting the Code grouped format.
 pub fn load_all_hook_manifests(path: &Path) -> Vec<HookManifest> {
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
@@ -483,7 +483,7 @@ pub fn load_all_hook_manifests(path: &Path) -> Vec<HookManifest> {
         return vec![manifest];
     }
 
-    // Try Claude Code grouped format: {"hooks": {"PreToolUse": [{...}], ...}}
+    // Try Code grouped format: {"hooks": {"PreToolUse": [{...}], ...}}
     if let Ok(grouped) = serde_json::from_str::<serde_json::Value>(&raw) {
         if let Some(hooks_obj) = grouped.get("hooks").and_then(|h| h.as_object()) {
             let mut manifests = Vec::new();

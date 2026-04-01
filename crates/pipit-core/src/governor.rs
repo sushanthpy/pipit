@@ -1,4 +1,5 @@
 use crate::proof::{ConfidenceReport, RollbackCheckpoint};
+use crate::tool_semantics::{builtin_semantics, Purity, ToolCategory, classify_semantically, SemanticClass};
 use pipit_provider::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -149,11 +150,17 @@ impl Governor {
     }
 }
 
+/// Classify a tool call based on its canonical semantic descriptor.
+/// ActionClass is derived from SemanticClass — the same type that evidence
+/// and scheduling use — ensuring consistent classification across the system.
 fn classify_tool(call: &ToolCall) -> ActionClass {
-    match call.tool_name.as_str() {
-        "read_file" | "list_directory" | "grep" | "glob" => ActionClass::ReadOnly,
-        "edit_file" | "write_file" => ActionClass::LocalEdit,
-        "bash" => ActionClass::ShellExecution,
-        _ => ActionClass::HighRisk,
+    let semantic_class = classify_semantically(&call.tool_name, &call.args);
+    match semantic_class {
+        SemanticClass::Read { .. } | SemanticClass::Search { .. } | SemanticClass::Pure => {
+            ActionClass::ReadOnly
+        }
+        SemanticClass::Edit { .. } => ActionClass::LocalEdit,
+        SemanticClass::Exec { .. } => ActionClass::ShellExecution,
+        SemanticClass::Delegate { .. } | SemanticClass::External { .. } => ActionClass::HighRisk,
     }
 }

@@ -39,3 +39,6 @@ run.sh
 mini-swe-agent
 pipit-cli.txt
 .pipit
+comp.html
+pycache
+scripts/__pycache__/

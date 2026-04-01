@@ -63,5 +63,8 @@ sled = { workspace = true }
 # Cron parsing
 cron = { workspace = true }
 
+# File watching
+notify = { workspace = true }
+
 # Unix
 libc = { workspace = true }

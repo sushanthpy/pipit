@@ -35,6 +35,7 @@ pub trait SubagentExecutor: Send + Sync {
             worktree_path: None,
             branch_name: None,
             diff: None,
+            merge_contract: None,
             merge_ready: false,
         })
     }
@@ -47,7 +48,20 @@ pub struct IsolatedResult {
     pub worktree_path: Option<std::path::PathBuf>,
     pub branch_name: Option<String>,
     pub diff: Option<String>,
+    /// Structured merge contract — machine-checkable, not a UI hint.
+    pub merge_contract: Option<MergeContractData>,
     pub merge_ready: bool,
+}
+
+/// Serializable merge contract data for the subagent boundary.
+/// Mirrors pipit-core's MergeContract but avoids circular deps.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MergeContractData {
+    pub changed_files: Vec<String>,
+    pub verification_obligations: Vec<String>,
+    pub rollback_point: String,
+    pub confidence: f32,
+    pub self_reported_complete: bool,
 }
 
 /// Subagent tool — delegates focused subtasks to a child agent.
@@ -97,12 +111,6 @@ impl Tool for SubagentTool {
          that can run independently. Pass isolated=true for worktree isolation."
     }
 
-    fn is_mutating(&self) -> bool { false }
-
-    fn requires_approval(&self, mode: ApprovalMode) -> bool {
-        matches!(mode, ApprovalMode::Suggest)
-    }
-
     async fn execute(
         &self,
         args: Value,
@@ -144,8 +152,41 @@ impl Tool for SubagentTool {
                             output.push_str(&format!("\n[Changes: {} lines]", diff.lines().count()));
                         }
                     }
-                    if result.merge_ready {
-                        output.push_str("\n[Ready to merge]");
+                    // Enforce structured merge contract — no merge without valid contract
+                    if let Some(ref contract) = result.merge_contract {
+                        if contract.self_reported_complete
+                            && contract.verification_obligations.is_empty()
+                            && !contract.rollback_point.is_empty()
+                        {
+                            output.push_str(&format!(
+                                "\n[Merge contract: {} files changed, confidence {:.0}%, rollback={}]",
+                                contract.changed_files.len(),
+                                contract.confidence * 100.0,
+                                contract.rollback_point
+                            ));
+                            output.push_str("\n[MERGE ALLOWED — contract verified]");
+                        } else {
+                            let mut reasons = Vec::new();
+                            if !contract.self_reported_complete {
+                                reasons.push("incomplete");
+                            }
+                            if !contract.verification_obligations.is_empty() {
+                                reasons.push("pending verifications");
+                            }
+                            if contract.rollback_point.is_empty() {
+                                reasons.push("no rollback point");
+                            }
+                            output.push_str(&format!(
+                                "\n[MERGE BLOCKED — contract not satisfied: {}]",
+                                reasons.join(", ")
+                            ));
+                        }
+                    } else if result.merge_ready {
+                        // Legacy path: merge_ready=true but no contract → blocked
+                        output.push_str(
+                            "\n[MERGE BLOCKED — no structured merge contract. \
+                             Isolated branches must produce a MergeContract to merge.]"
+                        );
                     }
                     Ok(ToolResult::text(output))
                 }

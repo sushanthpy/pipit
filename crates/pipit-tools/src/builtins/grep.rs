@@ -38,14 +38,6 @@ impl Tool for GrepTool {
         "Search for a pattern in files. Supports regex. Respects .gitignore."
     }
 
-    fn is_mutating(&self) -> bool {
-        false
-    }
-
-    fn requires_approval(&self, _mode: ApprovalMode) -> bool {
-        false
-    }
-
     async fn execute(
         &self,
         args: Value,

@@ -33,14 +33,6 @@ impl Tool for ListDirectoryTool {
         "List files and directories. Respects .gitignore."
     }
 
-    fn is_mutating(&self) -> bool {
-        false
-    }
-
-    fn requires_approval(&self, _mode: ApprovalMode) -> bool {
-        false
-    }
-
     async fn execute(
         &self,
         args: Value,

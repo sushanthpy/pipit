@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Estimate tokens from raw text using content-aware heuristics.
 /// Accounts for code (high punctuation → ~3 bytes/token) vs prose (~4 bytes/token).
-fn estimate_text_tokens(text: &str) -> u64 {
+pub(crate) fn estimate_text_tokens(text: &str) -> u64 {
     if text.is_empty() { return 0; }
     let len = text.len();
     let punct = text.bytes().filter(|b| b.is_ascii_punctuation()).count();

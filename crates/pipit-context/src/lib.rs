@@ -1,9 +1,17 @@
 pub mod budget;
+pub mod cache;
+pub mod compaction;
+pub mod content_replacement;
+pub mod prompt_ir;
 pub mod session;
 pub mod knowledge_injection;
 pub mod federated_knowledge;
+pub mod transcript;
 
 pub use budget::ContextManager;
+pub use cache::{CacheBreakpointPlanner, CacheMetrics};
+pub use compaction::{CompactionPipeline, CompactionPass, PassResult, PipelineResult, StageMetrics};
+pub use content_replacement::{ContentReplacementManager, ReplacementRecord, ToolBudget};
 pub use session::SessionTree;
 pub use knowledge_injection::{
     InjectedKnowledge, format_knowledge_preamble, select_knowledge_units,

@@ -1,0 +1,236 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1680" width="1200" height="1680">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&amp;family=Inter:wght@400;500;600;700;800;900&amp;display=swap');
+      text { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+      .mono { font-family: 'JetBrains Mono', monospace; }
+    </style>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#080c14"/>
+      <stop offset="100%" stop-color="#0d1220"/>
+    </linearGradient>
+    <linearGradient id="orangeGlow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f97316" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#f97316" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="headerBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="50%" stop-color="#fb923c"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="1680" fill="url(#bgGrad)"/>
+  <rect x="0" y="0" width="1200" height="1680" fill="url(#orangeGlow)"/>
+
+  <!-- Top accent bar -->
+  <rect x="0" y="0" width="1200" height="4" fill="url(#headerBar)"/>
+
+  <!-- ═══════════ HEADER ═══════════ -->
+  <text x="600" y="62" text-anchor="middle" fill="#f97316" font-size="15" font-weight="700" letter-spacing="5" opacity="0.7">WHERE DOES PIPIT STAND?</text>
+
+  <text x="600" y="108" text-anchor="middle" fill="#f1f5f9" font-size="44" font-weight="900" letter-spacing="-1">PIPIT CLI</text>
+  <text x="600" y="145" text-anchor="middle" fill="#64748b" font-size="18" font-weight="400">The Rust-Native Multi-Agent AI Coding System</text>
+
+  <!-- Version badge -->
+  <rect x="525" y="160" width="150" height="28" rx="14" fill="rgba(249,115,22,0.12)" stroke="#f97316" stroke-width="0.8" stroke-opacity="0.4"/>
+  <text x="600" y="179" text-anchor="middle" fill="#fb923c" font-size="13" font-weight="600" class="mono">v0.1.8 · MIT · OSS</text>
+
+  <!-- Divider -->
+  <line x1="80" y1="210" x2="1120" y2="210" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- ═══════════ IDENTITY CARD ═══════════ -->
+  <rect x="60" y="230" width="1080" height="200" rx="12" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+
+  <text x="100" y="268" fill="#f97316" font-size="13" font-weight="700" letter-spacing="3">IDENTITY</text>
+
+  <!-- Row 1 -->
+  <text x="100" y="302" fill="#64748b" font-size="14" font-weight="500">Philosophy</text>
+  <text x="320" y="302" fill="#e2e8f0" font-size="14" font-weight="600">Rust-Native Terminal Agent + Multi-Agent Mesh</text>
+
+  <text x="100" y="332" fill="#64748b" font-size="14" font-weight="500">Model</text>
+  <text x="320" y="332" fill="#e2e8f0" font-size="14" font-weight="600">Any — Claude, GPT, Gemini, DeepSeek, Mistral, Ollama + 6 more</text>
+
+  <text x="100" y="362" fill="#64748b" font-size="14" font-weight="500">Best For</text>
+  <text x="320" y="362" fill="#e2e8f0" font-size="14" font-weight="600">Multi-agent orchestration, verification-driven dev, self-hosted teams</text>
+
+  <text x="100" y="392" fill="#64748b" font-size="14" font-weight="500">Price</text>
+  <text x="320" y="392" fill="#22c55e" font-size="14" font-weight="700">Free (Open Source) — you only pay for LLM API calls</text>
+
+  <text x="100" y="418" fill="#64748b" font-size="14" font-weight="500">Interface</text>
+  <text x="320" y="418" fill="#e2e8f0" font-size="14" font-weight="600">Terminal TUI (ratatui) + Background Daemon + Telegram/Discord/Slack bots</text>
+
+  <!-- ═══════════ FEATURE RATINGS ═══════════ -->
+  <text x="100" y="478" fill="#06b6d4" font-size="13" font-weight="700" letter-spacing="3">▶  FEATURE RATINGS</text>
+
+  <!-- Feature rows -->
+  <!-- Row template: label at x=100, stars/value at x=480 -->
+
+  <!-- Agentic Autonomy -->
+  <rect x="60" y="498" width="1080" height="40" rx="0" fill="#111827" opacity="0.6"/>
+  <text x="100" y="524" fill="#e2e8f0" font-size="14" font-weight="500">Agentic Autonomy</text>
+  <text x="480" y="524" fill="#fbbf24" font-size="16">★★★★★</text>
+  <text x="580" y="524" fill="#94a3b8" font-size="13">Full auto · 4 approval modes (Plan → Full Access)</text>
+
+  <!-- Multi-file Editing -->
+  <rect x="60" y="538" width="1080" height="40" rx="0" fill="transparent"/>
+  <text x="100" y="564" fill="#e2e8f0" font-size="14" font-weight="500">Multi-file Editing</text>
+  <text x="480" y="564" fill="#fbbf24" font-size="16">★★★★</text><text x="544" y="564" fill="#92814a" font-size="16">★</text>
+  <text x="580" y="564" fill="#94a3b8" font-size="13">Worktree isolation + parallel agent edits</text>
+
+  <!-- Agent Teams / Mesh -->
+  <rect x="60" y="578" width="1080" height="40" rx="0" fill="#111827" opacity="0.6"/>
+  <text x="100" y="604" fill="#e2e8f0" font-size="14" font-weight="500">Agent Teams / Mesh</text>
+  <text x="480" y="604" fill="#fbbf24" font-size="16">★★★★★</text>
+  <text x="580" y="604" fill="#94a3b8" font-size="13">CRDT state sync · SWIM protocol · capability discovery</text>
+
+  <!-- Multi-Model Support -->
+  <rect x="60" y="618" width="1080" height="40" rx="0" fill="transparent"/>
+  <text x="100" y="644" fill="#e2e8f0" font-size="14" font-weight="500">Multi-Model Support</text>
+  <text x="480" y="644" fill="#fbbf24" font-size="16">★★★★★</text>
+  <text x="580" y="644" fill="#94a3b8" font-size="13">12+ providers · Ollama local · OpenAI/Anthropic compatible</text>
+
+  <!-- Code Quality -->
+  <rect x="60" y="658" width="1080" height="40" rx="0" fill="#111827" opacity="0.6"/>
+  <text x="100" y="684" fill="#e2e8f0" font-size="14" font-weight="500">Code Quality</text>
+  <text x="480" y="684" fill="#fbbf24" font-size="16">★★★★</text><text x="544" y="684" fill="#92814a" font-size="16">★</text>
+  <text x="580" y="684" fill="#94a3b8" font-size="13">Plan/Execute/Verify pipeline · formal proof engine</text>
+
+  <!-- Codebase Understanding -->
+  <rect x="60" y="698" width="1080" height="40" rx="0" fill="transparent"/>
+  <text x="100" y="724" fill="#e2e8f0" font-size="14" font-weight="500">Codebase Understanding</text>
+  <text x="480" y="724" fill="#fbbf24" font-size="16">★★★★</text><text x="544" y="724" fill="#92814a" font-size="16">★</text>
+  <text x="580" y="724" fill="#94a3b8" font-size="13">Tree-sitter · RepoMap · git archaeology · dependency graph</text>
+
+  <!-- Extensibility -->
+  <rect x="60" y="738" width="1080" height="40" rx="0" fill="#111827" opacity="0.6"/>
+  <text x="100" y="764" fill="#e2e8f0" font-size="14" font-weight="500">Extensibility</text>
+  <text x="480" y="764" fill="#fbbf24" font-size="16">★★★★★</text>
+  <text x="580" y="764" fill="#94a3b8" font-size="13">Lua hooks · Skills · MCP + SSE · Plugin marketplace · A2A</text>
+
+  <!-- Formal Verification -->
+  <rect x="60" y="778" width="1080" height="40" rx="0" fill="transparent"/>
+  <text x="100" y="804" fill="#e2e8f0" font-size="14" font-weight="500">Formal Verification</text>
+  <text x="480" y="804" fill="#22c55e" font-size="14" font-weight="700">✓ UNIQUE</text>
+  <text x="580" y="804" fill="#94a3b8" font-size="13">CSL spec language · Z3-style solver · proof persistence</text>
+
+  <!-- Self-Benchmarking -->
+  <rect x="60" y="818" width="1080" height="40" rx="0" fill="#111827" opacity="0.6"/>
+  <text x="100" y="844" fill="#e2e8f0" font-size="14" font-weight="500">Self-Benchmarking</text>
+  <text x="480" y="844" fill="#22c55e" font-size="14" font-weight="700">✓ UNIQUE</text>
+  <text x="580" y="844" fill="#94a3b8" font-size="13">SWE-bench harness · regression Z-score · flame graph profiler</text>
+
+  <!-- Architecture Evolution -->
+  <rect x="60" y="858" width="1080" height="40" rx="0" fill="transparent"/>
+  <text x="100" y="884" fill="#e2e8f0" font-size="14" font-weight="500">Architecture Evolution</text>
+  <text x="480" y="884" fill="#22c55e" font-size="14" font-weight="700">✓ UNIQUE</text>
+  <text x="580" y="884" fill="#94a3b8" font-size="13">NSGA-II genetic optimizer · Pareto-optimal microservice scaffolding</text>
+
+  <!-- Autocomplete -->
+  <rect x="60" y="898" width="1080" height="40" rx="0" fill="#111827" opacity="0.6"/>
+  <text x="100" y="924" fill="#e2e8f0" font-size="14" font-weight="500">Inline Autocomplete</text>
+  <text x="480" y="924" fill="#ef4444" font-size="14" font-weight="700">✗</text>
+  <text x="510" y="924" fill="#64748b" font-size="13">Terminal agent — not an IDE plugin</text>
+
+  <!-- Learning Curve -->
+  <rect x="60" y="938" width="1080" height="40" rx="0" fill="transparent"/>
+  <text x="100" y="964" fill="#e2e8f0" font-size="14" font-weight="500">Learning Curve</text>
+  <text x="480" y="964" fill="#f59e0b" font-size="14" font-weight="700">STEEP</text>
+  <text x="545" y="964" fill="#64748b" font-size="13">Rust ecosystem · terminal-first · advanced concepts</text>
+
+  <!-- ═══════════ VS THE BIG 3 ═══════════ -->
+  <text x="100" y="1030" fill="#06b6d4" font-size="13" font-weight="700" letter-spacing="3">▶  HOW PIPIT COMPARES</text>
+
+  <!-- Comparison boxes -->
+  <!-- vs Claude Code -->
+  <rect x="60" y="1050" width="345" height="175" rx="10" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <rect x="60" y="1050" width="345" height="3" rx="1" fill="#d97706"/>
+  <text x="80" y="1082" fill="#d97706" font-size="15" font-weight="700">vs Claude Code</text>
+  <text x="80" y="1107" fill="#22c55e" font-size="12" font-weight="600">✓ PIPIT WINS</text>
+  <text x="80" y="1127" fill="#8892a8" font-size="12">  Multi-model (12+ vs Anthropic only)</text>
+  <text x="80" y="1145" fill="#8892a8" font-size="12">  Agent mesh with CRDT + discovery</text>
+  <text x="80" y="1163" fill="#8892a8" font-size="12">  Formal verification + proof engine</text>
+  <text x="80" y="1181" fill="#8892a8" font-size="12">  Free / self-hosted</text>
+  <text x="80" y="1206" fill="#ef4444" font-size="12" font-weight="600">✗ CLAUDE CODE WINS</text>
+  <text x="80" y="1222" fill="#64748b" font-size="11">  Larger community · more polished UX · Opus model quality</text>
+
+  <!-- vs Cursor -->
+  <rect x="428" y="1050" width="345" height="175" rx="10" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <rect x="428" y="1050" width="345" height="3" rx="1" fill="#3b82f6"/>
+  <text x="448" y="1082" fill="#3b82f6" font-size="15" font-weight="700">vs Cursor</text>
+  <text x="448" y="1107" fill="#22c55e" font-size="12" font-weight="600">✓ PIPIT WINS</text>
+  <text x="448" y="1127" fill="#8892a8" font-size="12">  Full agentic autonomy (not IDE-bound)</text>
+  <text x="448" y="1145" fill="#8892a8" font-size="12">  Agent teams + mesh networking</text>
+  <text x="448" y="1163" fill="#8892a8" font-size="12">  Background daemon + bot integrations</text>
+  <text x="448" y="1181" fill="#8892a8" font-size="12">  Free / open source</text>
+  <text x="448" y="1206" fill="#ef4444" font-size="12" font-weight="600">✗ CURSOR WINS</text>
+  <text x="448" y="1222" fill="#64748b" font-size="11">  Tab completion · visual IDE · lower learning curve</text>
+
+  <!-- vs Copilot -->
+  <rect x="795" y="1050" width="345" height="175" rx="10" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <rect x="795" y="1050" width="345" height="3" rx="1" fill="#22c55e"/>
+  <text x="815" y="1082" fill="#22c55e" font-size="15" font-weight="700">vs GitHub Copilot</text>
+  <text x="815" y="1107" fill="#22c55e" font-size="12" font-weight="600">✓ PIPIT WINS</text>
+  <text x="815" y="1127" fill="#8892a8" font-size="12">  Deep agentic autonomy (not a plugin)</text>
+  <text x="815" y="1145" fill="#8892a8" font-size="12">  Full data sovereignty / self-hosted</text>
+  <text x="815" y="1163" fill="#8892a8" font-size="12">  Formal verification + benchmarking</text>
+  <text x="815" y="1181" fill="#8892a8" font-size="12">  Arch evolution + agent mesh</text>
+  <text x="815" y="1206" fill="#ef4444" font-size="12" font-weight="600">✗ COPILOT WINS</text>
+  <text x="815" y="1222" fill="#64748b" font-size="11">  Lowest friction · enterprise compliance · IP indemnity</text>
+
+  <!-- ═══════════ WHAT MAKES PIPIT DIFFERENT ═══════════ -->
+  <text x="100" y="1280" fill="#06b6d4" font-size="13" font-weight="700" letter-spacing="3">▶  WHAT MAKES PIPIT DIFFERENT</text>
+
+  <!-- 6 feature boxes in 2x3 grid -->
+  <!-- Row 1 -->
+  <rect x="60" y="1300" width="345" height="80" rx="8" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <text x="80" y="1328" fill="#f97316" font-size="14" font-weight="700">🦀 Rust-native performance</text>
+  <text x="80" y="1350" fill="#8892a8" font-size="12">Zero-copy, async Tokio runtime, LTO release</text>
+  <text x="80" y="1368" fill="#8892a8" font-size="12">builds. Blazing fast file ops + tree-sitter.</text>
+
+  <rect x="428" y="1300" width="345" height="80" rx="8" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <text x="448" y="1328" fill="#f97316" font-size="14" font-weight="700">🧠 Plan → Execute → Verify</text>
+  <text x="448" y="1350" fill="#8892a8" font-size="12">Planner LLM writes strategy, executor runs</text>
+  <text x="448" y="1368" fill="#8892a8" font-size="12">it, verifier LLM validates. Auto-repair loops.</text>
+
+  <rect x="795" y="1300" width="345" height="80" rx="8" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <text x="815" y="1328" fill="#f97316" font-size="14" font-weight="700">🌐 12+ LLM providers</text>
+  <text x="815" y="1350" fill="#8892a8" font-size="12">Anthropic, OpenAI, Google, DeepSeek, xAI,</text>
+  <text x="815" y="1368" fill="#8892a8" font-size="12">Groq, Cerebras, Mistral, Ollama + compatible.</text>
+
+  <!-- Row 2 -->
+  <rect x="60" y="1395" width="345" height="80" rx="8" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <text x="80" y="1423" fill="#f97316" font-size="14" font-weight="700">🤖 Daemon mode</text>
+  <text x="80" y="1445" fill="#8892a8" font-size="12">Runs as background service. Receives tasks</text>
+  <text x="80" y="1463" fill="#8892a8" font-size="12">via Telegram, Discord, Slack, webhook, cron.</text>
+
+  <rect x="428" y="1395" width="345" height="80" rx="8" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <text x="448" y="1423" fill="#f97316" font-size="14" font-weight="700">🔬 Formal verification</text>
+  <text x="448" y="1445" fill="#8892a8" font-size="12">CSL spec language, Z3-style constraint solver,</text>
+  <text x="448" y="1463" fill="#8892a8" font-size="12">proof persistence. Correctness over vibes.</text>
+
+  <rect x="795" y="1395" width="345" height="80" rx="8" fill="#111827" stroke="#1e2a3a" stroke-width="1"/>
+  <text x="815" y="1423" fill="#f97316" font-size="14" font-weight="700">🧬 Architecture evolution</text>
+  <text x="815" y="1445" fill="#8892a8" font-size="12">NSGA-II genetic optimizer evolves your arch</text>
+  <text x="815" y="1463" fill="#8892a8" font-size="12">from monolith → Pareto-optimal microservices.</text>
+
+  <!-- ═══════════ WHO IS PIPIT FOR ═══════════ -->
+  <text x="100" y="1530" fill="#06b6d4" font-size="13" font-weight="700" letter-spacing="3">▶  WHO SHOULD USE PIPIT?</text>
+
+  <rect x="60" y="1548" width="1080" height="105" rx="10" fill="#111827" stroke="#f97316" stroke-width="0.6" stroke-opacity="0.3"/>
+
+  <text x="100" y="1578" fill="#22c55e" font-size="14" font-weight="600">✓  You want full control and self-hosting (no vendor lock-in)</text>
+  <text x="100" y="1600" fill="#22c55e" font-size="14" font-weight="600">✓  You need multi-agent orchestration with formal guarantees</text>
+  <text x="100" y="1622" fill="#22c55e" font-size="14" font-weight="600">✓  You run your own models (Ollama) or switch between providers freely</text>
+  <text x="100" y="1644" fill="#22c55e" font-size="14" font-weight="600">✓  You want a coding bot in Telegram / Discord / Slack / cron</text>
+
+  <!-- Footer -->
+  <line x1="80" y1="1665" x2="1120" y2="1665" stroke="#1e293b" stroke-width="1"/>
+  <text x="600" y="1676" text-anchor="middle" fill="#475569" font-size="11" class="mono">github.com/[pipit-cli] · MIT License · v0.1.8 · Built with Rust 🦀</text>
+
+</svg>

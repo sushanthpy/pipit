@@ -1,5 +1,6 @@
 pub mod types;
 pub mod anthropic;
+pub mod fallback;
 pub mod google;
 pub mod openai;
 pub mod retry;

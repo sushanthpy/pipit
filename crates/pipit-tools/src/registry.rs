@@ -25,6 +25,7 @@ impl ToolRegistry {
         registry.register(Arc::new(crate::builtins::ReadFileTool));
         registry.register(Arc::new(crate::builtins::WriteFileTool));
         registry.register(Arc::new(crate::builtins::EditFileTool));
+        registry.register(Arc::new(crate::builtins::MultiEditTool));
         registry.register(Arc::new(crate::builtins::ListDirectoryTool));
         registry.register(Arc::new(crate::builtins::GrepTool));
         registry.register(Arc::new(crate::builtins::GlobTool));

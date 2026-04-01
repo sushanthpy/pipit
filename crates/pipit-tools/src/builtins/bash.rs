@@ -36,15 +36,6 @@ impl Tool for BashTool {
         "Execute a shell command and return stdout/stderr."
     }
 
-    fn is_mutating(&self) -> bool {
-        true
-    }
-
-    fn requires_approval(&self, mode: ApprovalMode) -> bool {
-        // Shell commands need approval in all modes except FullAuto
-        !matches!(mode, ApprovalMode::FullAuto)
-    }
-
     async fn execute(
         &self,
         args: Value,

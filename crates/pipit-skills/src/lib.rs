@@ -1,10 +1,17 @@
 pub mod discovery;
+pub mod eval;
 pub mod frontmatter;
 pub mod loader;
+pub mod manifest;
+pub mod policy;
+pub mod telemetry;
 
 pub use discovery::SkillRegistry;
 pub use frontmatter::{SkillFrontmatter, SkillMetadata, SkillSource};
 pub use loader::LoadedSkill;
+pub use manifest::{SkillManifest, SkillPackage, TrustTier};
+pub use policy::{PolicyDecision, SkillPolicyEngine};
+pub use telemetry::{SkillExecutionRecord, SkillTelemetryStore};
 
 use thiserror::Error;
 

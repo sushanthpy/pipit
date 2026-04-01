@@ -1,5 +1,6 @@
 mod types;
 pub mod credentials;
+pub mod feature_flags;
 
 pub use types::*;
 pub use credentials::{

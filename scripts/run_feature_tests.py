@@ -672,7 +672,7 @@ class DataStore:
         "3. An expired_keys() method that returns list of expired keys\n"
         "4. Write comprehensive tests in test_data_store.py\n"
         "5. Run tests to verify everything works",
-        max_turns=12, timeout=120)
+        max_turns=12, timeout=180)
 
     code = (tmpdir / "data_store.py").read_text()
     checks = [

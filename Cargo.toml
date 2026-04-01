@@ -30,6 +30,8 @@ members = [
     "crates/pipit-deps",
     "crates/pipit-mesh",
     "crates/pipit-lsp",
+    "crates/pipit-bridge",
+    "crates/pipit-voice",
 ]
 
 [workspace.package]

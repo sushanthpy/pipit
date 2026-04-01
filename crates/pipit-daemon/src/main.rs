@@ -9,12 +9,16 @@ mod config;
 mod cron;
 mod git;
 mod health_monitor;
+mod observability;
+mod pipeline;
 mod pool;
 mod queue;
 mod reporter;
 mod runner;
 mod server;
 mod store;
+mod triggers;
+mod worker;
 
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;

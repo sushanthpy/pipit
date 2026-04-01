@@ -30,14 +30,6 @@ impl Tool for GlobTool {
         "Find files matching a glob pattern. Respects .gitignore."
     }
 
-    fn is_mutating(&self) -> bool {
-        false
-    }
-
-    fn requires_approval(&self, _mode: ApprovalMode) -> bool {
-        false
-    }
-
     async fn execute(
         &self,
         args: Value,

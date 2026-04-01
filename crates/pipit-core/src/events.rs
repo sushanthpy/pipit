@@ -1,7 +1,9 @@
 use crate::planner::CandidatePlan;
 use crate::proof::ProofPacket;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The user's response to an approval prompt.
 #[derive(Debug, Clone)]
@@ -141,4 +143,203 @@ pub enum AgentOutcome {
     MaxTurnsReached(u32),
     Cancelled,
     Error(String),
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Reactive Runtime Event Bus
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Global monotonic sequence counter for event ordering.
+static GLOBAL_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Canonical runtime event — wraps AgentEvent with a monotonic sequence
+/// number and timestamp for replayable, ordered multi-consumer fanout.
+///
+/// This is the single source of truth for all surfaces (CLI, TUI, SDK, daemon).
+/// Event append is O(1); fanout per subscriber is O(1) amortized.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeEvent {
+    /// Monotonically increasing sequence number (global across the process).
+    pub seq: u64,
+    /// Unix timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// The event payload.
+    pub kind: RuntimeEventKind,
+}
+
+/// Typed runtime event kinds — the canonical wire format for all consumers.
+/// This collapses the distinction between internal richness and external thinness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum RuntimeEventKind {
+    // ── Turn lifecycle ──
+    TurnStart { turn_number: u32 },
+    TurnEnd { turn_number: u32, reason: String },
+
+    // ── Content streaming ──
+    ContentDelta { text: String },
+    ThinkingDelta { text: String },
+    ContentComplete { full_text: String },
+
+    // ── Tool lifecycle ──
+    ToolCallStart { call_id: String, name: String, args: Value },
+    ToolCallEnd { call_id: String, name: String, success: bool, mutated: bool, summary: String },
+    ToolApprovalNeeded { call_id: String, name: String, args: Value },
+
+    // ── Planning & verification ──
+    PlanSelected { strategy: String, rationale: String, pivoted: bool },
+    VerifierVerdict { verdict: String, confidence: f32, summary: String },
+    RepairStarted { attempt: u32, reason: String },
+    PhaseTransition { from: String, to: String },
+
+    // ── Context management ──
+    CompressionStart,
+    CompressionEnd { messages_removed: usize, tokens_freed: u64 },
+    TokenUsage { used: u64, limit: u64, cost: f64 },
+
+    // ── Status & control ──
+    Waiting { label: String },
+    SteeringInjected { text: String },
+    LoopDetected { tool_name: String, count: u32 },
+
+    // ── Errors ──
+    ProviderError { error: String, will_retry: bool },
+
+    // ── Termination ──
+    SessionEnded { outcome: String },
+}
+
+impl RuntimeEvent {
+    /// Create a new runtime event with auto-incrementing sequence number.
+    pub fn new(kind: RuntimeEventKind) -> Self {
+        Self {
+            seq: GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed),
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            kind,
+        }
+    }
+
+    /// Convert from an AgentEvent to a RuntimeEvent.
+    pub fn from_agent_event(event: &AgentEvent) -> Option<Self> {
+        let kind = match event {
+            AgentEvent::TurnStart { turn_number } => {
+                RuntimeEventKind::TurnStart { turn_number: *turn_number }
+            }
+            AgentEvent::TurnEnd { turn_number, reason } => {
+                RuntimeEventKind::TurnEnd {
+                    turn_number: *turn_number,
+                    reason: format!("{:?}", reason),
+                }
+            }
+            AgentEvent::ContentDelta { text } => RuntimeEventKind::ContentDelta { text: text.clone() },
+            AgentEvent::ThinkingDelta { text } => RuntimeEventKind::ThinkingDelta { text: text.clone() },
+            AgentEvent::ContentComplete { full_text } => {
+                RuntimeEventKind::ContentComplete { full_text: full_text.clone() }
+            }
+            AgentEvent::ToolCallStart { call_id, name, args } => {
+                RuntimeEventKind::ToolCallStart {
+                    call_id: call_id.clone(), name: name.clone(), args: args.clone(),
+                }
+            }
+            AgentEvent::ToolCallEnd { call_id, name, result } => {
+                let (success, mutated, summary) = match result {
+                    ToolCallOutcome::Success { content, mutated } => (true, *mutated, content.chars().take(200).collect()),
+                    ToolCallOutcome::PolicyBlocked { message, .. } => (false, false, message.clone()),
+                    ToolCallOutcome::Error { message } => (false, false, message.clone()),
+                };
+                RuntimeEventKind::ToolCallEnd {
+                    call_id: call_id.clone(), name: name.clone(), success, mutated, summary,
+                }
+            }
+            AgentEvent::ToolApprovalNeeded { call_id, name, args } => {
+                RuntimeEventKind::ToolApprovalNeeded {
+                    call_id: call_id.clone(), name: name.clone(), args: args.clone(),
+                }
+            }
+            AgentEvent::PlanSelected { strategy, rationale, pivoted, .. } => {
+                RuntimeEventKind::PlanSelected {
+                    strategy: strategy.clone(), rationale: rationale.clone(), pivoted: *pivoted,
+                }
+            }
+            AgentEvent::VerifierVerdict { verdict, confidence, findings_summary } => {
+                RuntimeEventKind::VerifierVerdict {
+                    verdict: verdict.clone(), confidence: *confidence, summary: findings_summary.clone(),
+                }
+            }
+            AgentEvent::RepairStarted { attempt, reason } => {
+                RuntimeEventKind::RepairStarted { attempt: *attempt, reason: reason.clone() }
+            }
+            AgentEvent::PhaseTransition { from, to, .. } => {
+                RuntimeEventKind::PhaseTransition { from: from.clone(), to: to.clone() }
+            }
+            AgentEvent::CompressionStart => RuntimeEventKind::CompressionStart,
+            AgentEvent::CompressionEnd { messages_removed, tokens_freed } => {
+                RuntimeEventKind::CompressionEnd {
+                    messages_removed: *messages_removed, tokens_freed: *tokens_freed,
+                }
+            }
+            AgentEvent::TokenUsageUpdate { used, limit, cost } => {
+                RuntimeEventKind::TokenUsage { used: *used, limit: *limit, cost: *cost }
+            }
+            AgentEvent::Waiting { label } => RuntimeEventKind::Waiting { label: label.clone() },
+            AgentEvent::SteeringMessageInjected { text } => {
+                RuntimeEventKind::SteeringInjected { text: text.clone() }
+            }
+            AgentEvent::LoopDetected { tool_name, count } => {
+                RuntimeEventKind::LoopDetected { tool_name: tool_name.clone(), count: *count }
+            }
+            AgentEvent::ProviderError { error, will_retry } => {
+                RuntimeEventKind::ProviderError { error: error.clone(), will_retry: *will_retry }
+            }
+            AgentEvent::ToolError { .. } => return None,
+        };
+        Some(Self::new(kind))
+    }
+}
+
+/// A replay buffer for runtime events. Consumers can replay from any
+/// sequence number to catch up after reconnection or lag.
+pub struct RuntimeEventBuffer {
+    events: std::collections::VecDeque<RuntimeEvent>,
+    max_size: usize,
+}
+
+impl RuntimeEventBuffer {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            events: std::collections::VecDeque::with_capacity(max_size),
+            max_size,
+        }
+    }
+
+    /// Append an event to the buffer.
+    pub fn push(&mut self, event: RuntimeEvent) {
+        if self.events.len() >= self.max_size {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    /// Replay events from a given sequence number (exclusive).
+    /// Returns events with seq > from_seq.
+    pub fn replay_from(&self, from_seq: u64) -> Vec<&RuntimeEvent> {
+        self.events.iter().filter(|e| e.seq > from_seq).collect()
+    }
+
+    /// Get the latest sequence number.
+    pub fn latest_seq(&self) -> u64 {
+        self.events.back().map(|e| e.seq).unwrap_or(0)
+    }
+
+    /// Number of buffered events.
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
 }

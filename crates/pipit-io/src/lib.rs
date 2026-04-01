@@ -1,8 +1,10 @@
 pub mod app;
 pub mod composer;
+pub mod editor_integration;
 pub mod render;
 pub mod tui;
 pub mod input;
+pub mod vim;
 
 pub use app::{TuiState, SharedTuiState, ActivityLine};
 pub use composer::Composer;

@@ -38,14 +38,6 @@ impl Tool for ReadFileTool {
         "Read the contents of a file. Supports optional line ranges."
     }
 
-    fn is_mutating(&self) -> bool {
-        false
-    }
-
-    fn requires_approval(&self, _mode: ApprovalMode) -> bool {
-        false
-    }
-
     async fn execute(
         &self,
         args: Value,

@@ -1413,6 +1413,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1692,6 +1702,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "globset",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1722,6 +1733,21 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "pipit-bridge"
+version = "0.1.8"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1842,6 +1868,7 @@ dependencies = [
  "pipit-tools",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -1862,6 +1889,7 @@ dependencies = [
  "futures",
  "globset",
  "libc",
+ "notify",
  "pipit-channel",
  "pipit-config",
  "pipit-context",
@@ -2087,9 +2115,11 @@ dependencies = [
 name = "pipit-skills"
 version = "0.1.8"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "toml",
  "tracing",
 ]
 
@@ -2144,6 +2174,19 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pipit-voice"
+version = "0.1.8"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2503,6 +2546,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

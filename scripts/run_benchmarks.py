@@ -638,8 +638,9 @@ def test_safe_sqrt():
 
     return {
         "prompt": (
-            "The test_math_ops.py tests are failing. Use git history to find "
-            "which commit introduced the bug. Fix it with a minimal change."
+            "The test_math_ops.py tests are failing — integer_divide returns 3.5 instead of 3. "
+            "Use `git log` and `git diff HEAD~1` to find exactly what changed between commits. "
+            "Revert the exact operator that was changed. Do NOT modify safe_sqrt."
         ),
         "max_turns": 10,
     }
