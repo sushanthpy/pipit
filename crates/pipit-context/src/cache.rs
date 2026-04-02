@@ -1,4 +1,4 @@
-//! Prompt Cache Breakpoint System (Task 1.3)
+//! Prompt Cache Breakpoint System
 //!
 //! Cache-aware message construction that maximizes cache reuse across turns.
 //! Strategically places `cache_control: { type: "ephemeral" }` breakpoints

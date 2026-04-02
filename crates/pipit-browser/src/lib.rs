@@ -10,6 +10,7 @@
 
 pub mod cdp;
 pub mod tools;
+pub mod twin;
 pub mod visual_diff;
 
 use serde::{Deserialize, Serialize};

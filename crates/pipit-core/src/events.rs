@@ -12,6 +12,145 @@ pub enum ApprovalDecision {
     Approve,
     /// Deny — skip this tool call and tell the agent it was rejected.
     Deny,
+    /// Approve with scoped constraints — execute only within the grant boundary.
+    /// This replaces binary approval with fine-grained, machine-enforceable grants.
+    ScopedGrant(CapabilityGrant),
+}
+
+/// A typed, time-bounded, constraint-carrying authorization artifact.
+///
+/// This is the bridge between the approval system and the executor:
+/// instead of "yes/no," operators can express "approve only this file path,"
+/// "approve only for 60 seconds," or "approve only these commands."
+///
+/// Validation cost: O(1) for expiry + nonce, O(k) for constraint checks.
+#[derive(Debug, Clone)]
+pub struct CapabilityGrant {
+    /// Which tool this grant applies to (exact match or "*" for any).
+    pub tool_pattern: String,
+    /// Constraints that must be satisfied for execution to proceed.
+    pub constraints: Vec<GrantConstraint>,
+    /// When this grant was issued (unix timestamp ms).
+    pub issued_at: u64,
+    /// When this grant expires (unix timestamp ms). 0 = no expiry.
+    pub expires_at: u64,
+    /// Unique nonce to prevent replay.
+    pub nonce: String,
+    /// Task ID this grant is scoped to.
+    pub subject_task_id: Option<String>,
+}
+
+/// Individual constraint within a capability grant.
+#[derive(Debug, Clone)]
+pub enum GrantConstraint {
+    /// Only allow operations on paths with this prefix.
+    PathPrefix(String),
+    /// Maximum bytes that may be written in a single operation.
+    MaxBytesWritten(u64),
+    /// Only allow these specific binaries in shell execution.
+    AllowedBinaries(Vec<String>),
+    /// Only allow network access to these hosts.
+    AllowedHosts(Vec<String>),
+    /// Only allow this many invocations before the grant is exhausted.
+    MaxInvocations(u32),
+    /// Custom predicate (key = constraint name, value = constraint parameter).
+    Custom { key: String, value: String },
+}
+
+impl CapabilityGrant {
+    /// Check whether this grant has expired.
+    pub fn is_expired(&self) -> bool {
+        if self.expires_at == 0 {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        now > self.expires_at
+    }
+
+    /// Validate tool args against all constraints. Returns Ok(()) if all pass.
+    pub fn validate_constraints(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), String> {
+        // Check tool pattern
+        if self.tool_pattern != "*" && self.tool_pattern != tool_name {
+            return Err(format!(
+                "grant is for tool '{}', not '{}'",
+                self.tool_pattern, tool_name
+            ));
+        }
+
+        // Check expiry
+        if self.is_expired() {
+            return Err("grant has expired".to_string());
+        }
+
+        // Check each constraint
+        for constraint in &self.constraints {
+            match constraint {
+                GrantConstraint::PathPrefix(prefix) => {
+                    if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                        if !path.starts_with(prefix.as_str()) {
+                            return Err(format!(
+                                "path '{}' does not match required prefix '{}'",
+                                path, prefix
+                            ));
+                        }
+                    }
+                }
+                GrantConstraint::MaxBytesWritten(max) => {
+                    if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
+                        if content.len() as u64 > *max {
+                            return Err(format!(
+                                "content size {} exceeds max_bytes_written {}",
+                                content.len(),
+                                max
+                            ));
+                        }
+                    }
+                }
+                GrantConstraint::AllowedBinaries(allowed) => {
+                    if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                        let first_token = cmd.split_whitespace().next().unwrap_or("");
+                        let binary = first_token.rsplit('/').next().unwrap_or(first_token);
+                        if !allowed.iter().any(|b| b == binary) {
+                            return Err(format!(
+                                "binary '{}' is not in the allowed list: {:?}",
+                                binary, allowed
+                            ));
+                        }
+                    }
+                }
+                GrantConstraint::AllowedHosts(allowed) => {
+                    if let Some(url) = args.get("url").and_then(|v| v.as_str()) {
+                        let host_matches = allowed.iter().any(|h| url.contains(h));
+                        if !host_matches {
+                            return Err(format!(
+                                "host not in allowed list: {:?}",
+                                allowed
+                            ));
+                        }
+                    }
+                }
+                GrantConstraint::MaxInvocations(_) => {
+                    // Invocation counting is handled externally
+                }
+                GrantConstraint::Custom { key, value } => {
+                    tracing::debug!(
+                        constraint_key = key,
+                        constraint_value = value,
+                        "custom constraint not validated at grant level"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Trait for handling approval prompts. The CLI provides an implementation

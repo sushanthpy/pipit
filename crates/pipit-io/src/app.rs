@@ -1,10 +1,19 @@
 //! Full-screen ratatui TUI for pipit-cli.
 //!
+//! Fullscreen rendering mode — directly addresses visual lag and memory
+//! bloat during long agentic sessions by:
+//!
+//!   1. Bounded ring buffers for content and activity (capped, auto-evict)
+//!   2. Virtual viewport — only visible lines are parsed/rendered per frame
+//!   3. Cached parsed lines — markdown re-parsing only when content changes
+//!   4. Frame-budget rendering — skip frames if behind schedule
+//!   5. Streaming text compaction — gc on turn boundaries
+//!
 //! Layout:
 //!   ┌─ Status bar ──────────────────────────────────────┐
 //!   │ pipit · repo · branch · model · mode · tokens     │
-//!   ├─ Task / Phase ────────────────────────────────────┤
-//!   │ task: explain codebase          phase: executing   │
+//!   ├─ Phase ───────────────────────────────────────────┤
+//!   │ executing                          phase: 3/10    │
 //!   ├─ Timeline ────────┬─ Response ───────────────────-┤
 //!   │ ◆ diagnostic plan │ The codebase is a Rust CLI... │
 //!   │ ○ Read src/main   │                               │
@@ -57,6 +66,20 @@ pub struct ActivityLine {
     pub text: String,
 }
 
+/// Maximum content lines retained. Beyond this, oldest lines are evicted.
+/// Prevents unbounded memory growth during long sessions.
+const MAX_CONTENT_LINES: usize = 2000;
+
+/// Maximum activity entries retained.
+const MAX_ACTIVITY_LINES: usize = 300;
+
+/// How many lines to evict when the cap is hit (batch eviction for efficiency).
+const CONTENT_EVICT_BATCH: usize = 500;
+const ACTIVITY_EVICT_BATCH: usize = 100;
+
+/// Maximum streaming text bytes before compaction.
+const MAX_STREAMING_BYTES: usize = 256_000;
+
 /// Shared TUI state that the event handler and main loop coordinate through.
 #[derive(Debug)]
 pub struct TuiState {
@@ -64,6 +87,7 @@ pub struct TuiState {
     /// Timeline entries (left pane): compact agent actions.
     pub activity_lines: Vec<ActivityLine>,
     /// Content lines (right pane): natural-language responses.
+    /// Bounded to MAX_CONTENT_LINES — oldest are evicted.
     pub content_lines: Vec<String>,
     /// The rich input composer (replaces bare input_buffer).
     pub composer: Composer,
@@ -76,7 +100,7 @@ pub struct TuiState {
     pub is_working: bool,
     /// Current working status label.
     pub working_label: String,
-    /// Current task description (from user prompt).
+    /// Current description (from user prompt).
     pub task_label: String,
     /// Current phase (planning, executing, verifying, etc.).
     pub phase_label: String,
@@ -92,7 +116,8 @@ pub struct TuiState {
     pub is_thinking: bool,
     /// Whether we're inside a code block for rendering purposes.
     in_code_block: bool,
-    /// Pre-parsed content lines for O(1) draw cost (ARCH-6 optimization).
+    /// Pre-parsed content lines for O(1) draw cost. Rebuilt only when
+    /// content_lines changes (tracked via `cached_lines_count`).
     cached_parsed_lines: Vec<Line<'static>>,
     /// Length of content_lines when cache was last built.
     cached_lines_count: usize,
@@ -100,19 +125,23 @@ pub struct TuiState {
     pub current_turn: u32,
     /// Max turns configured for the session.
     pub max_turns: u32,
+    /// Total content lines ever produced (monotonic counter for tracking evictions).
+    total_content_produced: u64,
+    /// Last frame timestamp for frame-budget rendering.
+    last_frame_time: Option<std::time::Instant>,
 }
 
 impl TuiState {
     pub fn new(status: StatusBarState, project_root: PathBuf) -> Self {
         Self {
             status,
-            activity_lines: Vec::new(),
-            content_lines: Vec::new(),
+            activity_lines: Vec::with_capacity(MAX_ACTIVITY_LINES),
+            content_lines: Vec::with_capacity(256),
             composer: Composer::new(project_root),
             scroll_offset: 0,
             content_scroll_offset: 0,
             should_quit: false,
-            streaming_text: String::new(),
+            streaming_text: String::with_capacity(4096),
             is_working: false,
             working_label: String::new(),
             task_label: String::new(),
@@ -127,6 +156,8 @@ impl TuiState {
             cached_lines_count: 0,
             current_turn: 0,
             max_turns: 10,
+            total_content_produced: 0,
+            last_frame_time: None,
         }
     }
 
@@ -134,23 +165,48 @@ impl TuiState {
     pub fn begin_working(&mut self, label: &str) {
         self.is_working = true;
         self.working_label = label.to_string();
-        self.phase_label = label.trim_end_matches('…').to_string();        if self.working_since.is_none() {
+        self.phase_label = label.trim_end_matches('…').to_string();
+        if self.working_since.is_none() {
             self.working_since = Some(std::time::Instant::now());
-        }    }
+        }
+    }
 
     /// Finish working — commit the streaming text to the content pane.
+    /// Applies bounded eviction to prevent memory bloat.
     pub fn finish_working(&mut self) {
         if !self.streaming_text.is_empty() {
-            for line in self.streaming_text.lines() {
-                self.content_lines.push(line.to_string());
-            }
+            let new_lines: Vec<String> = self.streaming_text.lines()
+                .map(|l| l.to_string())
+                .collect();
+            self.total_content_produced += new_lines.len() as u64;
+            self.content_lines.extend(new_lines);
             self.streaming_text.clear();
+            // Reclaim streaming buffer if it grew large
+            if self.streaming_text.capacity() > MAX_STREAMING_BYTES {
+                self.streaming_text = String::with_capacity(4096);
+            }
         }
         self.is_working = false;
         self.is_thinking = false;
         self.working_label.clear();
         self.working_since = None;
+        self.evict_if_needed();
         self.auto_scroll_content();
+    }
+
+    /// Evict oldest content/activity lines when buffers exceed caps.
+    /// Batch eviction amortizes the cost over many pushes.
+    fn evict_if_needed(&mut self) {
+        if self.content_lines.len() > MAX_CONTENT_LINES {
+            let drain_count = CONTENT_EVICT_BATCH.min(self.content_lines.len() / 2);
+            self.content_lines.drain(..drain_count);
+            // Invalidate parse cache since indices shifted
+            self.cached_lines_count = 0;
+            self.cached_parsed_lines.clear();
+        }
+        if self.activity_lines.len() > MAX_ACTIVITY_LINES {
+            self.activity_lines.drain(..ACTIVITY_EVICT_BATCH);
+        }
     }
 
     pub fn push_activity(&mut self, icon: &str, color: Color, text: String) {
@@ -159,14 +215,54 @@ impl TuiState {
             color,
             text,
         });
-        if self.activity_lines.len() > 500 {
-            self.activity_lines.drain(..100);
+        if self.activity_lines.len() > MAX_ACTIVITY_LINES {
+            self.activity_lines.drain(..ACTIVITY_EVICT_BATCH);
         }
         self.auto_scroll_timeline();
     }
 
     pub fn push_content(&mut self, text: &str) {
         self.streaming_text.push_str(text);
+        // Compact streaming text if it grows too large (shouldn't happen
+        // in normal operation, but prevents OOM from malicious/runaway output)
+        if self.streaming_text.len() > MAX_STREAMING_BYTES {
+            let keep_bytes = MAX_STREAMING_BYTES / 2;
+            let drain_to = self.streaming_text.len() - keep_bytes;
+            // Find a safe UTF-8 boundary
+            let safe_drain = self.streaming_text.ceil_char_boundary(drain_to);
+            self.streaming_text.drain(..safe_drain);
+        }
+    }
+
+    /// Check if the frame budget allows a redraw (target ~30fps = 33ms).
+    /// Returns true if enough time has passed since the last frame.
+    pub fn should_redraw(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        match self.last_frame_time {
+            Some(last) => {
+                if now.duration_since(last).as_millis() >= 33 {
+                    self.last_frame_time = Some(now);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                self.last_frame_time = Some(now);
+                true
+            }
+        }
+    }
+
+    /// Clear all content and activity — used by /clear command.
+    pub fn clear_all(&mut self) {
+        self.content_lines.clear();
+        self.activity_lines.clear();
+        self.streaming_text.clear();
+        self.cached_parsed_lines.clear();
+        self.cached_lines_count = 0;
+        self.content_scroll_offset = 0;
+        self.scroll_offset = 0;
     }
 
     fn auto_scroll_timeline(&mut self) {
@@ -328,7 +424,7 @@ fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
         .constraints([Constraint::Min(30), Constraint::Length(20)])
         .split(area);
 
-    // Left: task + phase labels
+    // Left: prompt + phase labels
     let task_display = if state.task_label.len() > 50 {
         format!("{}…", &state.task_label.chars().take(48).collect::<String>())
     } else {
@@ -336,7 +432,7 @@ fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
     };
 
     let line = Line::from(vec![
-        Span::styled(" task: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" ", Style::default().fg(Color::DarkGray)),
         Span::styled(&task_display, Style::default().fg(Color::White)),
         Span::raw("  "),
         Span::styled("phase: ", Style::default().fg(Color::DarkGray)),
@@ -475,27 +571,65 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let pane_width = area.width.saturating_sub(2) as usize;
 
+    // ── Virtual viewport: only process lines that will be visible ──
+    // Instead of parsing ALL lines then slicing, we compute the visible
+    // window first and only parse those lines. This is O(visible) instead
+    // of O(total), critical for long sessions.
+
     // Collect all raw lines: committed + streaming
-    let mut raw_lines: Vec<&str> = state.content_lines.iter().map(|s| s.as_str()).collect();
+    let committed_count = state.content_lines.len();
     let streaming_lines: Vec<&str> = if !state.streaming_text.is_empty() {
         state.streaming_text.lines().collect()
     } else {
         Vec::new()
     };
-    raw_lines.extend(&streaming_lines);
+    let total_raw = committed_count + streaming_lines.len();
 
-    // Render with markdown awareness
-    let mut all_lines: Vec<Line> = Vec::with_capacity(raw_lines.len());
-    let mut in_code_block = state.in_code_block;
+    // Compute visible window (last inner_height lines, auto-scroll)
+    let start = if total_raw > inner_height {
+        total_raw - inner_height
+    } else {
+        0
+    };
+    let end = total_raw;
+
+    // Build lines ONLY for the visible range
+    let mut all_lines: Vec<Line> = Vec::with_capacity(inner_height + 2);
+    let mut in_code_block = false;
     let mut code_lang = String::new();
 
-    for raw in &raw_lines {
+    // We need to track code-block state from before the visible window.
+    // Scan prior lines for fence states (cheaper than full parsing).
+    for i in 0..start {
+        let raw = if i < committed_count {
+            state.content_lines[i].as_str()
+        } else {
+            streaming_lines[i - committed_count]
+        };
+        let trimmed = raw.trim();
+        if trimmed.starts_with("```") {
+            if in_code_block {
+                in_code_block = false;
+                code_lang.clear();
+            } else {
+                in_code_block = true;
+                code_lang = trimmed.trim_start_matches('`').to_string();
+            }
+        }
+    }
+
+    // Now render only the visible lines
+    for i in start..end {
+        let raw = if i < committed_count {
+            state.content_lines[i].as_str()
+        } else {
+            streaming_lines[i - committed_count]
+        };
         let trimmed = raw.trim();
 
         // ── Code fence toggle ──
         if trimmed.starts_with("```") {
             if in_code_block {
-                // Closing fence
                 in_code_block = false;
                 all_lines.push(Line::from(Span::styled(
                     format!(" {}", "─".repeat(pane_width.saturating_sub(2).min(40))),
@@ -504,7 +638,6 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
                 code_lang.clear();
                 continue;
             } else {
-                // Opening fence
                 in_code_block = true;
                 code_lang = trimmed.trim_start_matches('`').to_string();
                 let label = if code_lang.is_empty() {
@@ -517,10 +650,7 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
                         format!(" ┌{}", "─".repeat(label.len())),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::styled(
-                        label,
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(label, Style::default().fg(Color::Cyan)),
                     Span::styled(
                         "─".repeat(pane_width.saturating_sub(4 + code_lang.len()).min(30)),
                         Style::default().fg(Color::DarkGray),
@@ -532,11 +662,9 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
 
         // ── Inside code block ──
         if in_code_block {
-            // Attempt syntax highlighting via syntect
             let mut spans = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
             let highlighted = highlight_code_line(raw, &code_lang);
             if highlighted.is_empty() {
-                // Fallback: plain green
                 spans.push(Span::styled(raw.to_string(), Style::default().fg(Color::Green)));
             } else {
                 spans.extend(highlighted);
@@ -620,7 +748,7 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
             continue;
         }
 
-        // ── Empty line → small gap ──
+        // ── Empty line ──
         if trimmed.is_empty() {
             all_lines.push(Line::from(""));
             continue;

@@ -3,6 +3,7 @@ use crate::capability::{PolicyKernel, CapabilityRequest, CapabilitySet, PolicyDe
 use crate::governor::{Governor, RiskReport};
 use crate::ledger::{SessionLedger, SessionEvent};
 use crate::loop_detector::LoopDetector;
+use crate::telemetry_facade::{TelemetryFacade, SpanStatus, SpanValue};
 use crate::pev::{ModelRouter, PevConfig};
 use crate::planner::{CandidatePlan, Planner, PlanStrategy, VerifyStrategy};
 use crate::proof::{
@@ -83,9 +84,11 @@ pub struct AgentLoop {
     /// Centralized permission kernel — single authority for tool authorization.
     policy_kernel: PolicyKernel,
     /// Optional session ledger for durable event sourcing.
-    /// When present, all state-changing events are appended for crash recovery and audit.
-    /// Uses Mutex for interior mutability so emit() can work from &self contexts.
     session_ledger: Option<std::sync::Mutex<SessionLedger>>,
+    /// Telemetry facade — every agent action produces a span.
+    telemetry: Arc<TelemetryFacade>,
+    /// Command registry for slash command dispatch.
+    command_registry: crate::command_registry::CommandRegistry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +96,17 @@ pub struct PlanningState {
     pub selected_plan: CandidatePlan,
     pub candidate_plans: Vec<CandidatePlan>,
     pub plan_pivots: Vec<PlanPivot>,
+}
+
+/// Summary produced by graceful_shutdown().
+#[derive(Debug, Clone)]
+pub struct ShutdownSummary {
+    pub turns: u64,
+    pub total_cost: f64,
+    pub tokens_used: u64,
+    pub tool_calls: u64,
+    pub spans_exported: u64,
+    pub ledger_flushed: bool,
 }
 
 impl AgentLoop {
@@ -115,6 +129,12 @@ impl AgentLoop {
 
         let policy_kernel = PolicyKernel::from_approval_mode(config.approval_mode, project_root);
 
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let model_name = models.for_role(crate::pev::ModelRole::Executor).model_id.clone();
+        let provider_name = models.for_role(crate::pev::ModelRole::Executor).provider.id().to_string();
+        let telemetry = Arc::new(TelemetryFacade::new(&session_id, &model_name, &provider_name));
+        let command_registry = crate::command_registry::builtin_registry();
+
         let agent = Self {
             models,
             tools,
@@ -131,6 +151,8 @@ impl AgentLoop {
             consecutive_loop_hits: 0,
             policy_kernel,
             session_ledger: None,
+            telemetry,
+            command_registry,
         };
 
         (agent, event_rx, steering_tx)
@@ -155,6 +177,16 @@ impl AgentLoop {
 
     pub fn set_repo_map(&mut self, map: String) {
         self.repo_map = Some(map);
+    }
+
+    /// Get the telemetry facade (for commands like /cost).
+    pub fn telemetry(&self) -> &Arc<TelemetryFacade> {
+        &self.telemetry
+    }
+
+    /// Get the command registry.
+    pub fn command_registry(&self) -> &crate::command_registry::CommandRegistry {
+        &self.command_registry
     }
 
     /// Borrow the context manager (for serialization / inspection).
@@ -358,6 +390,11 @@ impl AgentLoop {
             }
             // Stream the LLM response
             self.emit(AgentEvent::Waiting { label: "Sending to model\u{2026}".to_string() });
+            let mut llm_span = self.telemetry.start_span("llm.complete")
+                .attr("model.name", SpanValue::String(
+                    self.models.for_role(crate::pev::ModelRole::Executor).model_id.clone()
+                ))
+                .attr("turn", SpanValue::Int(turn as i64));
             let response = match self
                 .stream_response_with_recovery(
                     &claim,
@@ -367,8 +404,14 @@ impl AgentLoop {
                 )
                 .await
             {
-                Ok(r) => r,
+                Ok(r) => {
+                    llm_span.finish(SpanStatus::Ok);
+                    self.telemetry.record_span(llm_span);
+                    r
+                }
                 Err(e) => {
+                    llm_span.finish(SpanStatus::Error);
+                    self.telemetry.record_span(llm_span);
                     self.emit(AgentEvent::ProviderError {
                         error: e.to_string(),
                         will_retry: false,
@@ -377,11 +420,17 @@ impl AgentLoop {
                 }
             };
 
-            // Fix #12: Track cost from response usage
+            // Track cost via telemetry facade (Kahan summation for precision)
             if response.stop_reason.is_some() {
                 let cost = compute_cost(self.provider().id(), &response.usage, &self.config.pricing);
                 self.context.add_cost(cost);
+                self.telemetry.session_counters.add_cost(cost);
+                self.telemetry.session_counters.add_tokens(
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
+                );
             }
+            self.telemetry.session_counters.increment_turns();
 
             // Emit content complete
             if !response.text.is_empty() {
@@ -926,6 +975,33 @@ impl AgentLoop {
                             });
                             continue;
                         }
+                        ApprovalDecision::ScopedGrant(grant) => {
+                            // Validate the scoped grant constraints against this call
+                            match grant.validate_constraints(&call.tool_name, &call.args) {
+                                Ok(()) => { /* constraints satisfied, fall through */ }
+                                Err(violation) => {
+                                    results.push((
+                                        call.call_id.clone(),
+                                        ToolCallOutcome::PolicyBlocked {
+                                            message: format!(
+                                                "Scoped grant constraint violated for '{}': {}",
+                                                call.tool_name, violation
+                                            ),
+                                            stage: PolicyStage::PreToolUse,
+                                            mutated: false,
+                                        },
+                                    ));
+                                    evidence.push(EvidenceArtifact::PolicyViolation {
+                                        tool_name: call.tool_name.clone(),
+                                        stage: PolicyStage::PreToolUse,
+                                        summary: format!("Scoped grant violated: {}", violation),
+                                        mutation_applied: false,
+                                        path: call.args.get("path").and_then(|v| v.as_str()).map(str::to_string),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
                     }
                 }
                 PolicyDecision::Allow | PolicyDecision::Sandbox { .. } => {
@@ -984,7 +1060,13 @@ impl AgentLoop {
                     let mut modified_call = call.clone();
                     modified_call.args = modified_args;
 
+                    let mut tool_span = self.telemetry.start_span("tool.execute")
+                        .attr("tool.name", SpanValue::String(call.tool_name.clone()));
                     let outcome = execute_single_tool(&self.tools, &modified_call, &self.tool_context, cancel.clone()).await;
+                    let success = matches!(outcome, ToolCallOutcome::Success { .. });
+                    tool_span.finish(if success { SpanStatus::Ok } else { SpanStatus::Error });
+                    self.telemetry.record_span(tool_span);
+                    self.telemetry.session_counters.increment_tool_calls();
                     let mutation_applied = matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
                     let outcome = apply_after_tool_hook(&*self.extensions, &call.tool_name, outcome).await;
                     if mutation_applied {
@@ -1145,6 +1227,41 @@ impl AgentLoop {
 
     pub fn clear_context(&mut self) {
         self.context.clear();
+    }
+
+    /// Graceful shutdown: flush all state, export telemetry, record session end.
+    /// Call from signal handlers to ensure no data loss on Ctrl-C.
+    pub fn graceful_shutdown(&self) -> ShutdownSummary {
+        // 1. Flush session ledger to disk
+        if let Some(ref mtx) = self.session_ledger {
+            if let Ok(mut ledger) = mtx.lock() {
+                let usage = self.context.token_usage();
+                let _ = ledger.append(SessionEvent::SessionEnded {
+                    turns: self.telemetry.session_counters.turns.load(std::sync::atomic::Ordering::Relaxed) as u32,
+                    total_tokens: usage.total,
+                    cost: self.telemetry.session_counters.total_cost(),
+                });
+            }
+        }
+
+        // 2. Export all buffered telemetry spans
+        let spans_exported = self.telemetry.export().unwrap_or(0);
+
+        // 3. Build summary
+        let summary = self.telemetry.session_summary();
+        ShutdownSummary {
+            turns: summary.turns,
+            total_cost: summary.total_cost,
+            tokens_used: summary.tokens_input + summary.tokens_output,
+            tool_calls: summary.tool_calls,
+            spans_exported: spans_exported as u64,
+            ledger_flushed: self.session_ledger.is_some(),
+        }
+    }
+
+    /// Get a session summary snapshot (for /status, /cost, graceful shutdown).
+    pub fn session_summary(&self) -> crate::telemetry_facade::SessionSummary {
+        self.telemetry.session_summary()
     }
 
     /// Save the current conversation to a session directory.
@@ -1714,14 +1831,17 @@ pub(crate) async fn execute_single_tool(
     ctx: &ToolContext,
     cancel: CancellationToken,
 ) -> ToolCallOutcome {
-    // Fix #13: Validate tool args against schema before execution
     let tool = match tools.get(&call.tool_name) {
         Some(t) => t,
         None => return ToolCallOutcome::Error { message: format!("Tool not found: {}", call.tool_name) },
     };
 
-    // Basic required-field validation from schema
-    if let Some(required) = tool.schema().get("required").and_then(|r| r.as_array()) {
+    let schema = tool.schema();
+
+    // ── Layer 1: Schema structural validation ──
+    // Validates required fields, types, and basic constraints.
+    // Cost: O(|args| + |schema|)
+    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
         for field in required {
             if let Some(field_name) = field.as_str() {
                 if call.args.get(field_name).is_none() || call.args[field_name].is_null() {
@@ -1733,10 +1853,133 @@ pub(crate) async fn execute_single_tool(
         }
     }
 
+    // Type validation: check each provided arg against its declared schema type
+    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (prop_name, prop_schema) in properties {
+            if let Some(arg_value) = call.args.get(prop_name) {
+                if arg_value.is_null() {
+                    continue; // null is ok for optional fields
+                }
+                if let Some(expected_type) = prop_schema.get("type").and_then(|t| t.as_str()) {
+                    let type_ok = match expected_type {
+                        "string" => arg_value.is_string(),
+                        "integer" | "number" => arg_value.is_number(),
+                        "boolean" => arg_value.is_boolean(),
+                        "array" => arg_value.is_array(),
+                        "object" => arg_value.is_object(),
+                        _ => true,
+                    };
+                    if !type_ok {
+                        return ToolCallOutcome::Error {
+                            message: format!(
+                                "Type mismatch for '{}' in tool '{}': expected {}, got {}",
+                                prop_name, call.tool_name, expected_type,
+                                json_type_name(arg_value)
+                            ),
+                        };
+                    }
+                }
+
+                // Enum validation
+                if let Some(enum_values) = prop_schema.get("enum").and_then(|e| e.as_array()) {
+                    if !enum_values.contains(arg_value) {
+                        return ToolCallOutcome::Error {
+                            message: format!(
+                                "Invalid value for '{}' in tool '{}': must be one of {:?}",
+                                prop_name, call.tool_name, enum_values
+                            ),
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Layer 2: Semantic domain validation ──
+    // Cost: O(k) for bounded number of predicates + O(path_len) for path checks
+    if let Err(msg) = validate_tool_semantics(&call.tool_name, &call.args, ctx) {
+        return ToolCallOutcome::Error { message: msg };
+    }
+
     match tool.execute(call.args.clone(), ctx, cancel).await {
         Ok(result) => ToolCallOutcome::Success { content: result.content, mutated: result.mutated },
         Err(e) => ToolCallOutcome::Error { message: e.to_string() },
     }
+}
+
+/// Return a human-readable JSON type name for error messages.
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// Semantic validation layer: domain-specific invariant checks on tool args.
+///
+/// This layer proves *domain correctness*, complementing:
+///   - Schema validator (structural correctness)
+///   - PolicyKernel capability checker (authorization)
+///
+/// Cost: O(k) where k is the number of predicates for the given tool.
+fn validate_tool_semantics(
+    tool_name: &str,
+    args: &serde_json::Value,
+    ctx: &ToolContext,
+) -> Result<(), String> {
+    match tool_name {
+        "edit_file" | "write_file" | "read_file" | "multi_edit_file" => {
+            // Path must resolve within project root
+            if let Some(path_str) = args.get("path").and_then(|v| v.as_str()) {
+                let path = std::path::Path::new(path_str);
+                let resolved = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    ctx.current_dir().join(path)
+                };
+                // Canonicalize to resolve .. and symlinks
+                if let Ok(canonical) = resolved.canonicalize() {
+                    if !canonical.starts_with(&ctx.project_root) {
+                        return Err(format!(
+                            "Path '{}' resolves outside project root '{}'",
+                            path_str,
+                            ctx.project_root.display()
+                        ));
+                    }
+                }
+                // Check for obvious traversal even if canonicalize fails (file may not exist yet)
+                let path_str_normalized = path_str.replace('\\', "/");
+                if path_str_normalized.contains("/../")
+                    || path_str_normalized.starts_with("../")
+                    || path_str_normalized.ends_with("/..")
+                {
+                    return Err(format!(
+                        "Path '{}' contains traversal sequences",
+                        path_str
+                    ));
+                }
+            }
+        }
+        "bash" => {
+            // Timeout must be within policy bounds
+            if let Some(timeout) = args.get("timeout").and_then(|v| v.as_u64()) {
+                if timeout > 600 {
+                    return Err(format!(
+                        "Timeout {} exceeds maximum allowed (600s)",
+                        timeout
+                    ));
+                }
+            }
+        }
+        _ => {
+            // Default: no additional semantic validation for unknown tools
+        }
+    }
+    Ok(())
 }
 
 /// Fix #12: Compute cost from usage based on provider pricing

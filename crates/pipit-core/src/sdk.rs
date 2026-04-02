@@ -1,4 +1,4 @@
-//! Headless SDK Mode (Task 3.2)
+//! Headless SDK Mode
 //!
 //! A TUI-independent `PipitEngine` that drives the agent loop programmatically.
 //! Exposes a `Stream<Item = EngineEvent>` for consumption by SDK callers,

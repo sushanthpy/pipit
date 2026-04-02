@@ -61,6 +61,7 @@ pub enum CompletionKind {
 }
 
 /// Context provided to command execution.
+/// Carries kernel state snapshots for commands that need live data.
 #[derive(Debug, Clone)]
 pub struct CommandContext {
     pub args: Vec<String>,
@@ -68,6 +69,31 @@ pub struct CommandContext {
     pub raw_input: String,
     pub project_root: std::path::PathBuf,
     pub session_id: Option<String>,
+    /// Snapshot of session cost (USD) from TelemetryFacade.
+    pub session_cost: f64,
+    /// Snapshot of token usage.
+    pub tokens_used: u64,
+    pub tokens_limit: u64,
+    /// Snapshot of turn count.
+    pub turn_count: u32,
+    /// Current model name.
+    pub model_name: Option<String>,
+    /// Current provider name.
+    pub provider_name: Option<String>,
+    /// Planning state summary.
+    pub plan_summary: Option<String>,
+    /// Context budget breakdown.
+    pub context_budget: Option<ContextBudgetSnapshot>,
+}
+
+/// Snapshot of context budget for /context command.
+#[derive(Debug, Clone)]
+pub struct ContextBudgetSnapshot {
+    pub model_limit: u64,
+    pub system_prompt_tokens: u64,
+    pub history_tokens: u64,
+    pub output_reserve: u64,
+    pub available: u64,
 }
 
 /// Output from command execution.
@@ -281,10 +307,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Built-in command declarations (stubs — wired to agent in CLI)
+//  Built-in commands — real implementations that read kernel state
 // ═══════════════════════════════════════════════════════════════════════
 
-macro_rules! simple_command {
+/// Macro for commands that pass through to the LLM as agent messages.
+macro_rules! passthrough_command {
     ($name:ident, $cmd_name:literal, $desc:literal, $cat:expr, $aliases:expr) => {
         pub struct $name;
         #[async_trait]
@@ -300,67 +327,204 @@ macro_rules! simple_command {
     };
 }
 
+// ── Real implementations for critical commands ──
+
+pub struct CostCmd;
+#[async_trait]
+impl Command for CostCmd {
+    fn name(&self) -> &str { "cost" }
+    fn description(&self) -> &str { "Show session cost breakdown" }
+    fn category(&self) -> CommandCategory { CommandCategory::Agent }
+    async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        Ok(CommandOutput::Text(format!(
+            "Session Cost Summary\n\
+             ├─ Total cost:    ${:.4}\n\
+             ├─ Tokens used:   {}\n\
+             ├─ Tokens limit:  {}\n\
+             ├─ Turns:         {}\n\
+             ├─ Model:         {}\n\
+             └─ Provider:      {}",
+            ctx.session_cost,
+            ctx.tokens_used,
+            ctx.tokens_limit,
+            ctx.turn_count,
+            ctx.model_name.as_deref().unwrap_or("unknown"),
+            ctx.provider_name.as_deref().unwrap_or("unknown"),
+        )))
+    }
+}
+
+pub struct StatusCmd;
+#[async_trait]
+impl Command for StatusCmd {
+    fn name(&self) -> &str { "status" }
+    fn description(&self) -> &str { "Show session status" }
+    fn category(&self) -> CommandCategory { CommandCategory::Session }
+    async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        let budget = ctx.context_budget.as_ref().map(|b| {
+            format!(
+                "\nContext Budget:\n\
+                 ├─ Model limit:  {}\n\
+                 ├─ System:       {}\n\
+                 ├─ History:      {}\n\
+                 ├─ Output:       {} (reserved)\n\
+                 └─ Available:    {}",
+                b.model_limit, b.system_prompt_tokens, b.history_tokens, b.output_reserve, b.available
+            )
+        }).unwrap_or_default();
+        Ok(CommandOutput::Text(format!(
+            "Session: {}\n\
+             Model: {} ({})\n\
+             Turns: {} | Cost: ${:.4} | Tokens: {}/{}{}",
+            ctx.session_id.as_deref().unwrap_or("unnamed"),
+            ctx.model_name.as_deref().unwrap_or("unknown"),
+            ctx.provider_name.as_deref().unwrap_or("unknown"),
+            ctx.turn_count, ctx.session_cost, ctx.tokens_used, ctx.tokens_limit,
+            budget,
+        )))
+    }
+}
+
+pub struct ContextCmd;
+#[async_trait]
+impl Command for ContextCmd {
+    fn name(&self) -> &str { "context" }
+    fn aliases(&self) -> &[&str] { &["ctx"] }
+    fn description(&self) -> &str { "Show context window budget" }
+    fn category(&self) -> CommandCategory { CommandCategory::Navigation }
+    async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        match ctx.context_budget {
+            Some(ref budget) => {
+                let view = crate::dx_surface::ContextBudgetView {
+                    model_limit: budget.model_limit,
+                    system_prompt_tokens: budget.system_prompt_tokens,
+                    pinned_tokens: 0,
+                    active_tokens: budget.history_tokens,
+                    historical_tokens: 0,
+                    exhaust_tokens: 0,
+                    output_reserve: budget.output_reserve,
+                    available: budget.available,
+                };
+                Ok(CommandOutput::Text(view.render_summary()))
+            }
+            None => Ok(CommandOutput::Text("Context budget not available".into())),
+        }
+    }
+}
+
+pub struct DoctorCmd;
+#[async_trait]
+impl Command for DoctorCmd {
+    fn name(&self) -> &str { "doctor" }
+    fn description(&self) -> &str { "System diagnostics" }
+    fn category(&self) -> CommandCategory { CommandCategory::Help }
+    async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        let checks = crate::dx_surface::run_diagnostics(&ctx.project_root);
+        Ok(CommandOutput::Text(crate::dx_surface::format_diagnostics(&checks)))
+    }
+}
+
+pub struct HelpCmd;
+#[async_trait]
+impl Command for HelpCmd {
+    fn name(&self) -> &str { "help" }
+    fn aliases(&self) -> &[&str] { &["h", "?"] }
+    fn description(&self) -> &str { "Show help" }
+    fn category(&self) -> CommandCategory { CommandCategory::Help }
+    async fn execute(&self, _ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        // Help text is generated by the registry; the caller renders it.
+        Ok(CommandOutput::Text("Use /help to see all commands. The registry generates help text.".into()))
+    }
+}
+
+pub struct PlanCmd;
+#[async_trait]
+impl Command for PlanCmd {
+    fn name(&self) -> &str { "plan" }
+    fn description(&self) -> &str { "Show current plan" }
+    fn category(&self) -> CommandCategory { CommandCategory::Agent }
+    async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        match ctx.plan_summary {
+            Some(ref plan) => Ok(CommandOutput::Text(format!("Current Plan:\n{}", plan))),
+            None => {
+                if ctx.args.is_empty() {
+                    Ok(CommandOutput::Text("No plan active. Use /plan <goal> to create one.".into()))
+                } else {
+                    Ok(CommandOutput::AgentMessage(format!("/plan {}", ctx.args.join(" "))))
+                }
+            }
+        }
+    }
+}
+
+pub struct VersionCmd;
+#[async_trait]
+impl Command for VersionCmd {
+    fn name(&self) -> &str { "version" }
+    fn aliases(&self) -> &[&str] { &["v"] }
+    fn description(&self) -> &str { "Show version" }
+    fn category(&self) -> CommandCategory { CommandCategory::Help }
+    async fn execute(&self, _ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        Ok(CommandOutput::Text(format!("pipit v{}", env!("CARGO_PKG_VERSION"))))
+    }
+}
+
+// ── Passthrough commands (sent to LLM) ──
+
 // Git/VCS
-simple_command!(CommitCmd, "commit", "Stage and commit changes", CommandCategory::Git, &["ci"]);
-simple_command!(PushCmd, "push", "Push commits to remote", CommandCategory::Git, &[]);
-simple_command!(PrCmd, "pr", "Create or manage pull requests", CommandCategory::Git, &[]);
-simple_command!(DiffCmd, "diff", "Show changes in working tree", CommandCategory::Git, &[]);
-simple_command!(BranchCmd, "branch", "Create or switch branches", CommandCategory::Git, &["br"]);
-simple_command!(StashCmd, "stash", "Stash working changes", CommandCategory::Git, &[]);
-simple_command!(BlameCmd, "blame", "Show file annotation", CommandCategory::Git, &[]);
+passthrough_command!(CommitCmd, "commit", "Stage and commit changes", CommandCategory::Git, &["ci"]);
+passthrough_command!(PushCmd, "push", "Push commits to remote", CommandCategory::Git, &[]);
+passthrough_command!(PrCmd, "pr", "Create or manage pull requests", CommandCategory::Git, &[]);
+passthrough_command!(DiffCmd, "diff", "Show changes in working tree", CommandCategory::Git, &[]);
+passthrough_command!(BranchCmd, "branch", "Create or switch branches", CommandCategory::Git, &["br"]);
+passthrough_command!(StashCmd, "stash", "Stash working changes", CommandCategory::Git, &[]);
+passthrough_command!(BlameCmd, "blame", "Show file annotation", CommandCategory::Git, &[]);
 
 // Review
-simple_command!(ReviewCmd, "review", "Review code changes", CommandCategory::Review, &[]);
-simple_command!(SecurityReviewCmd, "security-review", "Security audit", CommandCategory::Review, &["sec"]);
-simple_command!(LintCmd, "lint", "Run linter", CommandCategory::Review, &[]);
-simple_command!(TestCmd, "test", "Run tests", CommandCategory::Review, &["t"]);
+passthrough_command!(ReviewCmd, "review", "Review code changes", CommandCategory::Review, &[]);
+passthrough_command!(SecurityReviewCmd, "security-review", "Security audit", CommandCategory::Review, &["sec"]);
+passthrough_command!(LintCmd, "lint", "Run linter", CommandCategory::Review, &[]);
+passthrough_command!(TestCmd, "test", "Run tests", CommandCategory::Review, &["t"]);
 
 // Navigation
-simple_command!(FilesCmd, "files", "List project files", CommandCategory::Navigation, &["ls"]);
-simple_command!(ContextCmd, "context", "Show context window", CommandCategory::Navigation, &["ctx"]);
-simple_command!(SearchCmd, "search", "Search codebase", CommandCategory::Navigation, &["s"]);
-simple_command!(TreeCmd, "tree", "Show directory tree", CommandCategory::Navigation, &[]);
+passthrough_command!(FilesCmd, "files", "List project files", CommandCategory::Navigation, &["ls"]);
+passthrough_command!(SearchCmd, "search", "Search codebase", CommandCategory::Navigation, &["s"]);
+passthrough_command!(TreeCmd, "tree", "Show directory tree", CommandCategory::Navigation, &[]);
 
 // Session
-simple_command!(CompactCmd, "compact", "Compress context", CommandCategory::Session, &[]);
-simple_command!(ClearCmd, "clear", "Clear conversation", CommandCategory::Session, &[]);
-simple_command!(ResumeCmd, "resume", "Resume session", CommandCategory::Session, &[]);
-simple_command!(ExportCmd, "export", "Export conversation", CommandCategory::Session, &[]);
-simple_command!(StatusCmd, "status", "Show session status", CommandCategory::Session, &[]);
-simple_command!(SaveCmd, "save", "Save session", CommandCategory::Session, &[]);
+passthrough_command!(CompactCmd, "compact", "Compress context", CommandCategory::Session, &[]);
+passthrough_command!(ClearCmd, "clear", "Clear conversation", CommandCategory::Session, &[]);
+passthrough_command!(ResumeCmd, "resume", "Resume session", CommandCategory::Session, &[]);
+passthrough_command!(ExportCmd, "export", "Export conversation", CommandCategory::Session, &[]);
+passthrough_command!(SaveCmd, "save", "Save session", CommandCategory::Session, &[]);
 
 // Config
-simple_command!(ConfigCmd, "config", "Edit configuration", CommandCategory::Config, &[]);
-simple_command!(ModelCmd, "model", "Switch model", CommandCategory::Config, &[]);
-simple_command!(ProviderCmd, "provider", "Switch provider", CommandCategory::Config, &[]);
-simple_command!(ApprovalCmd, "approval", "Change approval mode", CommandCategory::Config, &["permissions"]);
+passthrough_command!(ConfigCmd, "config", "Edit configuration", CommandCategory::Config, &[]);
+passthrough_command!(ModelCmd, "model", "Switch model", CommandCategory::Config, &[]);
+passthrough_command!(ProviderCmd, "provider", "Switch provider", CommandCategory::Config, &[]);
+passthrough_command!(ApprovalCmd, "approval", "Change approval mode", CommandCategory::Config, &["permissions"]);
 
 // Agent
-simple_command!(PlanCmd, "plan", "Show/select plan", CommandCategory::Agent, &[]);
-simple_command!(VerifyCmd, "verify", "Run verification", CommandCategory::Agent, &[]);
-simple_command!(DelegateCmd, "delegate", "Delegate subtask", CommandCategory::Agent, &[]);
-simple_command!(SkillsCmd, "skills", "List skills", CommandCategory::Agent, &[]);
-simple_command!(CostCmd, "cost", "Show cost breakdown", CommandCategory::Agent, &[]);
-simple_command!(UndoCmd, "undo", "Undo last edit", CommandCategory::Agent, &[]);
+passthrough_command!(VerifyCmd, "verify", "Run verification", CommandCategory::Agent, &[]);
+passthrough_command!(DelegateCmd, "delegate", "Delegate subtask", CommandCategory::Agent, &[]);
+passthrough_command!(SkillsCmd, "skills", "List skills", CommandCategory::Agent, &[]);
+passthrough_command!(UndoCmd, "undo", "Undo last edit", CommandCategory::Agent, &[]);
 
 // Integration
-simple_command!(GithubCmd, "github", "GitHub operations", CommandCategory::Integration, &["gh"]);
-simple_command!(SlackCmd, "slack", "Slack integration", CommandCategory::Integration, &[]);
-simple_command!(McpCmd, "mcp", "MCP server management", CommandCategory::Integration, &[]);
-simple_command!(BridgeCmd, "bridge", "IDE bridge", CommandCategory::Integration, &[]);
-simple_command!(BrowseCmd, "browse", "Browser integration", CommandCategory::Integration, &[]);
+passthrough_command!(GithubCmd, "github", "GitHub operations", CommandCategory::Integration, &["gh"]);
+passthrough_command!(SlackCmd, "slack", "Slack integration", CommandCategory::Integration, &[]);
+passthrough_command!(McpCmd, "mcp", "MCP server management", CommandCategory::Integration, &[]);
+passthrough_command!(BridgeCmd, "bridge", "IDE bridge", CommandCategory::Integration, &[]);
+passthrough_command!(BrowseCmd, "browse", "Browser integration", CommandCategory::Integration, &[]);
 
-// Help
-simple_command!(HelpCmd, "help", "Show help", CommandCategory::Help, &["h", "?"]);
-simple_command!(DoctorCmd, "doctor", "System diagnostics", CommandCategory::Help, &[]);
-simple_command!(FeedbackCmd, "feedback", "Send feedback", CommandCategory::Help, &[]);
-simple_command!(VersionCmd, "version", "Show version", CommandCategory::Help, &["v"]);
-simple_command!(MemoryCmd, "memory", "Manage memory", CommandCategory::Help, &[]);
+// Help (DoctorCmd, HelpCmd, VersionCmd are real impls above)
+passthrough_command!(FeedbackCmd, "feedback", "Send feedback", CommandCategory::Help, &[]);
+passthrough_command!(MemoryCmd, "memory", "Manage memory", CommandCategory::Help, &[]);
 
-// DevOps  
-simple_command!(BenchCmd, "bench", "Run benchmarks", CommandCategory::DevOps, &[]);
-simple_command!(TasksCmd, "tasks", "Task management", CommandCategory::DevOps, &[]);
-simple_command!(MonitorCmd, "monitor", "System monitor", CommandCategory::DevOps, &[]);
+// DevOps
+passthrough_command!(BenchCmd, "bench", "Run benchmarks", CommandCategory::DevOps, &[]);
+passthrough_command!(TasksCmd, "tasks", "Task management", CommandCategory::DevOps, &[]);
+passthrough_command!(MonitorCmd, "monitor", "System monitor", CommandCategory::DevOps, &[]);
 
 /// Create a registry with all built-in commands.
 pub fn builtin_registry() -> CommandRegistry {

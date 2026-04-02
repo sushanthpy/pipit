@@ -1,4 +1,4 @@
-//! File History / Undo System (Task 2.3)
+//! File History / Undo System
 //!
 //! Diff-based file history with per-edit granularity. Stores reverse diffs
 //! using the `similar` diffing approach, keyed by file path and turn number.

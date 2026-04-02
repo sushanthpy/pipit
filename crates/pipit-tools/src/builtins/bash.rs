@@ -169,8 +169,23 @@ impl Tool for BashTool {
             )));
         }
 
-        // #23: Use sandbox for command execution when available
+        // #23: Three-layer reference monitor for command safety:
+        //
+        // Layer 1 (above): Lexical early-reject — dangerous patterns + blocked binaries
+        //   Cost: O(n) in command length. Catches known-bad patterns fast.
+        //
+        // Layer 2: Policy allowlist check — if configured, only permit approved binaries
+        //   Cost: O(t + p) where t = token count, p = policy predicates.
         let sandbox_config = super::sandbox::load_sandbox_config(&ctx.project_root);
+        if let Err(reason) = super::sandbox::check_binary_allowlist(command, &sandbox_config) {
+            return Err(ToolError::PermissionDenied(format!(
+                "Binary allowlist violation: {}", reason
+            )));
+        }
+
+        // Layer 3: Kernel isolation — sandbox via bwrap/seatbelt for syscall-level enforcement.
+        //   The lexical filter is demoted to an early reject layer.
+        //   Real control is sandbox + capability policy.
         let mut child_cmd = super::sandbox::sandboxed_command(command, &effective_cwd, &sandbox_config);
         child_cmd
             .stdout(std::process::Stdio::piped())

@@ -1,4 +1,4 @@
-//! Vim Input Mode State Machine (Task 4.1)
+//! Vim Input Mode State Machine
 //!
 //! A Vim normal-mode emulator for the TUI input composer.
 //! Supports operator-motion composition, dot-repeat, and text objects.

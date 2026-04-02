@@ -1,4 +1,4 @@
-//! Tiered Context Compaction Pipeline (Task 1.1)
+//! Tiered Context Compaction Pipeline
 //!
 //! A composable, multi-stage compaction pipeline where each stage is a
 //! `CompactionPass` trait object, executed in sequence. The pipeline is a

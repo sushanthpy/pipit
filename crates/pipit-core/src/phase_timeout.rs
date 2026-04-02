@@ -1,4 +1,4 @@
-//! PEV Phase Timeout and Deadlock Prevention (Task 6.1)
+//! PEV Phase Timeout and Deadlock Prevention
 //!
 //! Per-phase wall-clock timeouts with escalation semantics.
 //! Timeout budget is allocated proportionally:

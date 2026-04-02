@@ -1,4 +1,4 @@
-//! Voice Mode Integration (Task 3.4)
+//! Voice Mode Integration
 //!
 //! Provider-agnostic voice input via speech-to-text APIs (Whisper, etc.).
 //! Uses Voice Activity Detection (VAD) to segment audio into utterances,
@@ -12,6 +12,7 @@
 
 pub mod vad;
 pub mod transcription;
+pub mod speech_bus;
 
 pub use vad::{VadConfig, VoiceActivityDetector, VadEvent};
 pub use transcription::{TranscriptionConfig, TranscriptionProvider, TranscriptionResult};

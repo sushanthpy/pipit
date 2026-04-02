@@ -7,8 +7,10 @@ mod channels;
 mod ci_fix;
 mod config;
 mod cron;
+mod forge_github;
 mod git;
 mod health_monitor;
+mod messaging_slack;
 mod observability;
 mod pipeline;
 mod pool;
@@ -17,6 +19,7 @@ mod reporter;
 mod runner;
 mod server;
 mod store;
+mod teams_store;
 mod triggers;
 mod worker;
 

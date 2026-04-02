@@ -1,4 +1,4 @@
-//! MultiEdit Tool (Task 2.1)
+//! MultiEdit Tool
 //!
 //! Applies multiple search/replace edits to the same file atomically.
 //! All edits succeed or none do. Conflict detection for overlapping ranges.

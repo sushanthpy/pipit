@@ -1,4 +1,4 @@
-//! Streaming Parallel Tool Executor (Task 2.2)
+//! Streaming Parallel Tool Executor
 //!
 //! Begins executing tools **while the model is still streaming**. As each
 //! `ToolCallComplete` event arrives during the SSE stream, the executor

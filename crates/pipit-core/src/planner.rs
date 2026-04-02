@@ -449,7 +449,7 @@ mod tests {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Adaptive Strategy Scoring — Thompson Sampling (Task 1.3)
+//  Adaptive Strategy Scoring — Thompson Sampling
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Bayesian multi-armed bandit for adaptive strategy scoring.

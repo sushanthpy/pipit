@@ -47,6 +47,11 @@ pub mod worktree;
 pub mod worktree_session;
 pub mod cost_oracle;
 pub mod speculative;
+pub mod scoped_capability;
+pub mod plan_ir;
+pub mod deliberation;
+pub mod triage;
+pub mod service_graph;
 
 pub use agent::{AgentLoop, AgentLoopConfig, PlanningState};
 pub use events::{

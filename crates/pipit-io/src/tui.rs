@@ -130,11 +130,11 @@ impl ActivityKind {
 
 // ─── PipitUi ─────────────────────────────────────────────────────────────────
 
-/// The TUI — task-first agent interface.
+/// The TUI — agent interface.
 ///
 /// Layout:
 /// 1. Persistent status bar (top)
-/// 2. Task + plan display
+/// 2. Plan display
 /// 3. Activity stream (concise action cards)
 /// 4. Content output (markdown-rendered agent responses)
 /// 5. Composer prompt (bottom)
@@ -235,10 +235,10 @@ impl PipitUi {
         eprintln!("{DIM}└{rule}┘{RESET}");
     }
 
-    /// Render the task + plan block (if set).
+    /// Render the plan block (if set).
     pub fn render_task_block(&self) {
         if let Some(task) = &self.current_task {
-            eprintln!("{BOLD}Task{RESET}");
+            eprintln!("{BOLD}Objective{RESET}");
             eprintln!("  {}", task);
             eprintln!();
         }
@@ -977,6 +977,9 @@ impl ApprovalHandler for InteractiveApprovalHandler {
             }
             ApprovalDecision::Deny => {
                 eprintln!("{RED}  ✗ denied{RESET}");
+            }
+            ApprovalDecision::ScopedGrant(grant) => {
+                eprintln!("{GREEN}  ✓ approved (scoped grant, {} constraints){RESET}", grant.constraints.len());
             }
         }
 

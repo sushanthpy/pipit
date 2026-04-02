@@ -1,4 +1,4 @@
-//! Telemetry Event Pipeline (Task 5.3)
+//! Telemetry Event Pipeline
 //!
 //! Structured analytics events with typed payloads, async buffered emission,
 //! and local aggregation. Events are buffered in an MPSC channel and flushed

@@ -1,4 +1,4 @@
-//! Content Replacement State Machine (Task 1.4)
+//! Content Replacement State Machine
 //!
 //! A persistent, tool-aware content replacement system. When tool results exceed
 //! a per-tool budget, they are replaced with truncated versions. The replacement

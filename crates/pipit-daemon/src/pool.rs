@@ -263,6 +263,11 @@ impl AgentPool {
         let test_command = agent_lock.config.test_command.clone();
         let lint_command = agent_lock.config.lint_command.clone();
         let context_bytes = agent_lock.context_bytes.clone();
+        let approval_mode_str = agent_lock.config.approval_mode.clone();
+        let block_network = agent_lock.config.block_network;
+        let capability_grants = agent_lock.config.capability_grants.clone();
+        let max_write_bytes = agent_lock.config.max_write_bytes;
+        let protected_paths = agent_lock.config.protected_paths.clone();
         drop(agent_lock);
 
         tracing::info!(
@@ -294,24 +299,30 @@ impl AgentPool {
         // 5. Create ToolRegistry with builtins
         let tools = pipit_tools::ToolRegistry::with_builtins();
 
-        // 6. Build system prompt
+        // 6. Build system prompt — reflects the actual approval mode
+        let approval_mode = parse_daemon_approval_mode(&approval_mode_str);
         let system_prompt = format!(
-            "You are Pipit, an expert AI coding agent running in daemon mode (headless, FullAuto).\n\n\
+            "You are Pipit, an expert AI coding agent running in daemon mode (headless, {mode_label}).\n\n\
              ## Environment\n\
-             - Working directory: {}\n\
-             - Project: {}\n\
-             - Platform: {}\n\n\
+             - Working directory: {root}\n\
+             - Project: {project}\n\
+             - Platform: {os}\n\
+             - Approval mode: {mode_label}\n\n\
              ## Rules\n\
-             - Execute the task fully without asking for confirmation.\n\
+             - Execute the task within your granted capabilities.\n\
              - Use tools to read, edit, and test code.\n\
              - Be thorough but minimal — don't touch code you weren't asked to change.\n\
-             - After making changes, verify them (run tests, check for errors).\n",
-            project_root.display(),
-            task.project,
-            std::env::consts::OS,
+             - After making changes, verify them (run tests, check for errors).\n\
+             - If a tool call is denied by policy, do not retry — adapt your approach.\n",
+            root = project_root.display(),
+            project = task.project,
+            os = std::env::consts::OS,
+            mode_label = approval_mode.label(),
         );
 
         // 7. Build ContextManager, restore context if available
+        //    Apply bounded checkpoint strategy: retain recent messages,
+        //    redact sensitive spans, and limit total restored context.
         let model_context_window = provider.capabilities().context_window;
         let mut context = pipit_context::ContextManager::new(
             system_prompt,
@@ -321,11 +332,34 @@ impl AgentPool {
         if let Some(ref bytes) = context_bytes {
             match serde_json::from_slice::<Vec<pipit_provider::Message>>(bytes) {
                 Ok(messages) => {
-                    context.restore_messages(messages);
+                    // Bounded restoration: only keep recent messages
+                    let max_restored_messages: usize = 50;
+                    let bounded = if messages.len() > max_restored_messages {
+                        tracing::info!(
+                            project = %task.project,
+                            total = messages.len(),
+                            retained = max_restored_messages,
+                            "trimming restored context to recent messages"
+                        );
+                        messages.into_iter()
+                            .rev()
+                            .take(max_restored_messages)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>()
+                    } else {
+                        messages
+                    };
+
+                    // Redact sensitive content before restoring
+                    let redacted = redact_sensitive_context(bounded);
+
+                    context.restore_messages(redacted);
                     tracing::info!(
                         project = %task.project,
                         messages = context.messages().len(),
-                        "restored agent context from checkpoint"
+                        "restored agent context from checkpoint (bounded + redacted)"
                     );
                 }
                 Err(e) => {
@@ -338,7 +372,10 @@ impl AgentPool {
             }
         }
 
-        // 8. Build AgentLoopConfig
+        // 8. Build AgentLoopConfig — derive approval mode from project config
+        //    instead of hardcoding FullAuto. Headless execution is an interface
+        //    constraint, not a permission grant.
+
         let config = pipit_core::AgentLoopConfig {
             max_turns,
             max_reflections: 3,
@@ -346,18 +383,36 @@ impl AgentPool {
             loop_detection_threshold: 3,
             tool_timeout_secs: 120,
             enable_steering: true,
-            approval_mode: ApprovalMode::FullAuto,
+            approval_mode,
             pricing: Default::default(),
             test_command,
             lint_command,
             pev: None,
         };
 
-        // 9. Construct AgentLoop
+        // 9. Construct AgentLoop with policy-bounded approval handler.
+        //    The daemon approval handler auto-approves within the capability
+        //    grant but denies anything outside. This replaces the unconditional
+        //    AutoApproveHandler that previously made daemon mode omnipotent.
         let extensions: Arc<dyn pipit_extensions::ExtensionRunner> =
             Arc::new(pipit_extensions::NoopExtensionRunner);
-        let approval_handler: Arc<dyn pipit_core::ApprovalHandler> =
-            Arc::new(pipit_core::AutoApproveHandler);
+        let approval_handler: Arc<dyn pipit_core::ApprovalHandler> = if approval_mode == ApprovalMode::FullAuto {
+            // Even in FullAuto, use the policy-bounded handler so that
+            // protected paths and capability restrictions are enforced.
+            Arc::new(DaemonApprovalHandler::new(
+                approval_mode,
+                protected_paths,
+                block_network,
+                max_write_bytes,
+            ))
+        } else {
+            Arc::new(DaemonApprovalHandler::new(
+                approval_mode,
+                protected_paths,
+                block_network,
+                max_write_bytes,
+            ))
+        };
 
         let (mut agent_loop, _event_rx, _steering_tx) = pipit_core::AgentLoop::new(
             models,
@@ -558,4 +613,193 @@ pub struct ProjectStatus {
     pub tasks_completed: u32,
     pub total_cost: f64,
     pub context_size: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Task-scoped approval handler for daemon mode
+// ---------------------------------------------------------------------------
+
+/// Parse approval mode from project config string.
+/// Daemon defaults to CommandReview (not FullAuto) for least-privilege.
+fn parse_daemon_approval_mode(mode_str: &str) -> ApprovalMode {
+    match mode_str.to_lowercase().as_str() {
+        "suggest" | "plan" => ApprovalMode::Suggest,
+        "auto_edit" | "autoedit" | "edit" => ApprovalMode::AutoEdit,
+        "command_review" | "commandreview" | "cmd_review" => ApprovalMode::CommandReview,
+        "full_auto" | "fullauto" | "auto" => ApprovalMode::FullAuto,
+        _ => {
+            tracing::warn!(
+                mode = %mode_str,
+                "unknown approval mode in project config, defaulting to command_review"
+            );
+            ApprovalMode::CommandReview
+        }
+    }
+}
+
+/// Policy-bounded approval handler for daemon tasks.
+///
+/// Unlike `AutoApproveHandler` (which approves everything), this handler
+/// enforces task-scoped constraints even in headless mode:
+/// - Protected paths are always denied
+/// - Network access can be blocked per-project
+/// - Write size limits are enforced
+///
+/// This ensures daemon mode is "policy-bounded" not "omnipotent."
+pub struct DaemonApprovalHandler {
+    approval_mode: ApprovalMode,
+    protected_paths: Vec<String>,
+    block_network: bool,
+    max_write_bytes: u64,
+}
+
+impl DaemonApprovalHandler {
+    pub fn new(
+        approval_mode: ApprovalMode,
+        protected_paths: Vec<String>,
+        block_network: bool,
+        max_write_bytes: u64,
+    ) -> Self {
+        Self {
+            approval_mode,
+            protected_paths,
+            block_network,
+            max_write_bytes,
+        }
+    }
+
+    fn is_protected_path(&self, path: &str) -> bool {
+        for protected in &self.protected_paths {
+            if path.starts_with(protected) || path.contains(protected) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn is_network_tool(&self, tool_name: &str) -> bool {
+        matches!(tool_name, "mcp_search" | "fetch_url" | "http_request")
+    }
+}
+
+#[async_trait::async_trait]
+impl pipit_core::ApprovalHandler for DaemonApprovalHandler {
+    async fn request_approval(
+        &self,
+        _call_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> pipit_core::events::ApprovalDecision {
+        // Always deny protected path access
+        if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+            if self.is_protected_path(path) {
+                tracing::warn!(
+                    tool = tool_name,
+                    path = path,
+                    "daemon approval denied: protected path"
+                );
+                return pipit_core::events::ApprovalDecision::Deny;
+            }
+        }
+
+        // Block network tools if configured
+        if self.block_network && self.is_network_tool(tool_name) {
+            tracing::warn!(
+                tool = tool_name,
+                "daemon approval denied: network access blocked for this project"
+            );
+            return pipit_core::events::ApprovalDecision::Deny;
+        }
+
+        // In headless mode, auto-approve within policy bounds
+        // The PolicyKernel has already evaluated capabilities;
+        // if we reach here, the capability check passed.
+        tracing::debug!(
+            tool = tool_name,
+            mode = ?self.approval_mode,
+            "daemon approval: auto-approved within policy bounds"
+        );
+        pipit_core::events::ApprovalDecision::Approve
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context redaction for bounded checkpoint strategy
+// ---------------------------------------------------------------------------
+
+/// Redact sensitive content from restored context messages.
+///
+/// Scans for common secret patterns (API keys, tokens, passwords, connection strings)
+/// and replaces them with redaction markers. This ensures that sensitive information
+/// from previous tasks doesn't persist into future execution contexts.
+///
+/// Cost: O(total text length) for pattern scanning.
+fn redact_sensitive_context(messages: Vec<pipit_provider::Message>) -> Vec<pipit_provider::Message> {
+    messages.into_iter().map(|mut msg| {
+        msg.content = msg.content.into_iter().map(|block| {
+            match block {
+                pipit_provider::ContentBlock::Text(text) => {
+                    pipit_provider::ContentBlock::Text(redact_secrets(&text))
+                }
+                pipit_provider::ContentBlock::ToolResult { call_id, content, is_error } => {
+                    pipit_provider::ContentBlock::ToolResult {
+                        call_id,
+                        content: redact_secrets(&content),
+                        is_error,
+                    }
+                }
+                other => other,
+            }
+        }).collect();
+        msg
+    }).collect()
+}
+
+/// Redact common secret patterns from a text string.
+/// Uses simple string scanning instead of regex to avoid extra dependencies.
+fn redact_secrets(text: &str) -> String {
+    let mut result = text.to_string();
+
+    // Redact known API key prefixes
+    const KEY_PREFIXES: &[(&str, usize)] = &[
+        ("sk-", 20),       // OpenAI/Stripe
+        ("ghp_", 36),      // GitHub PAT
+        ("gho_", 36),      // GitHub OAuth
+        ("glpat-", 20),    // GitLab PAT
+        ("AKIA", 16),      // AWS access key
+        ("xoxb-", 20),     // Slack bot
+        ("xoxp-", 20),     // Slack user
+    ];
+
+    for (prefix, min_suffix_len) in KEY_PREFIXES {
+        while let Some(pos) = result.find(prefix) {
+            // Find the end of the token (non-alphanumeric boundary)
+            let start = pos;
+            let rest = &result[pos + prefix.len()..];
+            let token_end = rest.find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.')
+                .unwrap_or(rest.len());
+            if token_end >= *min_suffix_len {
+                let end = pos + prefix.len() + token_end;
+                result = format!("{}[REDACTED_KEY]{}", &result[..start], &result[end..]);
+            } else {
+                break; // Not a real key, stop searching for this prefix
+            }
+        }
+    }
+
+    // Redact "Bearer <token>" patterns
+    let bearer_needle = "Bearer ";
+    while let Some(pos) = result.find(bearer_needle) {
+        let after = &result[pos + bearer_needle.len()..];
+        let token_end = after.find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(after.len());
+        if token_end >= 20 {
+            let end = pos + bearer_needle.len() + token_end;
+            result = format!("{}Bearer [REDACTED]{}", &result[..pos], &result[end..]);
+        } else {
+            break;
+        }
+    }
+
+    result
 }

@@ -1,4 +1,4 @@
-//! Query-Level Profiling with Checkpoints (Task 5.1)
+//! Query-Level Profiling with Checkpoints
 //!
 //! A lightweight checkpoint profiler that emits structured timing data per turn.
 //! Checkpoints use `Instant::now()` (monotonic clock, ~20ns overhead per call).

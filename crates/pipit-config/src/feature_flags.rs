@@ -1,4 +1,4 @@
-//! Feature Flag / Experiment Infrastructure (Task 5.2)
+//! Feature Flag / Experiment Infrastructure
 //!
 //! Two-tier feature system:
 //! 1. Compile-time: via Cargo features (#[cfg(feature = "...")])

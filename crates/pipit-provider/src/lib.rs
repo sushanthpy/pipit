@@ -1,9 +1,12 @@
 pub mod types;
 pub mod anthropic;
+pub mod azure_openai;
+pub mod circuit_breaker;
 pub mod fallback;
 pub mod google;
 pub mod openai;
 pub mod retry;
+pub mod vertex;
 
 pub use types::*;
 
@@ -163,6 +166,18 @@ pub fn create_provider(
         )?)),
 
         PK::Google => Ok(Box::new(google::GoogleProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::AzureOpenAi => Ok(Box::new(azure_openai::AzureOpenAiProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::Vertex => Ok(Box::new(vertex::VertexProvider::new(
             model.to_string(),
             api_key.to_string(),
             base_url.map(|s| s.to_string()),

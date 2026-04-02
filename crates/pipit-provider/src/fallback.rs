@@ -1,4 +1,4 @@
-//! Fallback Model Auto-Switch (Task 4.3)
+//! Fallback Model Auto-Switch
 //!
 //! Transparent model fallback when the primary model returns retriable errors
 //! (rate limiting, overload, capacity). The system:

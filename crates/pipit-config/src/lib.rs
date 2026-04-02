@@ -142,8 +142,10 @@ pub fn resolve_api_key(provider: ProviderKind) -> Option<String> {
     let env_var = match provider {
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
         ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::AzureOpenAi => "AZURE_OPENAI_API_KEY",
         ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
         ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::Vertex => "VERTEX_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
         ProviderKind::XAi => "XAI_API_KEY",
         ProviderKind::Cerebras => "CEREBRAS_API_KEY",

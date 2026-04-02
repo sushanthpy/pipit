@@ -1,4 +1,4 @@
-//! Tool Use Summary Generation (Task 4.2)
+//! Tool Use Summary Generation
 //!
 //! Background summarization of tool results using a lightweight model.
 //! Runs concurrently during the next API call, hiding latency behind

@@ -1,4 +1,4 @@
-//! Reactive Compaction on API Error Recovery (Task 1.2)
+//! Reactive Compaction on API Error Recovery
 //!
 //! A state machine for error recovery with withholding semantics,
 //! escalation tiers, and idempotent retry. Handles:

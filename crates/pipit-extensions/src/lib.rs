@@ -472,7 +472,7 @@ fn load_hook_manifest(path: &Path) -> Result<HookManifest, ExtensionError> {
 }
 
 /// Load ALL hook manifests from a file, supporting the Code grouped format.
-pub fn load_all_hook_manifests(path: &Path) -> Vec<HookManifest> {
+pub(crate) fn load_all_hook_manifests(path: &Path) -> Vec<HookManifest> {
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
         Err(_) => return Vec::new(),

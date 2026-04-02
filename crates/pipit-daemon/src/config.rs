@@ -113,6 +113,24 @@ impl DaemonConfig {
             }
         }
 
+        // Fail-closed auth validation: if no tokens and not in explicit dev mode,
+        // the daemon must not start — this prevents accidental unauthenticated exposure.
+        if self.auth.tokens.is_empty() && !self.auth.insecure_dev_mode {
+            errors.push(
+                "no auth tokens configured and insecure_dev_mode is not enabled. \
+                 Configure at least one auth token in [auth.tokens], or set \
+                 auth.insecure_dev_mode = true for local development."
+                    .to_string(),
+            );
+        }
+
+        if self.auth.insecure_dev_mode {
+            tracing::warn!(
+                "auth.insecure_dev_mode is enabled — all API requests will be accepted \
+                 without authentication. Do NOT use this in production."
+            );
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -157,6 +175,13 @@ fn default_port() -> u16 {
 pub struct AuthConfig {
     #[serde(default)]
     pub tokens: HashMap<String, AuthToken>,
+
+    /// When true AND no tokens are configured, allow all requests
+    /// without authentication. This is ONLY for local development.
+    /// In production, if tokens are empty and this is false, the daemon
+    /// will reject all requests (fail-closed).
+    #[serde(default)]
+    pub insecure_dev_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +297,31 @@ pub struct ProjectConfig {
 
     #[serde(default)]
     pub lint_command: Option<String>,
+
+    /// Approval mode for daemon tasks (default: "command_review").
+    /// One of: suggest, auto_edit, command_review, full_auto.
+    /// Unlike interactive CLI, daemon defaults to command_review (NOT full_auto)
+    /// so headless execution is policy-bounded rather than omnipotent.
+    #[serde(default = "default_approval_mode")]
+    pub approval_mode: String,
+
+    /// Explicit capability grants for this project's daemon tasks.
+    /// If empty, capabilities are derived from the approval_mode.
+    /// Example entries: "fs:read", "fs:write", "proc:exec", "verify"
+    #[serde(default)]
+    pub capability_grants: Vec<String>,
+
+    /// If true, network access is blocked for daemon tasks (default: false).
+    #[serde(default)]
+    pub block_network: bool,
+
+    /// Maximum bytes a single tool call may write (0 = unlimited).
+    #[serde(default)]
+    pub max_write_bytes: u64,
+}
+
+fn default_approval_mode() -> String {
+    "command_review".to_string()
 }
 
 fn default_provider() -> String {

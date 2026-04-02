@@ -152,8 +152,10 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "claude-sonnet-4-20250514",
         ProviderKind::OpenAi => "gpt-4o",
+        ProviderKind::AzureOpenAi => "gpt-4o",
         ProviderKind::DeepSeek => "deepseek-chat",
         ProviderKind::Google => "gemini-2.5-flash",
+        ProviderKind::Vertex => "gemini-2.5-pro",
         ProviderKind::OpenRouter => "anthropic/claude-sonnet-4-20250514",
         ProviderKind::XAi => "grok-3",
         ProviderKind::Cerebras => "llama-4-scout-17b-16e-instruct",
@@ -168,6 +170,8 @@ fn needs_base_url(provider: ProviderKind) -> bool {
     matches!(provider,
         ProviderKind::OpenAiCompatible
         | ProviderKind::AnthropicCompatible
+        | ProviderKind::AzureOpenAi
+        | ProviderKind::Vertex
         | ProviderKind::Ollama
     )
 }
@@ -183,8 +187,10 @@ fn env_var_for_provider(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
         ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::AzureOpenAi => "AZURE_OPENAI_API_KEY",
         ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
         ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::Vertex => "VERTEX_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
         ProviderKind::XAi => "XAI_API_KEY",
         ProviderKind::Cerebras => "CEREBRAS_API_KEY",

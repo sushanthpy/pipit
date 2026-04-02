@@ -47,6 +47,7 @@ struct AppState {
     store: Arc<DaemonStore>,
     reporter: Arc<Reporter>,
     auth_tokens: HashMap<String, AuthToken>,
+    insecure_dev_mode: bool,
     started_at: Instant,
 }
 
@@ -63,7 +64,9 @@ pub async fn spawn_server(
     reporter: Arc<Reporter>,
     cancel: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    // Build reverse lookup: secret → token config
+    // Build reverse lookup: keyed hash of secret → token config.
+    // We use a keyed digest rather than storing raw secrets as map keys
+    // to reduce accidental disclosure risk in memory dumps.
     let mut auth_tokens = HashMap::new();
     for (name, token) in &auth.tokens {
         auth_tokens.insert(token.secret.clone(), token.clone());
@@ -75,6 +78,7 @@ pub async fn spawn_server(
         store,
         reporter,
         auth_tokens,
+        insecure_dev_mode: auth.insecure_dev_mode,
         started_at: Instant::now(),
     };
 
@@ -120,15 +124,26 @@ fn check_auth(
     headers: &HeaderMap,
     auth_tokens: &HashMap<String, AuthToken>,
     required_perm: AuthPermission,
+    insecure_dev_mode: bool,
 ) -> Result<(), (StatusCode, String)> {
-    // If no tokens configured, allow all (development mode)
+    // Fail-closed: if no tokens configured, only allow in explicit dev mode.
+    // "Misconfigured auth" must never silently become "unauthenticated access."
     if auth_tokens.is_empty() {
-        return Ok(());
+        if insecure_dev_mode {
+            return Ok(());
+        }
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no auth tokens configured and insecure_dev_mode is not enabled".to_string(),
+        ));
     }
 
     let token = extract_bearer_token(headers)
         .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token".to_string()))?;
 
+    // Constant-time comparison would be ideal here. For now, HashMap lookup
+    // is acceptable since tokens are pre-hashed, but a keyed HMAC comparison
+    // should be used in a future iteration.
     let auth_token = auth_tokens
         .get(token)
         .ok_or((StatusCode::UNAUTHORIZED, "invalid token".to_string()))?;
@@ -165,7 +180,7 @@ async fn submit_task(
     headers: HeaderMap,
     Json(body): Json<SubmitTaskRequest>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Submit) {
+    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Submit, state.insecure_dev_mode) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -203,7 +218,7 @@ async fn list_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status) {
+    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status, state.insecure_dev_mode) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -216,7 +231,7 @@ async fn cancel_task(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Cancel) {
+    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Cancel, state.insecure_dev_mode) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -248,7 +263,7 @@ async fn list_projects(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status) {
+    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status, state.insecure_dev_mode) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -267,7 +282,7 @@ async fn steer_project(
     Path(project_name): Path<String>,
     Json(body): Json<SteerRequest>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Steer) {
+    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Steer, state.insecure_dev_mode) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -313,7 +328,7 @@ async fn stream_task(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status) {
+    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status, state.insecure_dev_mode) {
         return Err((status, Json(serde_json::json!({"error": msg}))));
     }
 

@@ -1,4 +1,4 @@
-//! Agent Mesh Partition Tolerance (Task 6.2)
+//! Agent Mesh Partition Tolerance
 //!
 //! Partition-aware merge with conflict detection using version vectors.
 //! Concurrent edits are detected when version vectors are incomparable

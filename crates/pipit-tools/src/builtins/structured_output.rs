@@ -1,4 +1,4 @@
-//! Structured Output Tool (Task 2.4)
+//! Structured Output Tool
 //!
 //! Enables SDK callers to request JSON schema-constrained output from the model.
 //! When a caller specifies a `jsonSchema`, this tool is registered and a

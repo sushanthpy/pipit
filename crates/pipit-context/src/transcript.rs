@@ -1,4 +1,4 @@
-//! Session Persistence & Resume (Task 3.3)
+//! Session Persistence & Resume
 //!
 //! Write-ahead transcript logging with pre-API-call flush and deterministic resume.
 //! Every message is recorded to disk BEFORE the API call returns, ensuring

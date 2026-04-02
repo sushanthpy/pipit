@@ -255,18 +255,69 @@ impl TelemetryFacade {
         for target in &self.export_targets {
             match target {
                 ExportTarget::Jsonl => {
-                    // Already handled by existing telemetry pipeline
+                    self.export_jsonl(&spans)?;
                 }
                 ExportTarget::Otlp => {
-                    // Would use opentelemetry-otlp crate in production
+                    // OTLP export: batch POST to /v1/traces
+                    // In production: opentelemetry-otlp crate
+                    // For now, JSONL export covers offline analysis
                 }
                 ExportTarget::Prometheus => {
-                    // Would expose /metrics endpoint
+                    // Prometheus: counters exposed via /metrics
+                    // Handled by the daemon's axum router
                 }
             }
         }
         Ok(count)
     }
+
+    /// Export spans to JSONL file at .pipit/telemetry/spans.jsonl
+    fn export_jsonl(&self, spans: &[OtelSpan]) -> Result<(), String> {
+        let dir = std::path::Path::new(".pipit").join("telemetry");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("spans.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        use std::io::Write;
+        for span in spans {
+            let json = serde_json::to_string(span).map_err(|e| e.to_string())?;
+            writeln!(file, "{}", json).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Get session summary for /status and /cost commands.
+    pub fn session_summary(&self) -> SessionSummary {
+        use std::sync::atomic::Ordering;
+        SessionSummary {
+            session_id: self.session_id.clone(),
+            model_name: self.model_name.clone(),
+            provider_name: self.provider_name.clone(),
+            turns: self.session_counters.turns.load(Ordering::Relaxed),
+            tool_calls: self.session_counters.tool_calls.load(Ordering::Relaxed),
+            tokens_input: self.session_counters.tokens_input.load(Ordering::Relaxed),
+            tokens_output: self.session_counters.tokens_output.load(Ordering::Relaxed),
+            total_cost: self.session_counters.total_cost(),
+            span_count: self.spans.lock().map(|s| s.len()).unwrap_or(0),
+        }
+    }
+}
+
+/// Summary of session telemetry for display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub model_name: String,
+    pub provider_name: String,
+    pub turns: u64,
+    pub tool_calls: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub total_cost: f64,
+    pub span_count: usize,
 }
 
 fn now_ms() -> u64 {

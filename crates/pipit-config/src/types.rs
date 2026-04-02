@@ -160,6 +160,10 @@ pub enum ProviderKind {
     Groq,
     Mistral,
     Ollama,
+    /// Azure OpenAI endpoint (requires --base-url with resource endpoint)
+    AzureOpenAi,
+    /// Google Vertex AI (uses OAuth2/gcloud auth instead of API key)
+    Vertex,
     /// Generic OpenAI-compatible endpoint (set --base-url)
     OpenAiCompatible,
     /// Generic Anthropic-compatible endpoint (set --base-url)
@@ -173,7 +177,9 @@ impl FromStr for ProviderKind {
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "openai" | "gpt" => Ok(Self::OpenAi),
             "deepseek" => Ok(Self::DeepSeek),
-            "google" | "gemini" | "vertex" => Ok(Self::Google),
+            "google" | "gemini" => Ok(Self::Google),
+            "vertex" | "vertex_ai" | "vertexai" | "google_vertex" => Ok(Self::Vertex),
+            "azure" | "azure_openai" | "azure-openai" | "azureopenai" => Ok(Self::AzureOpenAi),
             "openrouter" | "open_router" => Ok(Self::OpenRouter),
             "xai" | "grok" => Ok(Self::XAi),
             "cerebras" => Ok(Self::Cerebras),
@@ -183,7 +189,7 @@ impl FromStr for ProviderKind {
             "openai_compatible" | "openai-compatible" | "custom" => Ok(Self::OpenAiCompatible),
             "anthropic_compatible" | "anthropic-compatible" => Ok(Self::AnthropicCompatible),
             _ => Err(format!(
-                "Unknown provider: {}. Supported: anthropic, openai, deepseek, google, openrouter, xai, cerebras, groq, mistral, ollama, openai_compatible, anthropic_compatible",
+                "Unknown provider: {}. Supported: anthropic, openai, azure_openai, deepseek, google, vertex, openrouter, xai, cerebras, groq, mistral, ollama, openai_compatible, anthropic_compatible",
                 s
             )),
         }
@@ -197,6 +203,8 @@ impl std::fmt::Display for ProviderKind {
             Self::OpenAi => write!(f, "openai"),
             Self::DeepSeek => write!(f, "deepseek"),
             Self::Google => write!(f, "google"),
+            Self::Vertex => write!(f, "vertex"),
+            Self::AzureOpenAi => write!(f, "azure_openai"),
             Self::OpenRouter => write!(f, "openrouter"),
             Self::XAi => write!(f, "xai"),
             Self::Cerebras => write!(f, "cerebras"),

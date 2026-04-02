@@ -1,4 +1,4 @@
-//! IDE Bridge Protocol (Task 3.1)
+//! IDE Bridge Protocol
 //!
 //! A transport-agnostic bidirectional communication protocol between
 //! the Pipit CLI agent and IDE extensions (VS Code, JetBrains, etc.).
