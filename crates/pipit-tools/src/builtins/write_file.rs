@@ -2,6 +2,7 @@ use crate::{Tool, ToolContext, ToolError, ToolResult};
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;
+use std::path::{Component, Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 /// Write/create a file with atomic write (tempfile + rename).
@@ -50,9 +51,18 @@ impl Tool for WriteFileTool {
         let abs_path = ctx.project_root.join(path_str);
 
         // Security: prevent writing outside project root
-        // Normalize without requiring existence
+        // Lexical normalization resolves .. without requiring existence
+        let normalized = normalize_lexical(&abs_path);
         if let Ok(project_canonical) = ctx.project_root.canonicalize() {
-            // For new files, check that the parent is within project root
+            // Lexical check: even if parent doesn't exist, path must be under project root
+            if !normalized.starts_with(&project_canonical)
+                && !normalized.starts_with(&ctx.project_root)
+            {
+                return Err(ToolError::PermissionDenied(
+                    "Path is outside project root".to_string(),
+                ));
+            }
+            // Canonical check: when parent exists, verify with resolved symlinks
             if let Some(parent) = abs_path.parent() {
                 if parent.exists() {
                     if let Ok(parent_canonical) = parent.canonicalize() {
@@ -103,4 +113,19 @@ impl Tool for WriteFileTool {
             line_count, path_str
         )))
     }
+}
+
+/// Lexically normalize a path by resolving `.` and `..` without filesystem access.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                components.pop();
+            }
+            Component::CurDir => {}
+            other => components.push(other),
+        }
+    }
+    components.iter().collect()
 }

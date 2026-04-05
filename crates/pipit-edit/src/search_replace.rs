@@ -192,19 +192,37 @@ fn fuzzy_search_replace(content: &str, search: &str, replace: &str) -> Option<St
         if matches {
             let end = start + search_lines.len();
 
-            // Detect indentation of the first matched line
-            let original_indent = detect_indent(content_lines[start]);
-            let search_indent = detect_indent(search_lines[0]);
+            // Build indent mapping from matched search↔content line pairs.
+            // Each pair maps a search indent level to the corresponding content indent level.
+            // This handles cases where the LLM uses a different indent unit (e.g., 2-space)
+            // than the content (e.g., 4-space) — a flat delta would fail in that case.
+            let mut indent_pairs: Vec<(usize, usize)> = Vec::new();
+            for j in 0..search_lines.len() {
+                if !search_lines[j].trim().is_empty() {
+                    let s_indent = detect_indent(search_lines[j]).len();
+                    let c_indent = detect_indent(content_lines[start + j]).len();
+                    indent_pairs.push((s_indent, c_indent));
+                }
+            }
+            indent_pairs.sort_by_key(|p| p.0);
+            indent_pairs.dedup_by_key(|p| p.0);
 
+            let indent_char = if detect_indent(content_lines[start]).contains('\t') {
+                '\t'
+            } else {
+                ' '
+            };
             let mut result_lines: Vec<String> =
                 content_lines[..start].iter().map(|s| s.to_string()).collect();
 
-            // Apply replacement with indentation adjustment
+            // Apply replacement with indent mapping
             for replace_line in replace.lines() {
-                let replace_indent = detect_indent(replace_line);
                 let adjusted = if !replace_line.trim().is_empty() {
-                    let stripped = replace_line.trim_start();
-                    format!("{}{}", original_indent, stripped)
+                    let r_indent = detect_indent(replace_line).len();
+                    let new_indent_len = map_indent(r_indent, &indent_pairs);
+                    let new_indent: String =
+                        std::iter::repeat(indent_char).take(new_indent_len).collect();
+                    format!("{}{}", new_indent, replace_line.trim_start())
                 } else {
                     replace_line.to_string()
                 };
@@ -217,6 +235,48 @@ fn fuzzy_search_replace(content: &str, search: &str, replace: &str) -> Option<St
     }
 
     None
+}
+
+/// Map a replacement indent level to the correct content indent level using
+/// the search↔content indent lookup table. Falls back to flat delta for
+/// indents not seen in the search block.
+fn map_indent(replace_indent: usize, pairs: &[(usize, usize)]) -> usize {
+    if pairs.is_empty() {
+        return replace_indent;
+    }
+
+    // Exact match in the lookup table
+    for &(s, c) in pairs {
+        if s == replace_indent {
+            return c;
+        }
+    }
+
+    // Below minimum known indent: use flat delta from the minimum pair
+    if replace_indent < pairs[0].0 {
+        let delta = pairs[0].1 as isize - pairs[0].0 as isize;
+        return (replace_indent as isize + delta).max(0) as usize;
+    }
+
+    // Above maximum known indent: use flat delta from the maximum pair
+    let last = pairs[pairs.len() - 1];
+    if replace_indent > last.0 {
+        let delta = last.1 as isize - last.0 as isize;
+        return (replace_indent as isize + delta).max(0) as usize;
+    }
+
+    // Between two known points: linear interpolation
+    for i in 0..pairs.len() - 1 {
+        let (s1, c1) = pairs[i];
+        let (s2, c2) = pairs[i + 1];
+        if replace_indent > s1 && replace_indent < s2 {
+            let ratio = (replace_indent - s1) as f64 / (s2 - s1) as f64;
+            let mapped = c1 as f64 + ratio * (c2 as f64 - c1 as f64);
+            return mapped.round() as usize;
+        }
+    }
+
+    replace_indent
 }
 
 fn detect_indent(line: &str) -> &str {

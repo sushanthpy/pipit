@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// OpenTelemetry-compatible span for distributed tracing.
@@ -83,6 +83,10 @@ pub struct SessionCounters {
     cost: Mutex<KahanAccumulator>,
     /// Active time in milliseconds.
     pub active_time_ms: AtomicU64,
+    /// Total transient retries consumed this session.
+    pub total_retries: AtomicU32,
+    /// Consecutive errors without success (circuit breaker).
+    pub consecutive_errors: AtomicU32,
 }
 
 impl SessionCounters {
@@ -99,6 +103,21 @@ impl SessionCounters {
     pub fn increment_loc(&self, lines: u64) { self.lines_of_code.fetch_add(lines, Ordering::Relaxed); }
     pub fn increment_files(&self) { self.files_modified.fetch_add(1, Ordering::Relaxed); }
     pub fn increment_commits(&self) { self.commits.fetch_add(1, Ordering::Relaxed); }
+
+    /// Record a retry attempt. Returns false if budget exhausted (max 15 per session, max 5 consecutive).
+    pub fn can_retry(&self) -> bool {
+        self.total_retries.load(Ordering::Relaxed) < 15
+            && self.consecutive_errors.load(Ordering::Relaxed) < 5
+    }
+
+    pub fn record_retry(&self) {
+        self.total_retries.fetch_add(1, Ordering::Relaxed);
+        self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_success(&self) {
+        self.consecutive_errors.store(0, Ordering::Relaxed);
+    }
 
     /// Add cost using Kahan summation to prevent floating-point drift.
     pub fn add_cost(&self, amount: f64) {

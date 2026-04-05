@@ -412,6 +412,7 @@ impl AgentLoop {
                 Err(e) => {
                     llm_span.finish(SpanStatus::Error);
                     self.telemetry.record_span(llm_span);
+                    cancel.cancel(); // Signal all in-flight tools to abort
                     self.emit(AgentEvent::ProviderError {
                         error: e.to_string(),
                         will_retry: false,
@@ -683,29 +684,31 @@ impl AgentLoop {
     ) -> Result<AssistantResponse, pipit_provider::ProviderError> {
         let mut stream = self.provider().complete(request, cancel.clone()).await?;
         let mut response = AssistantResponse::new();
+        let mut has_tool_calls = false;
 
         while let Some(event) = stream.next().await {
             if cancel.is_cancelled() {
                 return Err(pipit_provider::ProviderError::Cancelled);
             }
 
-            match event? {
-                ContentEvent::ContentDelta { text } => {
+            match event {
+                Ok(ContentEvent::ContentDelta { text }) => {
                     response.push_text(&text);
                     self.emit(AgentEvent::ContentDelta { text: text.clone() });
                     if let Err(e) = self.extensions.on_content_delta(&text).await {
                         tracing::warn!("ContentDelta extension hook failed: {}", e);
                     }
                 }
-                ContentEvent::ThinkingDelta { text } => {
+                Ok(ContentEvent::ThinkingDelta { text }) => {
                     response.push_thinking(&text);
                     self.emit(AgentEvent::ThinkingDelta { text });
                 }
-                ContentEvent::ToolCallComplete {
+                Ok(ContentEvent::ToolCallComplete {
                     call_id,
                     tool_name,
                     args,
-                } => {
+                }) => {
+                    has_tool_calls = true;
                     response.push_tool_call(call_id.clone(), tool_name.clone(), args.clone());
                     self.emit(AgentEvent::ToolCallStart {
                         call_id,
@@ -713,13 +716,29 @@ impl AgentLoop {
                         args,
                     });
                 }
-                ContentEvent::Finished {
+                Ok(ContentEvent::Finished {
                     stop_reason,
                     usage,
-                } => {
+                }) => {
                     response.finish(stop_reason, usage);
                 }
-                _ => {}
+                Ok(_) => {}
+                Err(e) => {
+                    // If we have completed tool calls, salvage them instead of discarding
+                    if has_tool_calls {
+                        tracing::warn!(
+                            "Stream error after {} tool calls — salvaging partial response: {}",
+                            response.tool_calls.len(),
+                            e
+                        );
+                        response.finish(
+                            pipit_provider::StopReason::ToolUse,
+                            pipit_provider::UsageMetadata::default(),
+                        );
+                        return Ok(response);
+                    }
+                    return Err(e);
+                }
             }
         }
 
@@ -745,14 +764,28 @@ impl AgentLoop {
                 "Pre-flight: estimated {} tokens vs {} limit (over by {}). Reducing.",
                 input_est, model_limit, over
             );
-            // Step 1: shrink old tool results
-            let freed = self.context.shrink_tool_results(500);
-            if freed > 0 {
+            // Stage 1: evict stale tool results (older than 10 messages)
+            let freed1 = self.context.evict_stale_tool_results(10);
+            if freed1 > 0 {
                 self.emit(AgentEvent::Waiting {
-                    label: format!("Freed ~{} tokens from old tool results", freed),
+                    label: format!("Evicted stale tool results, freed ~{} tokens", freed1),
                 });
             }
-            // Step 2: check again, if still over, drop repo map + compress
+            // Stage 2: truncate large individual results
+            let freed2 = self.context.truncate_large_results(8000);
+            if freed2 > 0 {
+                self.emit(AgentEvent::Waiting {
+                    label: format!("Truncated large results, freed ~{} tokens", freed2),
+                });
+            }
+            // Stage 3: shrink remaining old tool results
+            let freed3 = self.context.shrink_tool_results(500);
+            if freed3 > 0 {
+                self.emit(AgentEvent::Waiting {
+                    label: format!("Freed ~{} tokens from old tool results", freed3),
+                });
+            }
+            // Stage 4: check again, if still over, drop repo map + compress
             let (_est2, _lim2, over2) = self.context.preflight_check(tools.len(), self.repo_map.as_deref());
             if over2 > 0 {
                 let reduction = self.reduce_request_size();
@@ -768,7 +801,10 @@ impl AgentLoop {
             let request = self.build_completion_request(claim, selected_plan, tools).await;
 
             match self.stream_response(request, cancel.clone()).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    self.telemetry.session_counters.record_success();
+                    return Ok(response);
+                }
                 Err(err) if is_request_too_large_error(&err) && attempts < 3 => {
                     attempts += 1;
                     let reduction = self.reduce_request_size();
@@ -784,6 +820,19 @@ impl AgentLoop {
                         ),
                         will_retry: true,
                     });
+                }
+                Err(err) if err.is_transient() && attempts < 3 && self.telemetry.session_counters.can_retry() => {
+                    attempts += 1;
+                    self.telemetry.session_counters.record_retry();
+                    let delay_ms = 500 * 2u64.pow(attempts as u32);
+                    self.emit(AgentEvent::ProviderError {
+                        error: format!(
+                            "{} — retrying in {}ms (attempt {}/3)",
+                            err, delay_ms, attempts
+                        ),
+                        will_retry: true,
+                    });
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 }
                 Err(err) => return Err(err),
             }
@@ -1227,6 +1276,11 @@ impl AgentLoop {
 
     pub fn clear_context(&mut self) {
         self.context.clear();
+    }
+
+    /// Inject a message directly into context (used for session resume/replay).
+    pub fn inject_message(&mut self, message: pipit_provider::Message) {
+        self.context.push_message(message);
     }
 
     /// Graceful shutdown: flush all state, export telemetry, record session end.

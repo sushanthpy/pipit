@@ -66,6 +66,23 @@ impl Tool for ReadFileTool {
             ));
         }
 
+        // Pre-flight: check file size before reading
+        let metadata = tokio::fs::metadata(&canonical)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Cannot stat file: {}", e)))?;
+        let file_size = metadata.len();
+        const MAX_READ_BYTES: u64 = 1_048_576; // 1MB
+
+        if file_size > MAX_READ_BYTES {
+            return Ok(ToolResult::text(format!(
+                "File is {:.1}MB ({} bytes). Too large to read in full.\n\
+                 Use start_line/end_line parameters to read specific sections, \
+                 or use `grep` to search for relevant content.",
+                file_size as f64 / 1_048_576.0,
+                file_size
+            )));
+        }
+
         let content = tokio::fs::read_to_string(&canonical)
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Cannot read file: {}", e)))?;

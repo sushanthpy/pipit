@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod budget_tracker;
 pub mod cache;
 pub mod compaction;
 pub mod content_replacement;

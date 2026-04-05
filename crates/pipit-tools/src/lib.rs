@@ -70,6 +70,15 @@ pub trait Tool: Send + Sync {
         ctx: &ToolContext,
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError>;
+
+    /// Whether this tool can run concurrently with other concurrency-safe tools for the
+    /// given arguments. Read-only tools (read_file, grep, glob, list_directory) return true.
+    /// Mutating tools (write_file, edit_file, bash) return false.
+    ///
+    /// The `StreamingToolExecutor` uses this to schedule parallel reads while serializing writes.
+    fn is_concurrency_safe(&self, _args: &Value) -> bool {
+        !self.is_mutating()
+    }
 }
 
 /// Context passed to every tool execution.

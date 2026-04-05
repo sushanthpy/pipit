@@ -28,6 +28,14 @@ impl Tool for GrepTool {
                 "include": {
                     "type": "string",
                     "description": "Glob pattern to filter files (e.g., '*.rs')"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default: 100)"
+                },
+                "files_only": {
+                    "type": "boolean",
+                    "description": "Return only filenames containing matches, not matching lines (default: false)"
                 }
             },
             "required": ["pattern"]
@@ -49,13 +57,19 @@ impl Tool for GrepTool {
             .ok_or_else(|| ToolError::InvalidArgs("missing 'pattern'".to_string()))?;
         let path_str = args["path"].as_str().unwrap_or(".");
         let include = args["include"].as_str();
+        let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
+        let files_only = args["files_only"].as_bool().unwrap_or(false);
 
         let search_path = ctx.project_root.join(path_str);
 
         // Use `grep` command for simplicity and correctness
         let mut cmd = tokio::process::Command::new("grep");
-        cmd.arg("-rn")
-            .arg("--color=never")
+        if files_only {
+            cmd.arg("-rl"); // recursive, files-with-matches only
+        } else {
+            cmd.arg("-rn"); // recursive, line numbers
+        }
+        cmd.arg("--color=never")
             .arg("-E")
             .arg(pattern);
 
@@ -77,7 +91,7 @@ impl Tool for GrepTool {
         let project_str = ctx.project_root.display().to_string();
         let result = stdout
             .lines()
-            .take(100) // Limit results
+            .take(max_results)
             .map(|line| line.replace(&format!("{}/", project_str), ""))
             .collect::<Vec<_>>()
             .join("\n");
@@ -85,9 +99,9 @@ impl Tool for GrepTool {
         if result.is_empty() {
             Ok(ToolResult::text("No matches found."))
         } else {
-            let count = result.lines().count();
-            let truncated = if stdout.lines().count() > 100 {
-                format!("\n\n[Showing first 100 of {} matches]", stdout.lines().count())
+            let total_matches = stdout.lines().count();
+            let truncated = if total_matches > max_results {
+                format!("\n\n[Showing first {} of {} matches]", max_results, total_matches)
             } else {
                 String::new()
             };

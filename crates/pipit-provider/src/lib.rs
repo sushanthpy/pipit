@@ -5,6 +5,7 @@ pub mod circuit_breaker;
 pub mod fallback;
 pub mod google;
 pub mod openai;
+pub mod resilience;
 pub mod retry;
 pub mod vertex;
 
@@ -47,6 +48,67 @@ pub enum ProviderError {
 
     #[error("Provider error: {0}")]
     Other(String),
+}
+
+impl ProviderError {
+    /// Is this error transient and worth retrying?
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::Network(_)
+                | ProviderError::RateLimited { .. }
+                | ProviderError::OutputTruncated
+        ) || matches!(self, ProviderError::Other(msg) if {
+            let lower = msg.to_ascii_lowercase();
+            lower.contains("500")
+                || lower.contains("502")
+                || lower.contains("503")
+                || lower.contains("529")
+                || lower.contains("overloaded")
+                || lower.contains("timeout")
+                || lower.contains("econnreset")
+        })
+    }
+
+    /// Is this error recoverable by reducing context size?
+    pub fn is_context_recoverable(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::RequestTooLarge { .. } | ProviderError::ContextOverflow { .. }
+        ) || matches!(self, ProviderError::Other(msg) if {
+            let lower = msg.to_ascii_lowercase();
+            lower.contains("too long")
+                || lower.contains("too large")
+                || lower.contains("maximum context")
+                || lower.contains("context length exceeded")
+                || lower.contains("context_length_exceeded")
+                || (lower.contains("maximum") && lower.contains("token"))
+                || lower.contains("too many tokens")
+        })
+    }
+
+    /// Is this error permanent (no point retrying)?
+    pub fn is_permanent(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::AuthFailed { .. }
+                | ProviderError::ModelNotFound { .. }
+                | ProviderError::Cancelled
+        )
+    }
+
+    /// Classification string for telemetry.
+    pub fn classify(&self) -> &'static str {
+        if self.is_transient() {
+            "transient"
+        } else if self.is_context_recoverable() {
+            "context_overflow"
+        } else if self.is_permanent() {
+            "permanent"
+        } else {
+            "unknown"
+        }
+    }
 }
 
 /// The core LLM provider trait. Every provider implements this.

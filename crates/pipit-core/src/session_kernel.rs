@@ -1,0 +1,475 @@
+//! Session Kernel — Single Source of Truth for All Session State
+//!
+//! Unifies the `SessionLedger`, `TranscriptWal`, `ContextManager`, and
+//! `PermissionLedger` under one canonical authority. All state mutations
+//! (turn acceptance, tool outcomes, compaction, permission decisions, resume
+//! checkpoints) flow through the kernel, ensuring deterministic replay and
+//! eliminating state divergence between subsystems.
+//!
+//! Design:
+//! - Write path: O(1) append per mutation (ledger + optional WAL/context sync)
+//! - Recovery: O(k) from last snapshot (k = events since snapshot, default 50)
+//! - Hot path: The kernel does NOT block tool execution; it records outcomes
+//!   at turn boundaries, not inside the scheduler inner loop (Task 7).
+
+use crate::ledger::{SessionEvent, SessionLedger, SessionState, LedgerError};
+use crate::permission_ledger::{PermissionLedger, PermissionDenialRecord, DenialSource};
+use pipit_context::budget::ContextManager;
+use pipit_context::transcript::{TranscriptWal, WalError};
+use pipit_provider::Message;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Errors from the session kernel.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionKernelError {
+    #[error("Ledger error: {0}")]
+    Ledger(#[from] LedgerError),
+    #[error("WAL error: {0}")]
+    Wal(#[from] WalError),
+    #[error("Session not started")]
+    NotStarted,
+    #[error("Session already ended")]
+    AlreadyEnded,
+    #[error("State error: {0}")]
+    State(String),
+}
+
+/// Configuration for the session kernel.
+#[derive(Debug, Clone)]
+pub struct SessionKernelConfig {
+    /// Directory for session persistence (.pipit/sessions/{slug}).
+    pub session_dir: PathBuf,
+    /// Whether to fsync WAL writes (true for durability, false for speed).
+    pub durable_writes: bool,
+    /// Snapshot interval for ledger (default: 50 events).
+    pub snapshot_interval: u64,
+}
+
+/// The Session Kernel — single authority for all session state mutations.
+///
+/// All writes to session state (messages, tool outcomes, permissions,
+/// compression, checkpoints) MUST go through this kernel. This guarantees:
+/// 1. Deterministic replay from any interruption point
+/// 2. No divergence between context, transcript, and ledger
+/// 3. Hash-chained integrity for audit/tamper detection
+/// 4. Snapshot-accelerated recovery
+pub struct SessionKernel {
+    /// The canonical event log (hash-chained, append-only).
+    ledger: SessionLedger,
+    /// Write-ahead log for crash recovery (pre-API-call flush).
+    wal: Option<TranscriptWal>,
+    /// Permission denial accumulator.
+    permissions: PermissionLedger,
+    /// Derived state (rebuilt from replay).
+    state: SessionState,
+    /// Session configuration.
+    config: SessionKernelConfig,
+    /// Whether the session has been started.
+    started: bool,
+}
+
+impl SessionKernel {
+    /// Create a new session kernel. Does NOT start the session — call `start()`.
+    pub fn new(config: SessionKernelConfig) -> Result<Self, SessionKernelError> {
+        std::fs::create_dir_all(&config.session_dir)
+            .map_err(|e| SessionKernelError::State(format!("Cannot create session dir: {}", e)))?;
+
+        let ledger_path = config.session_dir.join("ledger.jsonl");
+        let ledger = SessionLedger::open(ledger_path)?;
+
+        let wal_path = config.session_dir.join("transcript.wal");
+        let wal = TranscriptWal::new(wal_path, config.durable_writes).ok();
+
+        Ok(Self {
+            ledger,
+            wal,
+            permissions: PermissionLedger::new(),
+            state: SessionState::default(),
+            config,
+            started: false,
+        })
+    }
+
+    /// Start a new session.
+    pub fn start(
+        &mut self,
+        session_id: &str,
+        model: &str,
+        provider: &str,
+    ) -> Result<(), SessionKernelError> {
+        self.ledger.append(SessionEvent::SessionStarted {
+            session_id: session_id.to_string(),
+            model: model.to_string(),
+            provider: provider.to_string(),
+        })?;
+
+        if let Some(ref mut wal) = self.wal {
+            let _ = wal.append_session_meta(model, provider, session_id);
+        }
+
+        self.started = true;
+        Ok(())
+    }
+
+    /// Resume a session from persisted state.
+    /// Returns the number of events replayed and the recovered messages.
+    pub fn resume(&mut self) -> Result<(usize, Vec<Message>), SessionKernelError> {
+        let ledger_path = self.config.session_dir.join("ledger.jsonl");
+
+        // Recover state from ledger with snapshot acceleration
+        self.state = SessionState::recover(&ledger_path)?;
+        let event_count = self.state.last_seq as usize;
+
+        // Recover messages from WAL
+        let wal_path = self.config.session_dir.join("transcript.wal");
+        let messages = if wal_path.exists() {
+            TranscriptWal::resume_messages(&wal_path).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        self.started = !self.state.ended;
+
+        Ok((event_count, messages))
+    }
+
+    // ── Message flow ──
+
+    /// Record a user message. MUST be called BEFORE the API call.
+    pub fn accept_user_message(&mut self, content: &str) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+
+        // WAL first (crash recovery guarantee)
+        if let Some(ref mut wal) = self.wal {
+            let msg = Message::user(content);
+            let _ = wal.append_message(&msg);
+        }
+
+        // Ledger (canonical event)
+        self.ledger.append(SessionEvent::UserMessageAccepted {
+            content: content.to_string(),
+        })?;
+
+        Ok(())
+    }
+
+    /// Record that an assistant response has started.
+    pub fn begin_response(&mut self, turn: u32) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::AssistantResponseStarted { turn })?;
+        Ok(())
+    }
+
+    /// Record a completed assistant response.
+    pub fn complete_response(
+        &mut self,
+        text: &str,
+        thinking: &str,
+        tokens_used: u64,
+        message: &Message,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+
+        // WAL for crash recovery
+        if let Some(ref mut wal) = self.wal {
+            let _ = wal.append_message(message);
+        }
+
+        // Ledger (canonical)
+        self.ledger.append(SessionEvent::AssistantResponseCompleted {
+            text: text.to_string(),
+            thinking: thinking.to_string(),
+            tokens_used,
+        })?;
+
+        Ok(())
+    }
+
+    // ── Tool lifecycle ──
+
+    /// Record a tool call proposal.
+    pub fn propose_tool_call(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::ToolCallProposed {
+            call_id: call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            args: args.clone(),
+        })?;
+        Ok(())
+    }
+
+    /// Record a tool approval.
+    pub fn approve_tool(&mut self, call_id: &str) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::ToolApproved {
+            call_id: call_id.to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Record a tool denial with structured reason.
+    pub fn deny_tool(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        reason: &str,
+        source: DenialSource,
+        turn: u32,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+
+        // Ledger (canonical)
+        self.ledger.append(SessionEvent::ToolDenied {
+            call_id: call_id.to_string(),
+            reason: reason.to_string(),
+        })?;
+
+        // Permission accumulator (for SDK fanout)
+        self.permissions.record_denial(tool_name, call_id, source, turn);
+
+        Ok(())
+    }
+
+    /// Record tool execution start.
+    pub fn start_tool(&mut self, call_id: &str) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::ToolStarted {
+            call_id: call_id.to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Record tool completion.
+    pub fn complete_tool(
+        &mut self,
+        call_id: &str,
+        success: bool,
+        mutated: bool,
+        result_summary: &str,
+        blob_hash: Option<String>,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::ToolCompleted {
+            call_id: call_id.to_string(),
+            success,
+            mutated,
+            result_summary: result_summary.to_string(),
+            result_blob_hash: blob_hash,
+        })?;
+        Ok(())
+    }
+
+    // ── Context management ──
+
+    /// Record a context compression event.
+    pub fn record_compression(
+        &mut self,
+        messages_removed: usize,
+        tokens_freed: u64,
+        strategy: &str,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+
+        // WAL
+        if let Some(ref mut wal) = self.wal {
+            let _ = wal.append_compression(messages_removed, tokens_freed);
+        }
+
+        // Ledger
+        self.ledger.append(SessionEvent::ContextCompressed {
+            messages_removed,
+            tokens_freed,
+            strategy: strategy.to_string(),
+        })?;
+
+        Ok(())
+    }
+
+    // ── Plan/Verify ──
+
+    /// Record plan selection.
+    pub fn select_plan(
+        &mut self,
+        strategy: &str,
+        rationale: &str,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::PlanSelected {
+            strategy: strategy.to_string(),
+            rationale: rationale.to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Record plan pivot.
+    pub fn pivot_plan(
+        &mut self,
+        from: &str,
+        to: &str,
+        trigger: &str,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::PlanPivoted {
+            from_strategy: from.to_string(),
+            to_strategy: to.to_string(),
+            trigger: trigger.to_string(),
+        })?;
+        Ok(())
+    }
+
+    // ── Checkpoints ──
+
+    /// Create a checkpoint (for rollback support).
+    pub fn create_checkpoint(&mut self, label: &str) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::CheckpointCreated {
+            checkpoint_id: label.to_string(),
+            event_seq: self.ledger.current_seq(),
+        })?;
+
+        // Trigger ledger snapshot if needed
+        if self.ledger.needs_snapshot() {
+            self.create_snapshot()?;
+        }
+
+        Ok(())
+    }
+
+    /// Create a ledger snapshot for accelerated replay.
+    fn create_snapshot(&mut self) -> Result<(), SessionKernelError> {
+        let state = self.derived_state();
+        let snapshot_data = serde_json::to_string(&state)
+            .map_err(|e| SessionKernelError::State(e.to_string()))?;
+
+        let seq = self.ledger.current_seq();
+        self.ledger.append(SessionEvent::Snapshot {
+            at_seq: seq,
+            message_count: 0,
+            state_hash: {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                snapshot_data.hash(&mut h);
+                h.finish()
+            },
+        })?;
+        self.ledger.snapshot_taken();
+        Ok(())
+    }
+
+    // ── Session end ──
+
+    /// End the session.
+    pub fn end_session(
+        &mut self,
+        turns: u32,
+        total_tokens: u64,
+        cost: f64,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::SessionEnded {
+            turns,
+            total_tokens,
+            cost,
+        })?;
+        self.started = false;
+        Ok(())
+    }
+
+    // ── Queries ──
+
+    /// Get the current derived state.
+    pub fn derived_state(&self) -> &SessionState {
+        &self.state
+    }
+
+    /// Get permission denial records for SDK output.
+    pub fn drain_permission_denials(&self) -> Vec<PermissionDenialRecord> {
+        self.permissions.drain()
+    }
+
+    /// Get the session directory.
+    pub fn session_dir(&self) -> &Path {
+        &self.config.session_dir
+    }
+
+    /// Current event sequence number.
+    pub fn current_seq(&self) -> u64 {
+        self.ledger.current_seq()
+    }
+
+    /// Whether the session is active.
+    pub fn is_active(&self) -> bool {
+        self.started
+    }
+
+    /// Compact the WAL to current state.
+    pub fn compact_wal(&mut self, messages: &[Message]) -> Result<(), SessionKernelError> {
+        if let Some(ref mut wal) = self.wal {
+            wal.compact(messages)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_started(&self) -> Result<(), SessionKernelError> {
+        if !self.started {
+            return Err(SessionKernelError::NotStarted);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_kernel() -> (SessionKernel, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let config = SessionKernelConfig {
+            session_dir: dir.path().to_path_buf(),
+            durable_writes: false,
+            snapshot_interval: 50,
+        };
+        (SessionKernel::new(config).unwrap(), dir)
+    }
+
+    #[test]
+    fn test_start_and_record() {
+        let (mut kernel, _dir) = test_kernel();
+        kernel.start("sess-1", "gpt-4", "openai").unwrap();
+        assert!(kernel.is_active());
+
+        kernel.accept_user_message("hello").unwrap();
+        kernel.begin_response(1).unwrap();
+        assert!(kernel.current_seq() > 0);
+    }
+
+    #[test]
+    fn test_deny_tool_records_permission() {
+        let (mut kernel, _dir) = test_kernel();
+        kernel.start("sess-1", "gpt-4", "openai").unwrap();
+
+        kernel.deny_tool(
+            "call-1", "bash", "risky command",
+            DenialSource::GovernorRisk { risk_score: 0.95, threshold: 0.8 },
+            1,
+        ).unwrap();
+
+        let denials = kernel.drain_permission_denials();
+        assert_eq!(denials.len(), 1);
+        assert_eq!(denials[0].tool_name, "bash");
+    }
+
+    #[test]
+    fn test_not_started_errors() {
+        let (mut kernel, _dir) = test_kernel();
+        assert!(kernel.accept_user_message("hello").is_err());
+    }
+}

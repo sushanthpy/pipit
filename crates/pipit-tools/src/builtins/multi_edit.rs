@@ -148,6 +148,7 @@ impl Tool for MultiEditTool {
                         end: start + search.len(),
                         search: search.to_string(),
                         replace: replace.to_string(),
+                        is_fuzzy: false,
                     });
                 }
                 None => {
@@ -166,6 +167,7 @@ impl Tool for MultiEditTool {
                                 end,
                                 search: search.to_string(),
                                 replace: replace.to_string(),
+                                is_fuzzy: true,
                             });
                         }
                         None => {
@@ -184,7 +186,14 @@ impl Tool for MultiEditTool {
         // Sort by start position for overlap checking
         edit_ops.sort_by_key(|e| e.start);
         for i in 0..edit_ops.len() - 1 {
-            if edit_ops[i].end > edit_ops[i + 1].start {
+            // Add safety margin for fuzzy matches (imprecise offsets)
+            let margin = if edit_ops[i].is_fuzzy || edit_ops[i + 1].is_fuzzy {
+                // One average line length of margin (~80 chars) for fuzzy offsets
+                80
+            } else {
+                0
+            };
+            if edit_ops[i].end + margin > edit_ops[i + 1].start {
                 return Err(ToolError::ExecutionFailed(format!(
                     "Overlapping edits: edit[{}] ({}..{}) overlaps with edit[{}] ({}..{}). \
                      Split into separate multi_edit_file calls.",
@@ -248,6 +257,7 @@ struct EditOp {
     end: usize,
     search: String,
     replace: String,
+    is_fuzzy: bool,
 }
 
 /// Normalize whitespace: collapse runs of whitespace into single spaces.

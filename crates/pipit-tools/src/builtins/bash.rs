@@ -26,6 +26,10 @@ impl Tool for BashTool {
                 "timeout": {
                     "type": "integer",
                     "description": "Timeout in seconds (default: 120)"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory for this command, relative to project root (default: current cwd)"
                 }
             },
             "required": ["command"]
@@ -96,7 +100,18 @@ impl Tool for BashTool {
         //
         // Each bash call spawns a fresh subprocess, so `cd /foo` doesn't
         // persist. We intercept pure `cd` commands and update ctx.cwd.
-        let effective_cwd = ctx.current_dir();
+        let effective_cwd = if let Some(cwd_arg) = args["cwd"].as_str() {
+            let requested = ctx.project_root.join(cwd_arg);
+            let resolved = requested.canonicalize().unwrap_or(requested);
+            if !resolved.starts_with(&ctx.project_root) {
+                return Err(ToolError::PermissionDenied(
+                    "cwd is outside project root".to_string(),
+                ));
+            }
+            resolved
+        } else {
+            ctx.current_dir()
+        };
         let trimmed_cmd = command.trim();
 
         // Pure cd command: `cd /path` (no &&, ;, or |)
@@ -213,22 +228,30 @@ impl Tool for BashTool {
         let stderr = String::from_utf8_lossy(&result.stderr).to_string();
         let exit_code = result.status.code();
 
-        // Truncate long output
+        // Truncate long output — error-aware: show more tail on failure
         let max_len = 32_000;
+        let is_error = !result.status.success();
         let stdout_truncated = if stdout.len() > max_len {
             let lines: Vec<&str> = stdout.lines().collect();
             let total = lines.len();
-            let first_n = 50;
-            let last_n = 50;
-            if total > first_n + last_n {
+            // On error, prioritize tail (tracebacks, assertion failures)
+            let (head_n, tail_n) = if is_error { (20, 80) } else { (50, 50) };
+            if total > head_n + tail_n {
                 format!(
                     "{}\n\n[...truncated {} lines...]\n\n{}",
-                    lines[..first_n].join("\n"),
-                    total - first_n - last_n,
-                    lines[total - last_n..].join("\n"),
+                    lines[..head_n].join("\n"),
+                    total - head_n - tail_n,
+                    lines[total - tail_n..].join("\n"),
                 )
             } else {
-                stdout[..max_len].to_string()
+                // Safe UTF-8 truncation — don't split mid-codepoint
+                let safe_end = stdout
+                    .char_indices()
+                    .take_while(|(i, _)| *i < max_len)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                stdout[..safe_end].to_string()
             }
         } else {
             stdout.clone()

@@ -58,6 +58,8 @@ pub struct ContextManager {
     settings: ContextSettings,
     total_cost: f64,
     session_dir: Option<PathBuf>,
+    /// Optional WAL for pre-API-call transcript persistence.
+    transcript_wal: Option<crate::transcript::TranscriptWal>,
 }
 
 /// Reserve tokens for model output generation.
@@ -134,11 +136,22 @@ impl ContextManager {
             settings,
             total_cost: 0.0,
             session_dir: None,
+            transcript_wal: None,
         }
     }
 
     pub fn set_session_dir(&mut self, dir: PathBuf) {
         self.session_dir = Some(dir);
+    }
+
+    /// Enable transcript WAL for pre-API-call persistence.
+    pub fn enable_transcript(&mut self, wal: crate::transcript::TranscriptWal) {
+        self.transcript_wal = Some(wal);
+    }
+
+    /// Get a reference to the transcript WAL (if enabled).
+    pub fn transcript_wal(&self) -> Option<&crate::transcript::TranscriptWal> {
+        self.transcript_wal.as_ref()
     }
 
     pub fn update_repo_map_tokens(&mut self, tokens: u64) {
@@ -152,6 +165,12 @@ impl ContextManager {
     }
 
     pub fn push_message(&mut self, message: Message) {
+        // Flush to WAL BEFORE adding to context — ensures recovery on crash.
+        if let Some(ref mut wal) = self.transcript_wal {
+            if let Err(e) = wal.append_message(&message) {
+                tracing::warn!("WAL append failed (continuing): {}", e);
+            }
+        }
         self.messages.push(message);
     }
 
@@ -238,6 +257,55 @@ impl ContextManager {
                         } else {
                             *content = content[..target_chars].to_string();
                         }
+                        let new_tokens = estimate_text_tokens(content);
+                        freed += old_tokens.saturating_sub(new_tokens);
+                    }
+                }
+            }
+        }
+        freed
+    }
+
+    /// Evict stale tool results older than `age_threshold` messages.
+    /// Replace with a short placeholder. Returns estimated tokens freed.
+    pub fn evict_stale_tool_results(&mut self, age_threshold: usize) -> u64 {
+        let msg_count = self.messages.len();
+        if msg_count <= age_threshold {
+            return 0;
+        }
+        let cutoff = msg_count - age_threshold;
+        let mut freed = 0u64;
+        for msg in &mut self.messages[..cutoff] {
+            for block in &mut msg.content {
+                if let pipit_provider::ContentBlock::ToolResult { content, .. } = block {
+                    if content.len() > 200 {
+                        let old_tokens = estimate_text_tokens(content);
+                        *content = "[Tool result cleared — re-read file if needed]".to_string();
+                        let new_tokens = estimate_text_tokens(content);
+                        freed += old_tokens.saturating_sub(new_tokens);
+                    }
+                }
+            }
+        }
+        freed
+    }
+
+    /// Truncate individual large tool results to first N lines + summary.
+    /// Returns estimated tokens freed.
+    pub fn truncate_large_results(&mut self, max_result_chars: usize) -> u64 {
+        let mut freed = 0u64;
+        for msg in &mut self.messages {
+            for block in &mut msg.content {
+                if let pipit_provider::ContentBlock::ToolResult { content, .. } = block {
+                    if content.len() > max_result_chars {
+                        let old_tokens = estimate_text_tokens(content);
+                        let lines: Vec<&str> = content.lines().collect();
+                        let keep = lines.len().min(30);
+                        *content = format!(
+                            "{}\n[...{} more lines truncated...]",
+                            lines[..keep].join("\n"),
+                            lines.len() - keep
+                        );
                         let new_tokens = estimate_text_tokens(content);
                         freed += old_tokens.saturating_sub(new_tokens);
                     }

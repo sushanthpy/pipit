@@ -9,6 +9,7 @@
 
 use crate::agent::{AgentLoop, AgentLoopConfig};
 use crate::events::{AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler};
+use crate::permission_ledger::{PermissionDenialRecord, DenialCounts};
 use crate::pev::ModelRouter;
 use pipit_context::ContextManager;
 use pipit_context::budget::ContextSettings;
@@ -116,6 +117,19 @@ pub enum EngineEvent {
         retriable: bool,
     },
 
+    // ── Session replay (v3+) ──
+    /// A replayed historical message from a resumed session.
+    Replay {
+        message: pipit_provider::Message,
+        seq: u64,
+        is_last: bool,
+    },
+    /// Context compression boundary — SDK consumers can prune local stores.
+    CompactBoundary {
+        preserved_count: usize,
+        freed_tokens: u64,
+    },
+
     // ── Termination ──
     /// The engine has finished processing the message.
     Done {
@@ -130,9 +144,25 @@ pub enum EngineOutcome {
         turns: u32,
         total_tokens: u64,
         cost: f64,
+        /// Permission denials accumulated during the session (v3+).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        permission_denials: Vec<PermissionDenialRecord>,
+        /// Budget state at session end (v3+).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_summary: Option<BudgetSummary>,
     },
     MaxTurnsReached(u32),
     Error(String),
+}
+
+/// Summary of token/cost budget consumption at session end.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct BudgetSummary {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cost_usd: f64,
+    pub budget_fraction_used: f64,
+    pub continuation_count: u32,
 }
 
 /// Configuration for the SDK engine.
@@ -326,6 +356,8 @@ impl PipitEngine {
                 turns,
                 total_tokens,
                 cost,
+                permission_denials: Vec::new(),
+                budget_summary: None,
             },
             AgentOutcome::MaxTurnsReached(turns) => EngineOutcome::MaxTurnsReached(turns),
             AgentOutcome::Error(msg) => EngineOutcome::Error(msg),
@@ -337,6 +369,27 @@ impl PipitEngine {
         });
 
         (events, engine_outcome)
+    }
+
+    /// Resume a session from a WAL file, replaying historical messages as events.
+    ///
+    /// Returns `(replay_events, messages_restored)`. After calling this,
+    /// use `submit()` to continue the session with a new user message.
+    pub fn resume(
+        &mut self,
+        wal_path: std::path::PathBuf,
+    ) -> Result<(Vec<EngineEvent>, usize), String> {
+        let (messages, events) = crate::replay::replay_session(&wal_path)
+            .map_err(|e| format!("WAL replay failed: {}", e))?;
+
+        let count = messages.len();
+
+        // Inject replayed messages into the agent's context
+        for msg in messages {
+            self.agent.inject_message(msg);
+        }
+
+        Ok((events, count))
     }
 
     /// Submit a message and return a stream of events.
@@ -383,6 +436,8 @@ impl PipitEngine {
                 turns: 0,
                 total_tokens: 0,
                 cost: 0.0,
+                permission_denials: Vec::new(),
+                budget_summary: None,
             }
         });
 

@@ -505,6 +505,29 @@ impl Stream for OpenAiEventStream {
             match this.byte_stream.as_mut().poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(bytes))) => { this.buffer.extend_from_slice(&bytes); }
                 std::task::Poll::Ready(Some(Err(e))) => {
+                    // Drain any buffered data before reporting error
+                    if !this.buffer.is_empty() {
+                        let remaining = std::mem::take(this.buffer);
+                        let block = String::from_utf8_lossy(&remaining);
+                        for line in block.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                let data = data.trim();
+                                if !data.is_empty() {
+                                    let events = this.parser.process_chunk(data);
+                                    for ev in events {
+                                        this.pending_events.push_back(ev);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // If we extracted events from the buffer, return them before erroring
+                    if let Some(event) = this.pending_events.pop_front() {
+                        if matches!(&event, ContentEvent::Finished { .. }) {
+                            *this.finished = true;
+                        }
+                        return std::task::Poll::Ready(Some(Ok(event)));
+                    }
                     *this.finished = true;
                     return std::task::Poll::Ready(Some(Err(ProviderError::Network(e.to_string()))));
                 }

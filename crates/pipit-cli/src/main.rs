@@ -627,7 +627,19 @@ async fn main() -> Result<()> {
                 if let Some(planning_state) = agent.planning_state() {
                     persistence::persist_planning_snapshot(&project_root, &planning_state, None).ok();
                 }
+                // Capture work-in-progress git diff before exiting
+                let wip_diff = std::process::Command::new("git")
+                    .args(["diff", "--stat"])
+                    .current_dir(&project_root)
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .filter(|s| !s.trim().is_empty());
+
                 eprintln!("\n\x1b[31mError: {}\x1b[0m", e);
+                if let Some(diff) = &wip_diff {
+                    eprintln!("\n\x1b[2mWork-in-progress diff:\n{}\x1b[0m", diff);
+                }
                 std::process::exit(1);
             }
             _ => {
@@ -2090,7 +2102,19 @@ fn handle_agent_outcome(
             if let Some(planning_state) = agent.planning_state() {
                 persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
+            // Show work-in-progress diff on error
+            let wip_diff = std::process::Command::new("git")
+                .args(["diff", "--stat"])
+                .current_dir(project_root)
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .filter(|s| !s.trim().is_empty());
+
             eprintln!("\x1b[31mError: {}\x1b[0m", e);
+            if let Some(diff) = &wip_diff {
+                eprintln!("\x1b[2mWork-in-progress diff:\n{}\x1b[0m", diff);
+            }
             None
         }
     }

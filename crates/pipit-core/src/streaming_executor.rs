@@ -109,8 +109,8 @@ impl StreamingToolExecutor {
             return;
         };
 
-        if tool.is_mutating() {
-            // Queue writes for sequential execution after streaming
+        if !tool.is_concurrency_safe(&call.args) {
+            // Queue writes/mutating tools for sequential execution after streaming
             self.pending_writes.push(call);
         } else {
             // Start read tools immediately
