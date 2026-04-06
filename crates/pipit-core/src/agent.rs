@@ -476,6 +476,16 @@ impl AgentLoop {
         self.emit(AgentEvent::TurnStart { turn_number: 0 });
 
         let mut turn = 0u32;
+        /// How many bonus turns to grant when the agent has recent forward progress.
+        const GRACE_TURNS: u32 = 3;
+        /// How many turns before the limit to inject a wind-down warning.
+        const WINDDOWN_WARNING_TURNS: u32 = 3;
+        /// Track the last turn that produced a file mutation (forward progress).
+        let mut last_mutation_turn: u32 = 0;
+        /// Whether we're in the grace period (past max_turns but still active).
+        let mut in_grace_period = false;
+        /// Whether the wind-down warning has already been injected.
+        let mut winddown_warned = false;
 
         // ═══════════════════════════════════════════════════════
         // THE LOOP: LLM → tool calls → LLM → tool calls → done
@@ -507,9 +517,16 @@ impl AgentLoop {
                 }
             }
 
-            // Check turn limit
+            // ── Smart turn limit with grace period ──
+            // Instead of hard-stopping at max_turns, we:
+            // 1. Warn the model WINDDOWN_WARNING_TURNS before the limit
+            // 2. At the limit: if recent forward progress, grant GRACE_TURNS to wrap up
+            // 3. Hard-stop at max_turns + GRACE_TURNS regardless
             turn += 1;
-            if turn > self.config.max_turns {
+            let hard_limit = self.config.max_turns + GRACE_TURNS;
+
+            if turn > hard_limit {
+                // Hard cap — no more extensions
                 let usage = self.context.token_usage();
                 self.emit(AgentEvent::TokenUsageUpdate {
                     used: usage.total,
@@ -517,6 +534,56 @@ impl AgentLoop {
                     cost: usage.cost,
                 });
                 return AgentOutcome::MaxTurnsReached(turn);
+            }
+
+            if turn > self.config.max_turns && !in_grace_period {
+                // Check if the agent had recent forward progress (mutation in last 3 turns)
+                let recent_progress = last_mutation_turn > 0
+                    && (turn - last_mutation_turn) <= WINDDOWN_WARNING_TURNS;
+
+                if recent_progress {
+                    // Grant grace period — agent is actively making edits
+                    in_grace_period = true;
+                    self.context.push_message(Message::user(
+                        "[SYSTEM] You have reached the turn limit, but you have been making progress. \
+                         You have been granted a few extra turns to wrap up. \
+                         IMPORTANT: Finish your current task NOW. Do not start new work. \
+                         Complete any in-progress edits, run a final verification if needed, \
+                         and then stop."
+                    ));
+                    self.emit(AgentEvent::Waiting {
+                        label: format!("Grace period — {} bonus turns to finish", GRACE_TURNS),
+                    });
+                    tracing::info!(
+                        turn, last_mutation_turn,
+                        "Smart turn limit: granting grace period ({} bonus turns)",
+                        GRACE_TURNS
+                    );
+                } else {
+                    // No recent progress — hard stop
+                    let usage = self.context.token_usage();
+                    self.emit(AgentEvent::TokenUsageUpdate {
+                        used: usage.total,
+                        limit: usage.limit,
+                        cost: usage.cost,
+                    });
+                    return AgentOutcome::MaxTurnsReached(turn);
+                }
+            }
+
+            // Wind-down warning: inject a gentle nudge a few turns before the limit
+            if !winddown_warned
+                && !in_grace_period
+                && self.config.max_turns > WINDDOWN_WARNING_TURNS
+                && turn == self.config.max_turns - WINDDOWN_WARNING_TURNS + 1
+            {
+                winddown_warned = true;
+                self.context.push_message(Message::user(&format!(
+                    "[SYSTEM] You have {} turns remaining before the limit. \
+                     Start wrapping up: finish current edits, verify your changes, \
+                     and prepare to conclude.",
+                    self.config.max_turns - turn
+                )));
             }
 
             self.emit(AgentEvent::TurnStart { turn_number: turn });
@@ -763,6 +830,7 @@ impl AgentLoop {
                     if had_mutation_success {
                         self.loop_detector.reset();
                         self.consecutive_loop_hits = 0;
+                        last_mutation_turn = turn;
                     }
 
                     // Check for loops
