@@ -330,10 +330,13 @@ impl Widget for &StatusBar<'_> {
             self.cost,
         );
 
-        // Calculate padding
+        // Calculate padding (saturating to prevent overflow on narrow terminals)
         let left_width: usize = spans.iter().map(|s| s.content.len()).sum();
-        let padding = area.width as usize - left_width.min(area.width as usize) - right.len().min(area.width as usize);
-        spans.push(Span::raw(" ".repeat(padding)));
+        let total_used = left_width.saturating_add(right.len());
+        let padding = (area.width as usize).saturating_sub(total_used);
+        if padding > 0 {
+            spans.push(Span::raw(" ".repeat(padding)));
+        }
         spans.push(Span::styled(right, Style::default().fg(if no_color { Color::Reset } else { Color::DarkGray })));
 
         let bg = if no_color { Style::default() } else { Style::default().bg(Color::DarkGray) };

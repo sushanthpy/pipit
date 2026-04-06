@@ -36,7 +36,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
 use std::io;
@@ -221,11 +221,33 @@ impl TuiState {
 
     /// Finish working — commit the streaming text to the content pane.
     /// Applies bounded eviction to prevent memory bloat.
+    /// Pre-wraps long lines so they fit within notebook cell borders.
     pub fn finish_working(&mut self) {
         if !self.streaming_text.is_empty() {
-            let new_lines: Vec<String> = self.streaming_text.lines()
-                .map(|l| l.to_string())
-                .collect();
+            // Pre-wrap lines that are too long for the cell.
+            // Use 100 chars as the soft wrap limit — this ensures text
+            // stays inside the notebook cell borders.
+            const WRAP_WIDTH: usize = 100;
+            let mut new_lines: Vec<String> = Vec::new();
+            for raw_line in self.streaming_text.lines() {
+                if raw_line.len() <= WRAP_WIDTH || raw_line.starts_with("```") || raw_line.starts_with("══") {
+                    new_lines.push(raw_line.to_string());
+                } else {
+                    // Word-wrap at WRAP_WIDTH
+                    let mut remaining = raw_line;
+                    while remaining.len() > WRAP_WIDTH {
+                        // Find last space before WRAP_WIDTH
+                        let break_at = remaining[..WRAP_WIDTH]
+                            .rfind(' ')
+                            .unwrap_or(WRAP_WIDTH);
+                        new_lines.push(remaining[..break_at].to_string());
+                        remaining = remaining[break_at..].trim_start();
+                    }
+                    if !remaining.is_empty() {
+                        new_lines.push(remaining.to_string());
+                    }
+                }
+            }
             self.total_content_produced += new_lines.len() as u64;
             self.content_lines.extend(new_lines);
             self.streaming_text.clear();
@@ -940,7 +962,7 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(Color::DarkGray),
         ));
 
-    let paragraph = Paragraph::new(visible).block(block).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(visible).block(block);
     frame.render_widget(paragraph, area);
 }
 
