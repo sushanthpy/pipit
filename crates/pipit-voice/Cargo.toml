@@ -11,3 +11,4 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+cpal = "0.15"

@@ -1,6 +1,7 @@
 mod types;
 pub mod credentials;
 pub mod feature_flags;
+pub mod model_routing;
 
 pub use types::*;
 pub use credentials::{

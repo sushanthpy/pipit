@@ -254,6 +254,123 @@ pub struct ProfileSummary {
     pub budget_violations: Vec<String>,
 }
 
+// ─── Closed-Loop Telemetry Controller ──────────────────────────────────
+
+/// Control signals produced by the telemetry controller.
+/// These feed back into planner depth, compaction thresholds, and model routing.
+#[derive(Debug, Clone, Default)]
+pub struct ControlSignals {
+    /// If true, the runtime should prefer shorter plans (fewer tool calls).
+    pub reduce_plan_depth: bool,
+    /// If true, trigger proactive compaction even if budget isn't exceeded.
+    pub trigger_compaction: bool,
+    /// If true, context pressure is high — evict stale results.
+    pub evict_stale_results: bool,
+    /// Recommended tool timeout override (None = use default).
+    pub tool_timeout_override_secs: Option<u64>,
+    /// If true, skip verification to save latency.
+    pub skip_verification: bool,
+    /// EMA of tool amplification ratio (tools per turn).
+    pub tool_amplification_ema: f64,
+}
+
+/// Closed-loop telemetry controller — converts observations into control signals.
+///
+/// Maintains EMA (Exponential Moving Average) estimates for key metrics and
+/// produces threshold-based control decisions. O(1) per turn.
+pub struct TelemetryController {
+    /// EMA of time-to-first-token (ms).
+    ttft_ema_ms: f64,
+    /// EMA of total turn latency (ms).
+    turn_latency_ema_ms: f64,
+    /// EMA of tool calls per turn.
+    tools_per_turn_ema: f64,
+    /// EMA smoothing factor (0-1, higher = more responsive).
+    alpha: f64,
+    /// TTFT threshold for triggering compaction (ms).
+    ttft_compaction_threshold_ms: f64,
+    /// Turn latency threshold for reducing plan depth (ms).
+    turn_latency_threshold_ms: f64,
+    /// Tool amplification threshold for warning.
+    tool_amplification_threshold: f64,
+    /// Number of observations recorded.
+    observation_count: u64,
+}
+
+impl TelemetryController {
+    pub fn new() -> Self {
+        Self {
+            ttft_ema_ms: 0.0,
+            turn_latency_ema_ms: 0.0,
+            tools_per_turn_ema: 0.0,
+            alpha: 0.3, // 30% weight to new observation
+            ttft_compaction_threshold_ms: 5000.0,
+            turn_latency_threshold_ms: 30000.0,
+            tool_amplification_threshold: 5.0,
+            observation_count: 0,
+        }
+    }
+
+    /// Record observations from a completed turn. O(1).
+    pub fn observe_turn(
+        &mut self,
+        ttft_ms: Option<u64>,
+        turn_latency_ms: u64,
+        tool_calls: u32,
+    ) {
+        self.observation_count += 1;
+
+        if let Some(ttft) = ttft_ms {
+            let ttft_f = ttft as f64;
+            if self.observation_count == 1 {
+                self.ttft_ema_ms = ttft_f;
+            } else {
+                self.ttft_ema_ms = self.alpha * ttft_f + (1.0 - self.alpha) * self.ttft_ema_ms;
+            }
+        }
+
+        let latency_f = turn_latency_ms as f64;
+        if self.observation_count == 1 {
+            self.turn_latency_ema_ms = latency_f;
+            self.tools_per_turn_ema = tool_calls as f64;
+        } else {
+            self.turn_latency_ema_ms = self.alpha * latency_f + (1.0 - self.alpha) * self.turn_latency_ema_ms;
+            self.tools_per_turn_ema = self.alpha * (tool_calls as f64) + (1.0 - self.alpha) * self.tools_per_turn_ema;
+        }
+    }
+
+    /// Produce control signals based on accumulated observations.
+    /// Threshold-based initially; can be upgraded to bandit/MPC later.
+    pub fn control_signals(&self) -> ControlSignals {
+        if self.observation_count < 2 {
+            return ControlSignals::default();
+        }
+
+        ControlSignals {
+            reduce_plan_depth: self.turn_latency_ema_ms > self.turn_latency_threshold_ms,
+            trigger_compaction: self.ttft_ema_ms > self.ttft_compaction_threshold_ms,
+            evict_stale_results: self.ttft_ema_ms > self.ttft_compaction_threshold_ms * 0.8,
+            tool_timeout_override_secs: if self.turn_latency_ema_ms > self.turn_latency_threshold_ms {
+                Some(60) // Reduce timeout under pressure
+            } else {
+                None
+            },
+            skip_verification: false, // Never skip verification automatically
+            tool_amplification_ema: self.tools_per_turn_ema,
+        }
+    }
+
+    /// Current TTFT EMA estimate.
+    pub fn ttft_ema_ms(&self) -> f64 {
+        self.ttft_ema_ms
+    }
+
+    /// Current turn latency EMA estimate.
+    pub fn turn_latency_ema_ms(&self) -> f64 {
+        self.turn_latency_ema_ms
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

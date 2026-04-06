@@ -391,28 +391,19 @@ impl AgentPool {
         };
 
         // 9. Construct AgentLoop with policy-bounded approval handler.
-        //    The daemon approval handler auto-approves within the capability
-        //    grant but denies anything outside. This replaces the unconditional
-        //    AutoApproveHandler that previously made daemon mode omnipotent.
+        //    Project-level constraints (protected paths, network block, write limits)
+        //    are injected into the centralized PolicyKernel — not duplicated in the
+        //    approval handler. The DaemonApprovalHandler auto-approves because all
+        //    policy enforcement is now in the single PolicyKernel oracle.
         let extensions: Arc<dyn pipit_extensions::ExtensionRunner> =
             Arc::new(pipit_extensions::NoopExtensionRunner);
-        let approval_handler: Arc<dyn pipit_core::ApprovalHandler> = if approval_mode == ApprovalMode::FullAuto {
-            // Even in FullAuto, use the policy-bounded handler so that
-            // protected paths and capability restrictions are enforced.
+        let approval_handler: Arc<dyn pipit_core::ApprovalHandler> =
             Arc::new(DaemonApprovalHandler::new(
                 approval_mode,
-                protected_paths,
+                protected_paths.clone(),
                 block_network,
                 max_write_bytes,
-            ))
-        } else {
-            Arc::new(DaemonApprovalHandler::new(
-                approval_mode,
-                protected_paths,
-                block_network,
-                max_write_bytes,
-            ))
-        };
+            ));
 
         let (mut agent_loop, _event_rx, _steering_tx) = pipit_core::AgentLoop::new(
             models,
@@ -424,7 +415,37 @@ impl AgentPool {
             project_root.clone(),
         );
 
-        // 10. Execute the agent
+        // 10a. Create SessionKernel for unified journal (same format as CLI)
+        let session_dir = project_root.join(".pipit").join("sessions").join(&task.task_id);
+        if let Ok(mut kernel) = pipit_core::session_kernel::SessionKernel::new(
+            pipit_core::session_kernel::SessionKernelConfig {
+                session_dir,
+                durable_writes: true,
+                snapshot_interval: 50,
+            },
+        ) {
+            let model_id = model_name.clone();
+            let provider_id = provider_name.clone();
+            let _ = kernel.start(&task.task_id, &model_id, &provider_id);
+            agent_loop.enable_session_kernel(kernel);
+            tracing::info!(task_id = %task.task_id, "Session kernel enabled for daemon task");
+        }
+
+        // 10b. Inject project-level constraints into the centralized PolicyKernel.
+        //      Previously these lived in DaemonApprovalHandler as parallel logic;
+        //      now the kernel is the single authorization oracle for both CLI and daemon.
+        {
+            let pk = agent_loop.policy_kernel_mut();
+            pk.add_path_deny_patterns(&protected_paths);
+            if block_network {
+                pk.block_network_tools();
+            }
+            if max_write_bytes > 0 {
+                pk.set_max_write_bytes(max_write_bytes);
+            }
+        }
+
+        // 11. Execute the agent
         let core_outcome = agent_loop.run(task.prompt.clone(), cancel).await;
 
         // 11. Serialize context for checkpoint

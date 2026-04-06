@@ -63,7 +63,7 @@ pub mod deliberation;
 pub mod triage;
 pub mod service_graph;
 
-pub use agent::{AgentLoop, AgentLoopConfig, PlanningState};
+pub use agent::{AgentLoop, AgentLoopConfig, PlanningState, ProofState};
 pub use events::{
     AgentEvent, TurnEndReason, ToolCallOutcome, AgentOutcome,
     ApprovalDecision, ApprovalHandler, AutoApproveHandler, DenyAllApprovalHandler,

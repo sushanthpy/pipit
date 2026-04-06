@@ -1,6 +1,7 @@
 pub mod budget;
 pub mod budget_tracker;
 pub mod cache;
+pub mod cache_optimizer;
 pub mod compaction;
 pub mod content_replacement;
 pub mod prompt_ir;

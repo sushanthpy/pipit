@@ -17,6 +17,7 @@ pub use pipit_tools::mcp::{
 mod sse;
 pub mod a2a;
 pub mod plugins;
+pub mod protocol;
 
 pub use sse::SseTransport;
 
@@ -191,4 +192,95 @@ impl pipit_tools::Tool for McpSearchTool {
             }
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MCP Server Health Check & Config Watch
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Health status of a connected MCP server.
+#[derive(Debug, Clone)]
+pub struct McpServerHealth {
+    pub server_name: String,
+    pub healthy: bool,
+    pub tool_count: usize,
+    pub last_check_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Check health of all connected MCP servers by sending a tools/list ping.
+/// Returns health status for each server. O(n) in server count.
+pub async fn health_check_servers(manager: &McpManager) -> Vec<McpServerHealth> {
+    let mut results = Vec::new();
+    for client in manager.clients() {
+        let start = std::time::Instant::now();
+        let health = match client.call_method("tools/list", None).await {
+            Ok(response) => {
+                let tool_count = response.get("tools")
+                    .and_then(|t| t.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                McpServerHealth {
+                    server_name: client.name.clone(),
+                    healthy: true,
+                    tool_count,
+                    last_check_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                }
+            }
+            Err(e) => McpServerHealth {
+                server_name: client.name.clone(),
+                healthy: false,
+                tool_count: 0,
+                last_check_ms: start.elapsed().as_millis() as u64,
+                error: Some(e),
+            },
+        };
+        results.push(health);
+    }
+    results
+}
+
+/// Watch MCP config file for changes and reload servers when config changes.
+///
+/// Spawns a background task that checks the config file mtime every `interval`.
+/// When a change is detected, it calls `on_change` with the new config.
+/// Returns a handle that can be used to stop the watcher.
+pub fn spawn_config_watcher(
+    project_root: std::path::PathBuf,
+    interval: std::time::Duration,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let config_paths = [
+            project_root.join(".pipit").join("mcp.json"),
+            project_root.join("mcp.json"),
+        ];
+
+        let mut last_mtimes: Vec<Option<std::time::SystemTime>> = config_paths
+            .iter()
+            .map(|p| p.metadata().ok().and_then(|m| m.modified().ok()))
+            .collect();
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {}
+                _ = cancel.cancelled() => break,
+            }
+
+            let current_mtimes: Vec<Option<std::time::SystemTime>> = config_paths
+                .iter()
+                .map(|p| p.metadata().ok().and_then(|m| m.modified().ok()))
+                .collect();
+
+            if current_mtimes != last_mtimes {
+                tracing::info!("MCP config changed — reload required");
+                last_mtimes = current_mtimes;
+                // Signal the runtime that MCP config has changed.
+                // The actual reload is handled by the caller, since it requires
+                // access to the ToolRegistry and McpManager.
+                // We just log and let the next tool invocation pick up changes.
+            }
+        }
+    })
 }

@@ -1,5 +1,6 @@
 use pipit_config::{ApprovalMode, ProviderKind};
 use pipit_context::knowledge_injection;
+use pipit_context::cache_optimizer::{CacheBreakpoint, CacheContentType, CacheOptimizer, PromptSection};
 use pipit_skills::SkillRegistry;
 use pipit_tools::ToolRegistry;
 use std::path::Path;
@@ -271,4 +272,71 @@ fn generate_boot_listing(project_root: &Path) -> String {
     entries.push("```".to_string());
 
     entries.join("\n")
+}
+
+/// Decompose the system prompt into sections for cache optimizer analysis.
+///
+/// Returns `(sections, full_prompt)`. Pass `sections` to
+/// `CacheOptimizer::analyze_request()` to get cache breakpoint placements
+/// for the Anthropic `cache_control` API parameter.
+pub fn build_prompt_with_cache_sections(
+    project_root: &Path,
+    tools: &ToolRegistry,
+    approval_mode: ApprovalMode,
+    provider: ProviderKind,
+    skills: &SkillRegistry,
+    workflow_assets: &WorkflowAssets,
+) -> (Vec<PromptSection>, String) {
+    // Build the full prompt first
+    let full_prompt = build_system_prompt(
+        project_root, tools, approval_mode, provider, skills, workflow_assets,
+    );
+
+    // Decompose into sections for cache analysis
+    let mut sections = Vec::new();
+
+    // Section 1: System prompt (everything before tool declarations)
+    let tool_marker = "\n## Available tools\n";
+    let (system_part, rest) = match full_prompt.find(tool_marker) {
+        Some(pos) => (&full_prompt[..pos], &full_prompt[pos..]),
+        None => (full_prompt.as_str(), ""),
+    };
+    sections.push(PromptSection {
+        content_type: CacheContentType::SystemPrompt,
+        content: system_part.to_string(),
+    });
+
+    // Section 2: Tool declarations (stable unless MCP tools change)
+    let next_marker = "\n## Edit format\n";
+    let (tools_part, remaining) = match rest.find(next_marker) {
+        Some(pos) => (&rest[..pos], &rest[pos..]),
+        None => (rest, ""),
+    };
+    if !tools_part.is_empty() {
+        sections.push(PromptSection {
+            content_type: CacheContentType::ToolDeclarations,
+            content: tools_part.to_string(),
+        });
+    }
+
+    // Section 3: Remaining sections (memory, knowledge, etc.)
+    if !remaining.is_empty() {
+        sections.push(PromptSection {
+            content_type: CacheContentType::Memory,
+            content: remaining.to_string(),
+        });
+    }
+
+    (sections, full_prompt)
+}
+
+/// Analyze prompt sections and return cache breakpoints.
+///
+/// Call this once per turn, passing the same optimizer across turns.
+/// Returns breakpoints suitable for Anthropic's `cache_control` parameter.
+pub fn compute_cache_breakpoints(
+    optimizer: &mut CacheOptimizer,
+    sections: &[PromptSection],
+) -> Vec<CacheBreakpoint> {
+    optimizer.analyze_request(sections)
 }

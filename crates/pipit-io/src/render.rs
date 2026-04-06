@@ -1,5 +1,17 @@
 /// Streaming markdown renderer — converts incremental text deltas
 /// into rendered terminal output.
+///
+/// Uses syntect for syntax-highlighted code blocks when a language is specified.
+
+use once_cell::sync::Lazy;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+
 pub struct StreamingMarkdownRenderer {
     buffer: String,
     in_code_block: bool,
@@ -133,8 +145,13 @@ impl RenderedLine {
                 let lang = language.as_deref().unwrap_or("");
                 format!("\x1b[2m┌─ {}\x1b[0m", lang)
             }
-            RenderedLine::Code { text, .. } => {
-                format!("\x1b[33m│ {}\x1b[0m", text)
+            RenderedLine::Code { text, language } => {
+                // Syntax-highlight using syntect if language is known
+                if let Some(highlighted) = highlight_code_line(text, language.as_deref()) {
+                    format!("│ {}\x1b[0m", highlighted)
+                } else {
+                    format!("\x1b[33m│ {}\x1b[0m", text)
+                }
             }
             RenderedLine::CodeBlockEnd => "\x1b[2m└────\x1b[0m".to_string(),
             RenderedLine::ListItem { text } => format!("  • {}", text),
@@ -144,6 +161,22 @@ impl RenderedLine {
             RenderedLine::Empty => String::new(),
         }
     }
+}
+
+/// Syntax-highlight a single line of code using syntect.
+/// Returns ANSI-escaped string, or None if language is unknown.
+fn highlight_code_line(text: &str, language: Option<&str>) -> Option<String> {
+    let lang = language?;
+    let syntax = SYNTAX_SET
+        .find_syntax_by_token(lang)
+        .or_else(|| SYNTAX_SET.find_syntax_by_extension(lang))?;
+    let theme = &THEME_SET.themes["base16-ocean.dark"];
+    let mut h = HighlightLines::new(syntax, theme);
+    let line_with_newline = format!("{}\n", text);
+    let ranges = h.highlight_line(&line_with_newline, &SYNTAX_SET).ok()?;
+    let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+    // Strip trailing newline from the escaped output
+    Some(escaped.trim_end_matches('\n').to_string())
 }
 
 /// Simple inline formatting: **bold**, *italic*, `code`

@@ -1,0 +1,36 @@
+
+<svg viewBox="0 0 1700 300" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .b{fill:#f8fafc;stroke:#334155;stroke-width:2;rx:14;ry:14}
+    .o{fill:#fff7ed;stroke:#c2410c;stroke-width:2;rx:14;ry:14}
+    .g{fill:#ecfeff;stroke:#0f766e;stroke-width:2;rx:14;ry:14}
+    .r{fill:#fef2f2;stroke:#b91c1c;stroke-width:2;rx:14;ry:14}
+    .t{font:14px sans-serif;fill:#0f172a}
+    .h{font:16px sans-serif;font-weight:700;fill:#0f172a}
+    .a{stroke:#475569;stroke-width:2;fill:none;marker-end:url(#m2)}
+  </style>
+  <defs>
+    <marker id="m2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect class="b" x="20" y="100" width="110" height="60"/><text class="h" x="36" y="128">RECEIVED</text>
+  <rect class="b" x="160" y="100" width="140" height="60"/><text class="h" x="185" y="128">NORMALIZED</text>
+  <rect class="b" x="330" y="100" width="145" height="60"/><text class="h" x="365" y="128">SKILL_READY</text>
+  <rect class="o" x="505" y="100" width="150" height="60"/><text class="h" x="540" y="128">POLICY_CHECK</text>
+  <rect class="o" x="685" y="100" width="165" height="60"/><text class="h" x="710" y="128">PENDING_APPROVAL</text>
+  <rect class="g" x="880" y="100" width="165" height="60"/><text class="h" x="915" y="128">READY_TO_EXECUTE</text>
+  <rect class="g" x="1075" y="100" width="120" height="60"/><text class="h" x="1098" y="128">EXECUTING</text>
+  <rect class="g" x="1225" y="100" width="120" height="60"/><text class="h" x="1244" y="128">VERIFYING</text>
+  <rect class="g" x="1375" y="100" width="120" height="60"/><text class="h" x="1398" y="128">CLOSED</text>
+  <rect class="r" x="1525" y="100" width="120" height="60"/><text class="h" x="1555" y="128">DENIED</text>
+  <path class="a" d="M130 130 H160"/>
+  <path class="a" d="M300 130 H330"/>
+  <path class="a" d="M475 130 H505"/>
+  <path class="a" d="M655 130 H685"/>
+  <path class="a" d="M850 130 H880"/>
+  <path class="a" d="M1045 130 H1075"/>
+  <path class="a" d="M1195 130 H1225"/>
+  <path class="a" d="M1345 130 H1375"/>
+  <path class="a" d="M580 160 V220 H1585 V160"/>
+</svg>

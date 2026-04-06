@@ -1,5 +1,6 @@
 mod auth;
 mod persistence;
+mod persistence_v2;
 mod prompt_builder;
 mod setup;
 mod tui;
@@ -455,6 +456,9 @@ async fn main() -> Result<()> {
 
     // Initialize MCP servers (if configured)
     let _mcp_manager = pipit_mcp::initialize_mcp(&project_root, &mut tools).await;
+
+    // Register browser tools (CDP-backed)
+    pipit_browser::extension_bridge::register_browser_tools(&mut tools);
 
     let workflow_assets = WorkflowAssets::discover(&project_root);
 

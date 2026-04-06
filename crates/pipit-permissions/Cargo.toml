@@ -1,0 +1,22 @@
+
+[package]
+name = "pipit-permissions"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+globset = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+sha2 = { workspace = true }
+pipit-config = { path = "../pipit-config" }
+pipit-provider = { path = "../pipit-provider" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+

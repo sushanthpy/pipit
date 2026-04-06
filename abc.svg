@@ -1,0 +1,52 @@
+<svg viewBox="0 0 1200 360" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .b{fill:#f8fafc;stroke:#334155;stroke-width:2;rx:14;ry:14}
+    .t{font:16px sans-serif;fill:#0f172a}
+    .h{font:18px sans-serif;font-weight:700;fill:#0f172a}
+    .a{stroke:#475569;stroke-width:2;fill:none;marker-end:url(#m)}
+    .d{fill:#fff7ed;stroke:#c2410c;stroke-width:2}
+    .ok{fill:#ecfeff;stroke:#0f766e;stroke-width:2}
+  </style>
+  <defs>
+    <marker id="m" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect class="b" x="20" y="120" width="150" height="80"/>
+  <text class="h" x="55" y="150">User Input</text>
+  <text class="t" x="38" y="175">question / request</text>
+
+  <rect class="b" x="220" y="120" width="170" height="80"/>
+  <text class="h" x="258" y="150">Normalize</text>
+  <text class="t" x="235" y="175">intent, entities, scope</text>
+
+  <rect class="b" x="440" y="120" width="160" height="80"/>
+  <text class="h" x="488" y="150">Skill</text>
+  <text class="t" x="461" y="175">select domain logic</text>
+
+  <rect class="d" x="650" y="105" width="180" height="110"/>
+  <text class="h" x="683" y="140">Policy + Risk</text>
+  <text class="t" x="673" y="165">read vs write</text>
+  <text class="t" x="673" y="187">PII / region / role</text>
+
+  <rect class="d" x="880" y="105" width="180" height="110"/>
+  <text class="h" x="905" y="140">Approval Gate</text>
+  <text class="t" x="905" y="165">none / manager / HRBP</text>
+  <text class="t" x="911" y="187">dual control / deny</text>
+
+  <rect class="ok" x="1090" y="120" width="90" height="80"/>
+  <text class="h" x="1105" y="150">Execute</text>
+  <text class="t" x="1108" y="175">tool call</text>
+
+  <path class="a" d="M170 160 H220"/>
+  <path class="a" d="M390 160 H440"/>
+  <path class="a" d="M600 160 H650"/>
+  <path class="a" d="M830 160 H880"/>
+  <path class="a" d="M1060 160 H1090"/>
+
+  <rect class="b" x="900" y="260" width="180" height="70"/>
+  <text class="h" x="944" y="290">Audit Log</text>
+  <text class="t" x="923" y="312">decision + evidence</text>
+  <path class="a" d="M970 215 V260"/>
+  <path class="a" d="M1135 200 V260 H1080"/>
+</svg>

@@ -3,6 +3,8 @@ use crate::capability::{PolicyKernel, CapabilityRequest, CapabilitySet, PolicyDe
 use crate::governor::{Governor, RiskReport};
 use crate::ledger::{SessionLedger, SessionEvent};
 use crate::loop_detector::LoopDetector;
+use crate::session_kernel::{SessionKernel, SessionKernelConfig};
+use crate::turn_kernel::{TurnKernel, TurnInput, TurnOutput, TurnPhase};
 use crate::telemetry_facade::{TelemetryFacade, SpanStatus, SpanValue};
 use crate::pev::{ModelRouter, PevConfig};
 use crate::planner::{CandidatePlan, Planner, PlanStrategy, VerifyStrategy};
@@ -64,6 +66,85 @@ impl Default for AgentLoopConfig {
     }
 }
 
+/// Evolving proof state — updated incrementally on every mutation.
+/// Proof is the runtime state of justified action, not just a terminal artifact.
+#[derive(Debug, Clone)]
+pub struct ProofState {
+    pub objective: Objective,
+    pub claim: ChangeClaim,
+    pub evidence: Vec<EvidenceArtifact>,
+    pub realized_edits: Vec<RealizedEdit>,
+    pub risk: RiskReport,
+    pub plan_pivots: Vec<PlanPivot>,
+    pub selected_plan: CandidatePlan,
+    pub candidate_plans: Vec<CandidatePlan>,
+}
+
+impl ProofState {
+    fn new(objective: Objective, selected_plan: CandidatePlan, candidate_plans: Vec<CandidatePlan>) -> Self {
+        let claim = ChangeClaim::from_objective(objective.clone());
+        Self {
+            objective,
+            claim,
+            evidence: Vec::new(),
+            realized_edits: Vec::new(),
+            risk: RiskReport::default(),
+            plan_pivots: Vec::new(),
+            selected_plan,
+            candidate_plans,
+        }
+    }
+
+    /// Record a tool execution into the proof state (O(1) append).
+    fn record_tool_evidence(&mut self, artifact: EvidenceArtifact) {
+        self.evidence.push(artifact);
+    }
+
+    /// Record a realized edit (O(1) append).
+    fn record_edit(&mut self, edit: RealizedEdit) {
+        self.realized_edits.push(edit);
+    }
+
+    /// Update risk if new risk is higher.
+    fn update_risk(&mut self, new_risk: RiskReport) {
+        if new_risk.score > self.risk.score {
+            self.risk = new_risk;
+        }
+    }
+
+    /// Record a plan pivot.
+    fn record_pivot(&mut self, pivot: PlanPivot) {
+        self.plan_pivots.push(pivot);
+    }
+
+    /// Refresh confidence from accumulated evidence.
+    fn refresh_confidence(&mut self, verifier: &dyn VerifyStrategy) {
+        self.claim.confidence = verifier.summarize_confidence(&self.evidence, &self.realized_edits);
+    }
+
+    /// Finalize into a ProofPacket (terminal conversion).
+    fn finalize(
+        &mut self,
+        governor: &Governor,
+        verifier: &dyn VerifyStrategy,
+        project_root: &std::path::Path,
+    ) -> ProofPacket {
+        finalize_proof(
+            governor,
+            verifier,
+            self.objective.clone(),
+            &mut self.claim,
+            self.selected_plan.clone(),
+            self.candidate_plans.clone(),
+            self.plan_pivots.clone(),
+            &self.evidence,
+            &self.realized_edits,
+            self.risk.clone(),
+            project_root,
+        )
+    }
+}
+
 /// The agent loop — the central ~400 lines of the project.
 /// Coordinates LLM calls, tool execution, context management.
 pub struct AgentLoop {
@@ -85,8 +166,17 @@ pub struct AgentLoop {
     policy_kernel: PolicyKernel,
     /// Optional session ledger for durable event sourcing.
     session_ledger: Option<std::sync::Mutex<SessionLedger>>,
+    /// Session kernel — single authority for all session state mutations.
+    /// When present, ALL mutations flow through the kernel (not ad-hoc).
+    session_kernel: Option<std::sync::Mutex<SessionKernel>>,
+    /// Turn kernel — pure Mealy machine for turn phase transitions.
+    turn_kernel: TurnKernel,
+    /// Evolving proof state — updated incrementally on every mutation.
+    proof_state: Option<ProofState>,
     /// Telemetry facade — every agent action produces a span.
     telemetry: Arc<TelemetryFacade>,
+    /// Closed-loop telemetry controller — feeds profiler signals back into decisions.
+    telemetry_controller: crate::query_profiler::TelemetryController,
     /// Command registry for slash command dispatch.
     command_registry: crate::command_registry::CommandRegistry,
 }
@@ -134,6 +224,7 @@ impl AgentLoop {
         let provider_name = models.for_role(crate::pev::ModelRole::Executor).provider.id().to_string();
         let telemetry = Arc::new(TelemetryFacade::new(&session_id, &model_name, &provider_name));
         let command_registry = crate::command_registry::builtin_registry();
+        let max_turns = config.max_turns;
 
         let agent = Self {
             models,
@@ -151,7 +242,11 @@ impl AgentLoop {
             consecutive_loop_hits: 0,
             policy_kernel,
             session_ledger: None,
+            session_kernel: None,
+            turn_kernel: TurnKernel::new(max_turns),
+            proof_state: None,
             telemetry,
+            telemetry_controller: crate::query_profiler::TelemetryController::new(),
             command_registry,
         };
 
@@ -164,8 +259,55 @@ impl AgentLoop {
         self.session_ledger = Some(std::sync::Mutex::new(ledger));
     }
 
+    /// Enable the session kernel — single authority for all session state.
+    /// When enabled, all mutations flow through the kernel, guaranteeing
+    /// deterministic replay, hash-chained integrity, and snapshot recovery.
+    pub fn enable_session_kernel(&mut self, kernel: SessionKernel) {
+        self.session_kernel = Some(std::sync::Mutex::new(kernel));
+    }
+
     /// Record a session event to the ledger (if enabled). Non-blocking.
     fn record(&self, event: SessionEvent) {
+        // Route through kernel if available (single authority)
+        if let Some(ref mtx) = self.session_kernel {
+            if let Ok(mut kernel) = mtx.lock() {
+                match &event {
+                    SessionEvent::UserMessageAccepted { content } => {
+                        let _ = kernel.accept_user_message(content);
+                    }
+                    SessionEvent::AssistantResponseStarted { turn } => {
+                        let _ = kernel.begin_response(*turn);
+                    }
+                    SessionEvent::ToolCallProposed { call_id, tool_name, args } => {
+                        let _ = kernel.propose_tool_call(call_id, tool_name, args);
+                    }
+                    SessionEvent::ToolApproved { call_id } => {
+                        let _ = kernel.approve_tool(call_id);
+                    }
+                    SessionEvent::ToolStarted { call_id } => {
+                        let _ = kernel.start_tool(call_id);
+                    }
+                    SessionEvent::ToolCompleted { call_id, success, mutated, result_summary, result_blob_hash } => {
+                        let _ = kernel.complete_tool(call_id, *success, *mutated, result_summary, result_blob_hash.clone());
+                    }
+                    SessionEvent::ContextCompressed { messages_removed, tokens_freed, strategy } => {
+                        let _ = kernel.record_compression(*messages_removed, *tokens_freed, strategy);
+                    }
+                    SessionEvent::PlanSelected { strategy, rationale } => {
+                        let _ = kernel.select_plan(strategy, rationale);
+                    }
+                    SessionEvent::PlanPivoted { from_strategy, to_strategy, trigger } => {
+                        let _ = kernel.pivot_plan(from_strategy, to_strategy, trigger);
+                    }
+                    _ => {
+                        // Events not handled by kernel fall through to legacy ledger
+                    }
+                }
+                return;
+            }
+        }
+
+        // Fall back to legacy ledger if no kernel
         if let Some(ref mtx) = self.session_ledger {
             if let Ok(mut ledger) = mtx.lock() {
                 if let Err(e) = ledger.append(event) {
@@ -227,6 +369,13 @@ impl AgentLoop {
             mode,
             self.tool_context.project_root.clone(),
         );
+    }
+
+    /// Get mutable access to the policy kernel for injecting project-level
+    /// constraints (daemon: protected paths, network block, write limits).
+    /// All authorization goes through this single oracle.
+    pub fn policy_kernel_mut(&mut self) -> &mut PolicyKernel {
+        &mut self.policy_kernel
     }
 
     /// Inject an image into the conversation context as a user message.
@@ -304,6 +453,13 @@ impl AgentLoop {
         claim.align_with_plan(&selected_plan);
         self.update_planning_state(&selected_plan, &candidate_plans, &plan_pivots);
 
+        // Initialize evolving proof state — updated incrementally, not just at end
+        self.proof_state = Some(ProofState::new(
+            objective.clone(),
+            selected_plan.clone(),
+            candidate_plans.clone(),
+        ));
+
         // Only emit plan selected event if this isn't a trivial Q&A
         if !is_qa {
             self.emit_plan_selected(&selected_plan, &candidate_plans, false);
@@ -315,6 +471,8 @@ impl AgentLoop {
 
         // Add user message to context
         self.context.push_message(Message::user(&processed));
+        // Drive turn kernel: user message → planning → requesting
+        let _outputs = self.turn_kernel.transition(TurnInput::UserMessage(processed.clone()));
         self.emit(AgentEvent::TurnStart { turn_number: 0 });
 
         let mut turn = 0u32;
@@ -374,7 +532,7 @@ impl AgentLoop {
                 selected_plan =
                     planner.select_plan(&objective, &claim.confidence, &evidence);
                 if selected_plan != previous_plan {
-                    plan_pivots.push(PlanPivot {
+                    let pivot = PlanPivot {
                         turn_number: turn,
                         from: previous_plan.clone(),
                         to: selected_plan.clone(),
@@ -382,7 +540,14 @@ impl AgentLoop {
                             "Plan changed after verification evidence update: {}",
                             selected_plan.rationale
                         ),
-                    });
+                    };
+                    plan_pivots.push(pivot.clone());
+                    // Record pivot in evolving proof state
+                    if let Some(ref mut proof) = self.proof_state {
+                        proof.record_pivot(pivot);
+                        proof.selected_plan = selected_plan.clone();
+                        proof.candidate_plans = candidate_plans.clone();
+                    }
                     self.emit_plan_selected(&selected_plan, &candidate_plans, true);
                 }
                 claim.align_with_plan(&selected_plan);
@@ -433,6 +598,29 @@ impl AgentLoop {
             }
             self.telemetry.session_counters.increment_turns();
 
+            // ── Closed-loop telemetry feedback ──
+            // Feed turn observations into the controller and check for control signals.
+            {
+                let ttft_ms = None; // TODO: wire from QueryProfiler checkpoints
+                let tool_calls_this_turn = response.tool_calls.len() as u32;
+                self.telemetry_controller.observe_turn(ttft_ms, 0, tool_calls_this_turn);
+
+                let signals = self.telemetry_controller.control_signals();
+                if signals.trigger_compaction && !self.context.needs_compression() {
+                    tracing::info!(
+                        ttft_ema = self.telemetry_controller.ttft_ema_ms(),
+                        "Telemetry controller: proactive compaction triggered"
+                    );
+                    // Proactive eviction of stale results when TTFT is climbing
+                    let freed = self.context.evict_stale_tool_results(6);
+                    if freed > 0 {
+                        self.emit(AgentEvent::Waiting {
+                            label: format!("Proactive eviction: freed ~{} tokens", freed),
+                        });
+                    }
+                }
+            }
+
             // Emit content complete
             if !response.text.is_empty() {
                 self.emit(AgentEvent::ContentComplete {
@@ -446,6 +634,9 @@ impl AgentLoop {
             // Handle stop reason
             match response.stop_reason.unwrap_or(StopReason::EndTurn) {
                 StopReason::EndTurn | StopReason::Stop => {
+                    // Drive turn kernel: response complete (no tools)
+                    let _tk_outputs = self.turn_kernel.transition(TurnInput::ResponseComplete);
+
                     // No tool calls, done
                     self.emit(AgentEvent::TurnEnd {
                         turn_number: turn,
@@ -460,19 +651,25 @@ impl AgentLoop {
                     }
 
                     let usage = self.context.token_usage();
-                    let proof = finalize_proof(
-                        &governor,
-                        &*verifier,
-                        objective.clone(),
-                        &mut claim,
-                        selected_plan.clone(),
-                        candidate_plans.clone(),
-                        plan_pivots.clone(),
-                        &evidence,
-                        &realized_edits,
-                        risk.clone(),
-                        &self.tool_context.project_root,
-                    );
+                    // Use evolving proof state for finalization (not ad-hoc assembly)
+                    let proof = if let Some(ref mut ps) = self.proof_state {
+                        ps.refresh_confidence(&*verifier);
+                        ps.finalize(&governor, &*verifier, &self.tool_context.project_root)
+                    } else {
+                        finalize_proof(
+                            &governor,
+                            &*verifier,
+                            objective.clone(),
+                            &mut claim,
+                            selected_plan.clone(),
+                            candidate_plans.clone(),
+                            plan_pivots.clone(),
+                            &evidence,
+                            &realized_edits,
+                            risk.clone(),
+                            &self.tool_context.project_root,
+                        )
+                    };
                     self.emit(AgentEvent::TokenUsageUpdate {
                         used: usage.total,
                         limit: usage.limit,
@@ -518,11 +715,29 @@ impl AgentLoop {
                             continue;
                         }
                     };
+                    let new_artifact_count = artifacts.len();
+                    let new_edit_count = edits.len();
                     evidence.extend(artifacts);
                     realized_edits.extend(edits);
                     if tool_risk.score > risk.score {
-                        risk = tool_risk;
+                        risk = tool_risk.clone();
                     }
+
+                    // Update evolving proof state incrementally (not just at finalization)
+                    if let Some(ref mut proof) = self.proof_state {
+                        for artifact in &evidence[evidence.len() - new_artifact_count..] {
+                            proof.record_tool_evidence(artifact.clone());
+                        }
+                        for edit in &realized_edits[realized_edits.len() - new_edit_count..] {
+                            proof.record_edit(edit.clone());
+                        }
+                        proof.update_risk(tool_risk);
+                    }
+
+                    // Drive turn kernel: tool calls completed
+                    let _tk_outputs = self.turn_kernel.transition(TurnInput::AllToolsCompleted {
+                        modified_files: modified_files.clone(),
+                    });
 
                     // Track failures/successes for loop detection
                     let mut had_mutation_success = false;
@@ -651,19 +866,24 @@ impl AgentLoop {
                             tracing::warn!("TurnEnd extension hook failed: {}", e);
                         }
                         let usage = self.context.token_usage();
-                        let proof = finalize_proof(
-                            &governor,
-                            &*verifier,
-                            objective.clone(),
-                            &mut claim,
-                            selected_plan.clone(),
-                            candidate_plans.clone(),
-                            plan_pivots.clone(),
-                            &evidence,
-                            &realized_edits,
-                            risk.clone(),
-                            &self.tool_context.project_root,
-                        );
+                        let proof = if let Some(ref mut ps) = self.proof_state {
+                            ps.refresh_confidence(&*verifier);
+                            ps.finalize(&governor, &*verifier, &self.tool_context.project_root)
+                        } else {
+                            finalize_proof(
+                                &governor,
+                                &*verifier,
+                                objective.clone(),
+                                &mut claim,
+                                selected_plan.clone(),
+                                candidate_plans.clone(),
+                                plan_pivots.clone(),
+                                &evidence,
+                                &realized_edits,
+                                risk.clone(),
+                                &self.tool_context.project_root,
+                            )
+                        };
                         return AgentOutcome::Completed {
                             turns: turn, total_tokens: usage.total, cost: usage.cost, proof,
                         };
@@ -1286,14 +1506,21 @@ impl AgentLoop {
     /// Graceful shutdown: flush all state, export telemetry, record session end.
     /// Call from signal handlers to ensure no data loss on Ctrl-C.
     pub fn graceful_shutdown(&self) -> ShutdownSummary {
-        // 1. Flush session ledger to disk
-        if let Some(ref mtx) = self.session_ledger {
+        let usage = self.context.token_usage();
+        let turns = self.telemetry.session_counters.turns.load(std::sync::atomic::Ordering::Relaxed) as u32;
+        let cost = self.telemetry.session_counters.total_cost();
+
+        // 1. End session via kernel (single authority) or legacy ledger
+        if let Some(ref mtx) = self.session_kernel {
+            if let Ok(mut kernel) = mtx.lock() {
+                let _ = kernel.end_session(turns, usage.total, cost);
+            }
+        } else if let Some(ref mtx) = self.session_ledger {
             if let Ok(mut ledger) = mtx.lock() {
-                let usage = self.context.token_usage();
                 let _ = ledger.append(SessionEvent::SessionEnded {
-                    turns: self.telemetry.session_counters.turns.load(std::sync::atomic::Ordering::Relaxed) as u32,
+                    turns,
                     total_tokens: usage.total,
-                    cost: self.telemetry.session_counters.total_cost(),
+                    cost,
                 });
             }
         }

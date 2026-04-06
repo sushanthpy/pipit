@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 BASE_URL = "http://192.168.1.198:8000/v1/chat/completions"
-MODEL = "Qwen/Qwen3.5-35B-A3B"
+MODEL = "Qwen/Qwen3.5-35B-A3B-FP8"
 
 # Prompts designed to generate MORE output tokens for accurate measurement
 PROMPTS = [

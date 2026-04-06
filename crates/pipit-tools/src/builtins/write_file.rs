@@ -1,4 +1,5 @@
 use crate::{Tool, ToolContext, ToolError, ToolResult};
+use crate::builtins::read_file::FILE_STATE_CACHE;
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;
@@ -72,6 +73,16 @@ impl Tool for WriteFileTool {
                             ));
                         }
                     }
+                }
+            }
+        }
+
+        // Stale-write detection: if we previously read this file, verify
+        // it hasn't been modified by another tool call since then
+        if abs_path.exists() {
+            if let Ok(current_on_disk) = tokio::fs::read_to_string(&abs_path).await {
+                if let Err(stale_msg) = FILE_STATE_CACHE.check_stale(&abs_path, &current_on_disk) {
+                    return Err(ToolError::ExecutionFailed(stale_msg));
                 }
             }
         }

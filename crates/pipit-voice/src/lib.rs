@@ -13,6 +13,7 @@
 pub mod vad;
 pub mod transcription;
 pub mod speech_bus;
+pub mod native_capture;
 
 pub use vad::{VadConfig, VoiceActivityDetector, VadEvent};
 pub use transcription::{TranscriptionConfig, TranscriptionProvider, TranscriptionResult};

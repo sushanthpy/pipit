@@ -99,6 +99,14 @@ pub struct CompactionPipeline {
     passes: Vec<Box<dyn CompactionPass>>,
     breakers: Vec<CircuitBreaker>,
     pending_collapses: Vec<StagedCollapse>,
+    /// Timestamp of the last periodic micro-compaction run.
+    last_periodic_compact: std::time::Instant,
+    /// Interval between periodic micro-compaction runs (seconds).
+    periodic_interval_secs: u64,
+    /// Number of turns since last periodic compact.
+    turns_since_compact: u32,
+    /// Turns between periodic compactions (trigger if exceeded).
+    turns_between_compact: u32,
 }
 
 impl CompactionPipeline {
@@ -137,6 +145,10 @@ impl CompactionPipeline {
             passes,
             breakers: vec![CircuitBreaker::default(); breaker_count],
             pending_collapses: Vec::new(),
+            last_periodic_compact: std::time::Instant::now(),
+            periodic_interval_secs: 120, // 2 minutes
+            turns_since_compact: 0,
+            turns_between_compact: 8,
         }
     }
 
@@ -228,6 +240,52 @@ impl CompactionPipeline {
             summary,
             message_range,
         });
+    }
+
+    /// Run periodic micro-compaction based on time and turn count.
+    ///
+    /// Call this every turn. It will only actually compact if either:
+    /// 1. More than `periodic_interval_secs` have elapsed since last compact, or
+    /// 2. More than `turns_between_compact` turns have passed.
+    ///
+    /// Unlike `run()`, this does NOT short-circuit on budget — it always runs
+    /// micro-compact to keep stale data from accumulating.
+    pub async fn periodic_compact(
+        &mut self,
+        messages: &mut Vec<Message>,
+        cancel: CancellationToken,
+    ) -> PassResult {
+        self.turns_since_compact += 1;
+
+        let elapsed = self.last_periodic_compact.elapsed().as_secs();
+        let time_trigger = elapsed >= self.periodic_interval_secs;
+        let turn_trigger = self.turns_since_compact >= self.turns_between_compact;
+
+        if !time_trigger && !turn_trigger {
+            return PassResult::default();
+        }
+
+        // Run only the MicroCompactPass (index 2)
+        let result = if self.passes.len() > 2 && self.passes[2].name() == "micro_compact" {
+            match self.passes[2].compact(messages, u64::MAX, cancel).await {
+                Ok(r) => r,
+                Err(_) => PassResult::default(),
+            }
+        } else {
+            PassResult::default()
+        };
+
+        if result.modified {
+            self.last_periodic_compact = std::time::Instant::now();
+            self.turns_since_compact = 0;
+            tracing::info!(
+                tokens_freed = result.tokens_freed,
+                trigger = if time_trigger { "time" } else { "turns" },
+                "Periodic micro-compaction completed"
+            );
+        }
+
+        result
     }
 }
 

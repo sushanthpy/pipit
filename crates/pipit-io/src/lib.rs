@@ -2,6 +2,7 @@ pub mod app;
 pub mod composer;
 pub mod editor_integration;
 pub mod render;
+pub mod render_engine;
 pub mod tui;
 pub mod input;
 pub mod vim;

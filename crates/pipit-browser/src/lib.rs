@@ -12,6 +12,7 @@ pub mod cdp;
 pub mod tools;
 pub mod twin;
 pub mod visual_diff;
+pub mod extension_bridge;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

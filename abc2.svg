@@ -1,0 +1,66 @@
+<svg viewBox="0 0 1600 420" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .b{fill:#f8fafc;stroke:#334155;stroke-width:2;rx:16;ry:16}
+    .o{fill:#fff7ed;stroke:#c2410c;stroke-width:2;rx:16;ry:16}
+    .g{fill:#ecfeff;stroke:#0f766e;stroke-width:2;rx:16;ry:16}
+    .t{font:15px sans-serif;fill:#0f172a}
+    .h{font:17px sans-serif;font-weight:700;fill:#0f172a}
+    .a{stroke:#475569;stroke-width:2;fill:none;marker-end:url(#m)}
+  </style>
+  <defs>
+    <marker id="m" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect class="b" x="20" y="150" width="120" height="80"/>
+  <text class="h" x="44" y="180">1. Input</text>
+  <text class="t" x="37" y="205">user request</text>
+
+  <rect class="b" x="170" y="150" width="150" height="80"/>
+  <text class="h" x="190" y="180">2. Normalize</text>
+  <text class="t" x="190" y="205">intent + entities</text>
+
+  <rect class="b" x="350" y="150" width="130" height="80"/>
+  <text class="h" x="390" y="180">3. Skill</text>
+  <text class="t" x="367" y="205">domain owner</text>
+
+  <rect class="b" x="510" y="150" width="155" height="80"/>
+  <text class="h" x="532" y="180">4. Action Intent</text>
+  <text class="t" x="530" y="205">proposed operation</text>
+
+  <rect class="o" x="700" y="135" width="165" height="110"/>
+  <text class="h" x="730" y="170">5. Policy Gate</text>
+  <text class="t" x="721" y="195">RBAC / ABAC / PII</text>
+  <text class="t" x="725" y="217">risk classification</text>
+
+  <rect class="o" x="900" y="135" width="175" height="110"/>
+  <text class="h" x="920" y="170">6. Approval Gate</text>
+  <text class="t" x="925" y="195">none / single / dual</text>
+  <text class="t" x="930" y="217">or deny / escalate</text>
+
+  <rect class="g" x="1110" y="150" width="150" height="80"/>
+  <text class="h" x="1136" y="180">7. Execute</text>
+  <text class="t" x="1134" y="205">tool adapter</text>
+
+  <rect class="g" x="1295" y="150" width="135" height="80"/>
+  <text class="h" x="1310" y="180">8. Verify</text>
+  <text class="t" x="1312" y="205">read-back check</text>
+
+  <rect class="b" x="1460" y="150" width="120" height="80"/>
+  <text class="h" x="1484" y="180">9. Audit</text>
+  <text class="t" x="1484" y="205">persist trail</text>
+
+  <path class="a" d="M140 190 H170"/>
+  <path class="a" d="M320 190 H350"/>
+  <path class="a" d="M480 190 H510"/>
+  <path class="a" d="M665 190 H700"/>
+  <path class="a" d="M865 190 H900"/>
+  <path class="a" d="M1075 190 H1110"/>
+  <path class="a" d="M1260 190 H1295"/>
+  <path class="a" d="M1430 190 H1460"/>
+
+  <rect class="o" x="900" y="300" width="175" height="70"/>
+  <text class="h" x="940" y="330">Hold / Wait</text>
+  <text class="t" x="920" y="352">pending approval</text>
+  <path class="a" d="M987 245 V300"/>
+</svg>

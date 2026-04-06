@@ -17,3 +17,5 @@ crossterm = { workspace = true }
 unicode-width = { workspace = true }
 pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
+similar = { workspace = true }
+once_cell = "1"

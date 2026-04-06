@@ -278,6 +278,12 @@ impl McpClient {
         let mut child = self.child.lock().await;
         let _ = child.kill().await;
     }
+
+    /// Send a raw JSON-RPC method call to the MCP server.
+    /// Use this for protocol-level calls like resources/list, resources/read.
+    pub async fn call_method(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+        self.call(method, params).await
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -427,6 +433,11 @@ impl McpManager {
     /// Clone the client Arcs for use by the mcp_search meta-tool.
     pub fn clone_clients(&self) -> Vec<Arc<McpClient>> {
         self.clients.clone()
+    }
+
+    /// Get references to all connected clients (for health checks).
+    pub fn clients(&self) -> &[Arc<McpClient>] {
+        &self.clients
     }
 
     /// Get total tool count across all servers.

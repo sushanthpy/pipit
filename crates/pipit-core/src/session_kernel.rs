@@ -423,6 +423,53 @@ impl SessionKernel {
         }
         Ok(())
     }
+
+    /// Spawn a child session kernel for a subagent execution branch.
+    ///
+    /// The child kernel writes to its own ledger under the parent's session directory,
+    /// inheriting the session context but maintaining independent event streams.
+    /// This enables parallel subagent execution with deterministic merge.
+    pub fn spawn_subagent_kernel(
+        &mut self,
+        branch_id: &str,
+        task: &str,
+    ) -> Result<SessionKernel, SessionKernelError> {
+        self.ensure_started()?;
+
+        // Record the spawn in the parent ledger
+        self.ledger.append(SessionEvent::SubagentSpawned {
+            child_id: branch_id.to_string(),
+            parent_id: "root".to_string(),
+            task: task.to_string(),
+            capability_set: 0,
+        })?;
+
+        // Create child kernel in a subdirectory
+        let child_dir = self.config.session_dir.join("branches").join(branch_id);
+        let child_config = SessionKernelConfig {
+            session_dir: child_dir,
+            durable_writes: self.config.durable_writes,
+            snapshot_interval: self.config.snapshot_interval,
+        };
+        let mut child = SessionKernel::new(child_config)?;
+        child.start(branch_id, "inherited", "inherited")?;
+
+        Ok(child)
+    }
+
+    /// Record completion of a subagent branch in the parent ledger.
+    pub fn complete_subagent(
+        &mut self,
+        branch_id: &str,
+        success: bool,
+    ) -> Result<(), SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::SubagentCompleted {
+            child_id: branch_id.to_string(),
+            success,
+        })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -216,6 +216,10 @@ pub struct PolicyKernel {
     command_deny_patterns: Vec<String>,
     /// Tool-specific capability overrides.
     tool_overrides: std::collections::HashMap<String, CapabilitySet>,
+    /// Tool names that are unconditionally denied (daemon network block etc.).
+    tool_deny_list: Vec<String>,
+    /// Maximum file write size in bytes (0 = unlimited).
+    max_write_bytes: u64,
     /// Audit log of decisions.
     audit_log: Vec<AuditEntry>,
 }
@@ -253,6 +257,8 @@ impl PolicyKernel {
                 ":(){:|:&};:".to_string(),
             ],
             tool_overrides: std::collections::HashMap::new(),
+            tool_deny_list: Vec::new(),
+            max_write_bytes: 0,
             audit_log: Vec::new(),
         }
     }
@@ -291,6 +297,15 @@ impl PolicyKernel {
                 self.record_audit(tool_name, request, &decision);
                 return decision;
             }
+        }
+
+        // 1b. Check tool deny list (daemon-injected: network block, etc.)
+        if self.tool_deny_list.iter().any(|t| t == tool_name) {
+            let decision = PolicyDecision::Deny {
+                reason: format!("Tool '{}' is denied by project policy", tool_name),
+            };
+            self.record_audit(tool_name, request, &decision);
+            return decision;
         }
 
         // 2. Lattice check: R ⊆ G
@@ -379,6 +394,72 @@ impl PolicyKernel {
         self.granted.meet(requested)
     }
 
+    /// Static permission preflight — pre-compute approval decisions for a probable
+    /// tool chain. Returns a map of tool_name → PolicyDecision.
+    ///
+    /// Call this BEFORE tool execution starts. Tools that get `Allow` in preflight
+    /// can execute without mid-turn approval stalls. Tools that get `Ask` still
+    /// need runtime confirmation, but the user can be prompted once for the whole
+    /// batch rather than one-by-one.
+    ///
+    /// Safe chains like `read_file → edit_file` on the same path are collapsed
+    /// into a single approval decision for the chain.
+    ///
+    /// Complexity: O(n) in the number of tool calls, O(1) per lattice check.
+    pub fn preflight(
+        &mut self,
+        calls: &[PreflightToolCall],
+        lineage: &ExecutionLineage,
+    ) -> Vec<PreflightDecision> {
+        let mut decisions = Vec::with_capacity(calls.len());
+        let mut path_read_approved: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for call in calls {
+            let semantics = crate::tool_semantics::builtin_semantics(&call.tool_name);
+
+            // Check if this is a read→write chain on an already-approved path
+            let chain_approved = if semantics.purity >= crate::tool_semantics::Purity::Mutating {
+                call.paths.iter().any(|p| path_read_approved.contains(p))
+            } else {
+                false
+            };
+
+            let cap_request = CapabilityRequest {
+                required: semantics.required_capabilities,
+                resource_scopes: call.paths.iter()
+                    .map(|p| ResourceScope::Path(PathBuf::from(p)))
+                    .chain(call.commands.iter().map(|c| ResourceScope::Command(c.clone())))
+                    .collect(),
+                justification: Some(format!("Preflight for '{}'", call.tool_name)),
+            };
+
+            let mut decision = self.evaluate(&call.tool_name, &cap_request, lineage);
+
+            // Upgrade Ask→Allow for safe chains (read on same path was already preflighted)
+            if chain_approved && matches!(decision, PolicyDecision::Ask { .. }) {
+                decision = PolicyDecision::Allow;
+            }
+
+            // Track read approvals for chain collapsing
+            if matches!(decision, PolicyDecision::Allow) {
+                if semantics.purity <= crate::tool_semantics::Purity::Idempotent {
+                    for path in &call.paths {
+                        path_read_approved.insert(path.clone());
+                    }
+                }
+            }
+
+            decisions.push(PreflightDecision {
+                call_id: call.call_id.clone(),
+                tool_name: call.tool_name.clone(),
+                decision,
+                chain_collapsed: chain_approved,
+            });
+        }
+
+        decisions
+    }
+
     /// Grant additional capabilities at runtime (e.g., user approval escalation).
     pub fn escalate(&mut self, additional: CapabilitySet) {
         self.granted = self.granted.join(additional);
@@ -398,6 +479,50 @@ impl PolicyKernel {
     /// Current granted capability set.
     pub fn granted(&self) -> CapabilitySet {
         self.granted
+    }
+
+    // ── Daemon/Project-level constraint injection ──
+    // These methods let the daemon push its project-level policy
+    // into the single PolicyKernel, eliminating parallel authorize logic.
+
+    /// Add a path pattern to the deny list (daemon: protected_paths).
+    pub fn add_path_deny_pattern(&mut self, pattern: &str) {
+        if !self.path_deny_patterns.contains(&pattern.to_string()) {
+            self.path_deny_patterns.push(pattern.to_string());
+        }
+    }
+
+    /// Add path patterns from a list (daemon: protected_paths config).
+    pub fn add_path_deny_patterns(&mut self, patterns: &[String]) {
+        for p in patterns {
+            self.add_path_deny_pattern(p);
+        }
+    }
+
+    /// Deny a specific tool unconditionally (daemon: block_network → deny network tools).
+    pub fn deny_tool(&mut self, tool_name: &str) {
+        if !self.tool_deny_list.contains(&tool_name.to_string()) {
+            self.tool_deny_list.push(tool_name.to_string());
+        }
+    }
+
+    /// Block all network tools (daemon: block_network=true).
+    pub fn block_network_tools(&mut self) {
+        for tool in &["mcp_search", "fetch_url", "http_request", "web_search", "web_fetch"] {
+            self.deny_tool(tool);
+        }
+        // Also revoke network capabilities from the grant set
+        self.granted = CapabilitySet(self.granted.0 & !(Capability::NetworkRead as u32 | Capability::NetworkWrite as u32));
+    }
+
+    /// Set maximum write size in bytes (daemon: max_write_bytes).
+    pub fn set_max_write_bytes(&mut self, max_bytes: u64) {
+        self.max_write_bytes = max_bytes;
+    }
+
+    /// Get the maximum write bytes limit (0 = unlimited).
+    pub fn max_write_bytes(&self) -> u64 {
+        self.max_write_bytes
     }
 
     fn check_path(&self, tool_name: &str, path: &Path) -> Option<PolicyDecision> {
@@ -706,6 +831,25 @@ fn scope_matches(scope: &RuleScope, resources: &[ResourceScope]) -> bool {
             })
         }
     }
+}
+
+/// Input to the static permission preflight.
+#[derive(Debug, Clone)]
+pub struct PreflightToolCall {
+    pub call_id: String,
+    pub tool_name: String,
+    pub paths: Vec<String>,
+    pub commands: Vec<String>,
+}
+
+/// Output of the static permission preflight.
+#[derive(Debug, Clone)]
+pub struct PreflightDecision {
+    pub call_id: String,
+    pub tool_name: String,
+    pub decision: PolicyDecision,
+    /// Whether this decision was collapsed from a read→write chain.
+    pub chain_collapsed: bool,
 }
 
 #[cfg(test)]

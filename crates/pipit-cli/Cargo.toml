@@ -35,5 +35,6 @@ ratatui = { workspace = true }
 reqwest = { workspace = true }
 dirs = "5"
 tempfile = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]

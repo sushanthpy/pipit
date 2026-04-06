@@ -30,6 +30,8 @@ impl ToolRegistry {
         registry.register(Arc::new(crate::builtins::GrepTool));
         registry.register(Arc::new(crate::builtins::GlobTool));
         registry.register(Arc::new(crate::builtins::BashTool));
+        // Register extended tools
+        crate::builtins::extended::register_extended_tools(&mut registry);
         registry
     }
 

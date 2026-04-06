@@ -96,6 +96,14 @@ impl Tool for BashTool {
             }
         }
 
+        // ── sed expression validation ──
+        // Validate sed -i commands to prevent unintended file destruction.
+        if cmd_lower.contains("sed") && (command.contains("-i") || command.contains("--in-place")) {
+            if let Err(msg) = validate_sed_expression(command) {
+                return Err(ToolError::PermissionDenied(format!("sed validation: {msg}")));
+            }
+        }
+
         // ── cd interception: persist directory changes across calls ──
         //
         // Each bash call spawns a fresh subprocess, so `cd /foo` doesn't
@@ -351,6 +359,87 @@ fn decode_dollar_quotes(s: &str) -> String {
         }
     }
     result
+}
+
+/// Validate a sed expression for correctness and safety before allowing `sed -i`.
+///
+/// Checks:
+/// - Empty replacement with global flag (s/.*/\//g → deletes all content)
+/// - Unbounded delete command (d without address → deletes all lines)
+/// - Missing target file (sed -i without file arg)
+fn validate_sed_expression(command: &str) -> Result<(), String> {
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    
+    // Find the sed command and flags
+    let sed_idx = parts.iter().position(|p| p.ends_with("sed") || *p == "sed");
+    if sed_idx.is_none() { return Ok(()); }
+    let sed_idx = sed_idx.unwrap();
+    
+    let mut has_in_place = false;
+    let mut has_expression = false;
+    let mut has_file = false;
+    let mut expression = String::new();
+    
+    let mut i = sed_idx + 1;
+    while i < parts.len() {
+        let part = parts[i];
+        if part == "-i" || part.starts_with("-i") || part == "--in-place" {
+            has_in_place = true;
+        } else if part == "-e" {
+            has_expression = true;
+            if i + 1 < parts.len() {
+                expression = parts[i + 1].to_string();
+                i += 1;
+            }
+        } else if part.starts_with('-') {
+            // Other flags
+        } else if !has_expression && expression.is_empty() {
+            // First non-flag arg is the expression
+            expression = part.to_string();
+            has_expression = true;
+        } else {
+            // Subsequent non-flag args are files
+            has_file = true;
+        }
+        i += 1;
+    }
+    
+    if has_in_place && !has_file {
+        return Err("sed -i without target file".to_string());
+    }
+    
+    // Check the expression for dangerous patterns
+    if !expression.is_empty() {
+        let expr_lower = expression.to_lowercase();
+        // Unbounded delete: just 'd' without address
+        if expr_lower.trim_matches('\'').trim_matches('"') == "d" {
+            return Err("sed with unbounded delete (d) would remove all lines".to_string());
+        }
+        // Empty substitution with global flag: s/pattern//g
+        if let Some(rest) = expr_lower.strip_prefix('\'') {
+            if rest.starts_with("s") && rest.len() > 2 {
+                let delim = rest.chars().nth(1).unwrap_or('/');
+                let inner = &rest[2..];
+                // Find replacement section
+                if let Some(pos) = inner.find(delim) {
+                    let replacement = &inner[pos+1..];
+                    if let Some(end) = replacement.find(delim) {
+                        let repl = &replacement[..end];
+                        let flags = &replacement[end+1..].trim_end_matches('\'');
+                        if repl.is_empty() && flags.contains('g') {
+                            // Check if pattern matches everything
+                            let pattern = &inner[..pos];
+                            if pattern == ".*" || pattern == ".+" || pattern == "." {
+                                return Err("sed substitution deletes all content (empty replacement with .* pattern)".to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
