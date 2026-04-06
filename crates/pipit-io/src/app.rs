@@ -485,8 +485,17 @@ fn draw_timeline_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let total = state.activity_lines.len();
 
-    let start = if total > inner_height {
-        total - inner_height
+    // Reserve 1 line for the spinner when the agent is working,
+    // otherwise it gets clipped by the Block border.
+    let spinner_active = state.is_working && !state.working_label.is_empty();
+    let lines_available = if spinner_active {
+        inner_height.saturating_sub(1)
+    } else {
+        inner_height
+    };
+
+    let start = if total > lines_available {
+        total - lines_available
     } else {
         0
     };
@@ -546,8 +555,8 @@ fn draw_timeline_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         ]));
     }
 
-    let scroll_info = if total > inner_height {
-        format!(" {}/{} ", start + inner_height, total)
+    let scroll_info = if total > lines_available {
+        format!(" {}/{} ", start + lines_available, total)
     } else {
         String::new()
     };
@@ -759,8 +768,20 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         all_lines.push(style_paragraph_line(raw));
     }
 
-    // Progress indicators (spinner, thinking) are consolidated in the
-    // timeline pane. The content pane shows pure content only.
+    // Show a minimal thinking indicator in the content pane when
+    // the agent is reasoning but hasn't produced any visible output yet.
+    // Full progress info stays in the timeline; this just prevents a
+    // blank pane from confusing the user.
+    if all_lines.is_empty() && (state.is_thinking || (state.is_working && state.streaming_text.is_empty())) {
+        const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+        let spin_frame = (state.spinner_frame / 4) as usize % SPINNER.len();
+        let label = if state.is_thinking { "reasoning" } else { "thinking" };
+        let spinner_color = if state.is_thinking { Color::Magenta } else { Color::Cyan };
+        all_lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", SPINNER[spin_frame]), Style::default().fg(spinner_color)),
+            Span::styled(label, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
 
     let total = all_lines.len();
     let start = if total > inner_height {
