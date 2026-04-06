@@ -292,7 +292,21 @@ impl Composer {
         if self.completion.active {
             match key.code {
                 KeyCode::Tab => { self.accept_completion(); return true; }
-                KeyCode::Enter => { self.accept_completion(); return true; }
+                KeyCode::Enter => {
+                    self.accept_completion();
+                    // For slash commands, auto-submit after accepting completion
+                    // so the user doesn't have to press Enter twice.
+                    let text = self.text();
+                    if text.trim_start().starts_with('/') {
+                        self.push_to_history();
+                        self.submitted = Some(SubmittedInput {
+                            text,
+                            attachments: self.attachments.clone(),
+                        });
+                        self.clear();
+                    }
+                    return true;
+                }
                 KeyCode::Down => { self.completion.select_next(); return true; }
                 KeyCode::Up => { self.completion.select_prev(); return true; }
                 KeyCode::Esc => { self.completion.clear(); return true; }
