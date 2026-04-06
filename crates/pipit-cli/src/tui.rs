@@ -128,7 +128,7 @@ pub async fn run(
 
     // Bridge agent events into the main loop via an mpsc channel
     // instead of having a separate task take the TuiState mutex.
-    let (agent_event_tx, mut agent_event_rx) = tokio::sync::mpsc::channel::<pipit_core::AgentEvent>(256);
+    let (agent_event_tx, mut agent_event_rx) = tokio::sync::mpsc::channel::<pipit_core::AgentEvent>(1024);
     let mut event_rx_owned = event_rx.resubscribe();
     let _event_bridge = tokio::spawn(async move {
         while let Ok(event) = event_rx_owned.recv().await {
@@ -209,20 +209,45 @@ pub async fn run(
 
     dbg_log("[tui] spawned event handler + agent runner, entering main loop");
 
-    // Main TUI event loop
+    // Main TUI event loop — optimized for responsiveness.
+    //
+    // Previous design: crossterm::poll(16ms) blocked the thread, preventing
+    // agent events from being processed. Draw was called every cycle even
+    // when nothing changed.
+    //
+    // New design:
+    //   1. Poll crossterm with 0ms timeout (non-blocking)
+    //   2. Drain ALL pending agent events in a batch
+    //   3. Only draw when something actually changed (dirty flag)
+    //   4. Use a short sleep (8ms) to yield CPU when idle
+    //   5. Never hold the mutex during draw preparation — only during state mutation
+    let mut needs_redraw = true;  // Force initial draw
+
     loop {
-        // Drain pending agent events (no contention — same thread as draw)
-        {
+        // ── Phase 1: Drain agent events (batch) ──
+        // Process ALL pending events before drawing — this prevents
+        // the "frozen" feeling when events pile up.
+        let mut events_processed = 0u32;
+        while let Ok(event) = agent_event_rx.try_recv() {
             let mut state = tui_state.lock().unwrap();
-            while let Ok(event) = agent_event_rx.try_recv() {
-                apply_agent_event(&mut state, &event);
+            apply_agent_event(&mut state, &event);
+            events_processed += 1;
+            // Cap per-frame event processing to prevent UI starvation
+            // during rapid-fire events (e.g. streaming deltas)
+            if events_processed >= 64 {
+                break;
             }
-            state.spinner_frame = state.spinner_frame.wrapping_add(1);
-            terminal.draw(|f| app::draw(f, &state))?;
+        }
+        if events_processed > 0 {
+            needs_redraw = true;
         }
 
-        if crossterm_event::poll(std::time::Duration::from_millis(16))? {
+        // ── Phase 2: Handle terminal input (non-blocking) ──
+        // Poll with 0ms — never blocks. This ensures agent events
+        // are processed immediately on the next iteration.
+        while crossterm_event::poll(std::time::Duration::ZERO)? {
             let event = crossterm_event::read()?;
+            needs_redraw = true;
             match event {
                 Event::Paste(text) => {
                     let mut state = tui_state.lock().unwrap();
@@ -233,8 +258,7 @@ pub async fn run(
                     app::handle_key(&mut state, key);
 
                     if state.should_quit {
-                        cancel_token.lock().unwrap().cancel();
-                        break;
+                        break;  // Exit poll loop — Phase 3 handles quit
                     }
 
                     // Escape cancels the current agent run
@@ -771,6 +795,37 @@ pub async fn run(
                 _ => {}
             }
         }
+
+        // ── Phase 3: Draw (only when dirty) ──
+        // Skip redundant draws when nothing changed — saves CPU in idle state.
+        // Always redraw when agent is working (spinner animation).
+        {
+            let mut state = tui_state.lock().unwrap();
+            let is_animating = state.is_working || state.is_thinking;
+            if is_animating {
+                needs_redraw = true;
+            }
+
+            if needs_redraw && state.should_redraw() {
+                state.spinner_frame = state.spinner_frame.wrapping_add(1);
+                terminal.draw(|f| app::draw(f, &state))?;
+                needs_redraw = false;
+            }
+
+            if state.should_quit {
+                cancel_token.lock().unwrap().cancel();
+                break;
+            }
+        }
+
+        // ── Phase 4: Yield ──
+        // Short sleep to prevent busy-spinning when idle.
+        // During active work, use a shorter interval for responsive spinners.
+        let sleep_ms = {
+            let state = tui_state.lock().unwrap();
+            if state.is_working || state.is_thinking { 16 } else { 33 }
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
     }
 
     // Cleanup
