@@ -8,9 +8,10 @@ pub mod tui;
 pub mod input;
 pub mod vim;
 
-pub use app::{TuiState, SharedTuiState, ActivityLine};
+pub use app::{TuiState, SharedTuiState, ActivityLine, handle_mouse, handle_resize};
 pub use composer::Composer;
 pub use render::StreamingMarkdownRenderer;
+pub use render_engine::SyntaxHighlighter;
 pub use tui::{PipitUi, InteractiveApprovalHandler, StatusBarState, VerificationState};
 
 use std::sync::atomic::{AtomicBool, Ordering};

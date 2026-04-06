@@ -280,6 +280,7 @@ pub enum ToolCallOutcome {
 pub enum AgentOutcome {
     Completed { turns: u32, total_tokens: u64, cost: f64, proof: ProofPacket },
     MaxTurnsReached(u32),
+    BudgetExhausted { turns: u32, cost: f64, budget: f64 },
     Cancelled,
     Error(String),
 }

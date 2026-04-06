@@ -173,6 +173,9 @@ pub async fn run(
                     AgentOutcome::MaxTurnsReached(n) => {
                         s.push_activity("⚠", Color::Yellow, format!("Max turns ({})", n));
                     }
+                    AgentOutcome::BudgetExhausted { cost, budget, .. } => {
+                        s.push_activity("$", Color::Yellow, format!("Budget exhausted: ${:.4}/${:.2}", cost, budget));
+                    }
                 }
             }
         }

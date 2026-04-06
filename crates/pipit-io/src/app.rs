@@ -27,7 +27,7 @@
 use crate::composer::{self, Composer};
 use crate::tui::StatusBarState;
 use crossterm::{
-    event::{EnableBracketedPaste, DisableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -56,6 +56,14 @@ fn highlight_theme() -> &'static syntect::highlighting::Theme {
         ts.themes.get("base16-ocean.dark").cloned()
             .unwrap_or_else(|| ts.themes.into_values().next().unwrap())
     })
+}
+
+/// Active tool execution info for the stable tool output region.
+#[derive(Debug, Clone)]
+pub struct ActiveToolInfo {
+    pub tool_name: String,
+    pub args_summary: String,
+    pub started_at: std::time::Instant,
 }
 
 /// Lines displayed in the timeline (left pane: tool actions, plans, turns).
@@ -98,6 +106,10 @@ pub struct TuiState {
     pub streaming_text: String,
     /// Whether the agent is currently working.
     pub is_working: bool,
+    /// Active tool execution status (tool name + summary). When set,
+    /// a fixed-height region is rendered below streaming text to prevent
+    /// layout flicker during tool execution.
+    pub active_tool: Option<ActiveToolInfo>,
     /// Current working status label.
     pub working_label: String,
     /// Current description (from user prompt).
@@ -149,6 +161,7 @@ impl TuiState {
             should_quit: false,
             streaming_text: String::with_capacity(4096),
             is_working: false,
+            active_tool: None,
             working_label: String::new(),
             task_label: String::new(),
             phase_label: String::new(),
@@ -304,6 +317,7 @@ pub fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stderr>>> {
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stderr(),
+            DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen,
             crossterm::cursor::Show
@@ -313,7 +327,7 @@ pub fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stderr>>> {
 
     enable_raw_mode()?;
     let mut stderr = io::stderr();
-    execute!(stderr, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stderr, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     // Gate tracing output: any tracing events after this point are discarded
     // so they don't corrupt the ratatui framebuffer.
     crate::set_tui_active(true);
@@ -326,7 +340,7 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -
     // Re-enable tracing output before leaving alternate screen.
     crate::set_tui_active(false);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     // Restore the default panic hook so post-TUI panics behave normally.
     let _ = std::panic::take_hook();
@@ -353,15 +367,24 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
     draw_task_phase_strip(frame, vertical[1], state);
 
     if state.has_received_input {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(30),
-                Constraint::Percentage(70),
-            ])
-            .split(vertical[2]);
-        draw_timeline_pane(frame, cols[0], state);
-        draw_content_pane(frame, cols[1], state);
+        // Responsive layout: collapse sidebar at narrow widths
+        let has_sidebar = area.width >= 80;
+        if has_sidebar {
+            let sidebar_constraint = if area.width >= 120 {
+                Constraint::Percentage(30)
+            } else {
+                Constraint::Length(25)  // Fixed 25 cols for narrow-ish terminals
+            };
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([sidebar_constraint, Constraint::Min(40)])
+                .split(vertical[2]);
+            draw_timeline_pane(frame, cols[0], state);
+            draw_content_pane(frame, cols[1], state);
+        } else {
+            // Terminal too narrow for sidebar — content fills full width
+            draw_content_pane(frame, vertical[2], state);
+        }
     } else {
         draw_welcome_pane(frame, vertical[2], state);
     }
@@ -375,50 +398,19 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
     let s = &state.status;
-    let branch_marker = if s.dirty { "*" } else { "" };
-    let token_pct = s.token_pct();
 
-    let token_color = if token_pct > 85 { Color::Red }
-        else if token_pct > 60 { Color::Yellow }
-        else { Color::Green };
-
-    let verify_chip = match &s.verification {
-        crate::tui::VerificationState::Passing => Span::styled(" ✓pass ", Style::default().fg(Color::Green)),
-        crate::tui::VerificationState::Failing(_) => Span::styled(" ✗fail ", Style::default().fg(Color::Red)),
-        crate::tui::VerificationState::Running => Span::styled(" ⟳verify ", Style::default().fg(Color::Cyan)),
-        crate::tui::VerificationState::Unknown => Span::styled("", Style::default()),
+    // Use the component library's StatusBar widget
+    let status_bar = crate::components::ComponentStatusBar {
+        model: &s.model,
+        mode: s.approval_mode.label(),
+        branch: Some(s.branch.as_str()),
+        tokens_used: s.tokens_used,
+        tokens_limit: s.tokens_limit,
+        cost: s.cost,
+        turn: state.current_turn,
+        max_turns: state.max_turns,
     };
-
-    let mode_chip = if state.agent_mode != "fast" {
-        Span::styled(
-            format!(" {} ", state.agent_mode),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-        )
-    } else {
-        Span::styled("", Style::default())
-    };
-
-    let line = Line::from(vec![
-        Span::styled(" pipit", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&s.repo_name, Style::default().fg(Color::Cyan)),
-        Span::styled(format!(" {}{}", s.branch, branch_marker), Style::default().fg(Color::Green)),
-        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&s.model, Style::default().fg(Color::Yellow)),
-        Span::raw(" "),
-        Span::styled(s.approval_mode.label(), Style::default().fg(Color::Magenta)),
-        mode_chip,
-        verify_chip,
-        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}%", token_pct), Style::default().fg(token_color)),
-        Span::styled(format!(" ${:.4}", s.cost), Style::default().fg(Color::DarkGray)),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(&status_bar, area);
 }
 
 fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -1052,11 +1044,53 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
     state.composer.handle_key(key)
 }
 
+/// Handle a mouse event, updating state. Returns true if the event was consumed.
+pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> bool {
+    match mouse.kind {
+        MouseEventKind::ScrollDown => {
+            let max = state.content_lines.len() as u16;
+            state.content_scroll_offset = (state.content_scroll_offset + 3).min(max);
+            true
+        }
+        MouseEventKind::ScrollUp => {
+            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(3);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Handle a terminal resize event.
+/// Invalidates cached content, clamps scroll offsets, and forces a full redraw.
+pub fn handle_resize(state: &mut TuiState, _cols: u16, _rows: u16) {
+    // Invalidate parsed line cache — wrapping depends on width
+    state.cached_parsed_lines.clear();
+    state.cached_lines_count = 0;
+
+    // Clamp content scroll offset to new content bounds
+    let max = state.content_lines.len() as u16;
+    state.content_scroll_offset = state.content_scroll_offset.min(max);
+
+    // Clamp activity scroll offset
+    let activity_max = state.activity_lines.len() as u16;
+    state.scroll_offset = state.scroll_offset.min(activity_max);
+
+    // Force immediate redraw on next frame
+    state.last_frame_time = None;
+}
+
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    use unicode_width::UnicodeWidthStr;
+    let width = UnicodeWidthStr::width(s);
+    if width <= max {
         s.to_string()
     } else {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+        let mut current_width = 0;
+        let truncated: String = s.chars().take_while(|c| {
+            current_width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            current_width <= max.saturating_sub(1)
+        }).collect();
+        format!("{}…", truncated)
     }
 }
 

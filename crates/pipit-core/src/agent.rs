@@ -22,6 +22,7 @@ use pipit_provider::{
 };
 use pipit_tools::{ToolContext, ToolRegistry};
 use futures::StreamExt;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +47,9 @@ pub struct AgentLoopConfig {
     /// PEV (Plan/Execute/Verify) orchestration config.
     /// When Some, the agent uses role-routed model inference.
     pub pev: Option<PevConfig>,
+    /// Hard cost ceiling in USD. Before every API call, the estimated cost
+    /// is checked against this budget. `None` = unlimited.
+    pub max_budget_usd: Option<f64>,
 }
 
 impl Default for AgentLoopConfig {
@@ -62,6 +66,7 @@ impl Default for AgentLoopConfig {
             test_command: None,
             lint_command: None,
             pev: None,
+            max_budget_usd: None,
         }
     }
 }
@@ -620,6 +625,35 @@ impl AgentLoop {
                 claim.align_with_plan(&selected_plan);
                 self.update_planning_state(&selected_plan, &candidate_plans, &plan_pivots);
             }
+
+            // ── Cost budget enforcement ──
+            // Before every API call, check if the accumulated cost is nearing the budget.
+            if let Some(max_budget) = self.config.max_budget_usd {
+                let current_cost = self.context.token_usage().cost;
+                if current_cost >= max_budget {
+                    self.emit(AgentEvent::Waiting {
+                        label: format!(
+                            "Cost budget exhausted: ${:.4} >= ${:.2} limit",
+                            current_cost, max_budget
+                        ),
+                    });
+                    return AgentOutcome::BudgetExhausted {
+                        turns: turn,
+                        cost: current_cost,
+                        budget: max_budget,
+                    };
+                }
+                // Warn when approaching budget (>90%)
+                if current_cost > max_budget * 0.9 {
+                    self.emit(AgentEvent::Waiting {
+                        label: format!(
+                            "Warning: ${:.4} of ${:.2} budget used ({:.0}%)",
+                            current_cost, max_budget, current_cost / max_budget * 100.0
+                        ),
+                    });
+                }
+            }
+
             // Stream the LLM response
             self.emit(AgentEvent::Waiting { label: "Sending to model\u{2026}".to_string() });
             let mut llm_span = self.telemetry.start_span("llm.complete")
@@ -970,7 +1004,7 @@ impl AgentLoop {
         request: CompletionRequest,
         cancel: CancellationToken,
     ) -> Result<AssistantResponse, pipit_provider::ProviderError> {
-        let mut stream = self.provider().complete(request, cancel.clone()).await?;
+        let mut stream = self.provider().complete(request.clone(), cancel.clone()).await?;
         let mut response = AssistantResponse::new();
         let mut has_tool_calls = false;
 
@@ -1025,6 +1059,72 @@ impl AgentLoop {
                         );
                         return Ok(response);
                     }
+
+                    // Streaming reconnection: if we have partial text and the error
+                    // is transient (network drop), attempt to continue from where we
+                    // left off by re-sending with the partial response as assistant prefix.
+                    if e.is_transient() && !response.text.is_empty() {
+                        tracing::warn!(
+                            "Stream interrupted with {} chars of partial text — attempting reconnection: {}",
+                            response.text.len(),
+                            e
+                        );
+                        self.emit(AgentEvent::Waiting {
+                            label: "Network interrupted — reconnecting with partial response…".to_string(),
+                        });
+
+                        // Build continuation request: inject partial text as assistant message
+                        // so the model continues from where it left off.
+                        let mut continuation = request.clone();
+                        continuation.messages.push(Message::assistant(&response.text));
+                        continuation.messages.push(Message::user(
+                            "[SYSTEM] Your previous response was interrupted by a network error. \
+                             The partial response above has been preserved. Please continue from \
+                             where you left off. Do not repeat what you already said."
+                        ));
+
+                        // Brief backoff before reconnection
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                        match self.provider().complete(continuation, cancel.clone()).await {
+                            Ok(mut reconnect_stream) => {
+                                while let Some(event) = reconnect_stream.next().await {
+                                    if cancel.is_cancelled() {
+                                        return Err(pipit_provider::ProviderError::Cancelled);
+                                    }
+                                    match event {
+                                        Ok(ContentEvent::ContentDelta { text }) => {
+                                            response.push_text(&text);
+                                            self.emit(AgentEvent::ContentDelta { text: text.clone() });
+                                        }
+                                        Ok(ContentEvent::ThinkingDelta { text }) => {
+                                            response.push_thinking(&text);
+                                            self.emit(AgentEvent::ThinkingDelta { text });
+                                        }
+                                        Ok(ContentEvent::ToolCallComplete { call_id, tool_name, args }) => {
+                                            has_tool_calls = true;
+                                            response.push_tool_call(call_id.clone(), tool_name.clone(), args.clone());
+                                            self.emit(AgentEvent::ToolCallStart { call_id, name: tool_name, args });
+                                        }
+                                        Ok(ContentEvent::Finished { stop_reason, usage }) => {
+                                            response.finish(stop_reason, usage);
+                                        }
+                                        Ok(_) => {}
+                                        Err(e2) => {
+                                            tracing::warn!("Reconnection stream also failed: {}", e2);
+                                            return Err(e2);
+                                        }
+                                    }
+                                }
+                                return Ok(response);
+                            }
+                            Err(reconnect_err) => {
+                                tracing::warn!("Reconnection failed: {}", reconnect_err);
+                                return Err(reconnect_err);
+                            }
+                        }
+                    }
+
                     return Err(e);
                 }
             }
@@ -2250,9 +2350,28 @@ pub(crate) async fn execute_single_tool(
         return ToolCallOutcome::Error { message: msg };
     }
 
-    match tool.execute(call.args.clone(), ctx, cancel).await {
-        Ok(result) => ToolCallOutcome::Success { content: result.content, mutated: result.mutated },
-        Err(e) => ToolCallOutcome::Error { message: e.to_string() },
+    // Wrap tool execution in catch_unwind to isolate panics.
+    // A panicking tool produces an error result instead of crashing the session.
+    let tool_name = call.tool_name.clone();
+    let args = call.args.clone();
+    let execute_future = tool.execute(args, ctx, cancel);
+
+    match std::panic::AssertUnwindSafe(execute_future).catch_unwind().await {
+        Ok(Ok(result)) => ToolCallOutcome::Success { content: result.content, mutated: result.mutated },
+        Ok(Err(e)) => ToolCallOutcome::Error { message: e.to_string() },
+        Err(panic_payload) => {
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!(tool = %tool_name, "Tool panicked: {}", panic_msg);
+            ToolCallOutcome::Error {
+                message: format!("Tool '{}' panicked: {}. The tool crashed but the session continues.", tool_name, panic_msg),
+            }
+        }
     }
 }
 

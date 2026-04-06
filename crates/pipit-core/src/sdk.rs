@@ -360,6 +360,12 @@ impl PipitEngine {
                 budget_summary: None,
             },
             AgentOutcome::MaxTurnsReached(turns) => EngineOutcome::MaxTurnsReached(turns),
+            AgentOutcome::BudgetExhausted { turns, cost, budget } => {
+                EngineOutcome::Error(format!(
+                    "Cost budget exhausted after {} turns: ${:.4} >= ${:.2} limit",
+                    turns, cost, budget
+                ))
+            }
             AgentOutcome::Error(msg) => EngineOutcome::Error(msg),
             AgentOutcome::Cancelled => EngineOutcome::Error("Cancelled".to_string()),
         };

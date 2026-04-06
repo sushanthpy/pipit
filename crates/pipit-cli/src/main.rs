@@ -1,4 +1,5 @@
 mod auth;
+mod migrations;
 mod persistence;
 mod persistence_v2;
 mod prompt_builder;
@@ -2093,6 +2094,16 @@ fn handle_agent_outcome(
                 persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }
             eprintln!("\x1b[33mReached max turns ({})\x1b[0m", n);
+            None
+        }
+        AgentOutcome::BudgetExhausted { turns, cost, budget } => {
+            if let Some(planning_state) = agent.planning_state() {
+                persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
+            }
+            eprintln!(
+                "\x1b[33mCost budget exhausted after {} turns: ${:.4} >= ${:.2} limit\x1b[0m",
+                turns, cost, budget
+            );
             None
         }
         AgentOutcome::Cancelled => {

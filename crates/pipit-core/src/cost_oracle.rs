@@ -8,7 +8,19 @@
 //! Displays: "Estimated cost: $0.15-0.45 | Estimated time: 2-5 minutes"
 
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
+
+/// Atomically write data to a file: write(tmp) → fsync → rename(tmp, target).
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    let mut file = File::create(&tmp)?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
 
 /// Historical task record for cost prediction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +107,7 @@ impl CostOracle {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, serde_json::to_string(&self.history).unwrap_or_default());
+        let _ = atomic_write(&path, serde_json::to_string(&self.history).unwrap_or_default().as_bytes());
     }
 
     /// Predict cost for a new task.

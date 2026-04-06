@@ -388,6 +388,7 @@ impl AgentPool {
             test_command,
             lint_command,
             pev: None,
+            max_budget_usd: None,
         };
 
         // 9. Construct AgentLoop with policy-bounded approval handler.
@@ -489,6 +490,22 @@ impl AgentPool {
             }
             pipit_core::AgentOutcome::Cancelled => {
                 Err(anyhow!("task cancelled"))
+            }
+            pipit_core::AgentOutcome::BudgetExhausted { turns, cost, budget } => {
+                Ok(AgentOutcome {
+                    summary: format!("Cost budget exhausted: ${:.4} >= ${:.2} limit", cost, budget),
+                    turns,
+                    total_tokens: 0,
+                    cost,
+                    files_modified: Vec::new(),
+                    proof_json: serde_json::json!({
+                        "status": "budget_exhausted",
+                        "turns": turns,
+                        "cost": cost,
+                        "budget": budget,
+                    }),
+                    context_bytes: ctx_bytes,
+                })
             }
             pipit_core::AgentOutcome::Error(msg) => {
                 Err(anyhow!("{}", msg))

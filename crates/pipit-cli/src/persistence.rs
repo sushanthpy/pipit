@@ -1,8 +1,77 @@
 use anyhow::Result;
 use pipit_core::{PlanningState, ProofPacket};
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Atomically write data to a file using write-ahead protocol.
+/// Writes to a `.tmp` sibling, fsyncs, then renames over the target.
+/// `rename()` is atomic on POSIX — the target is always either the
+/// previous complete state or the new complete state, never partial.
+pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    let mut file = File::create(&tmp)?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Advisory file lock for session exclusivity.
+/// Prevents concurrent pipit sessions from corrupting shared state.
+/// The lock is automatically released when the process exits (including crashes).
+pub struct SessionLock {
+    _file: File,
+    path: PathBuf,
+}
+
+impl SessionLock {
+    /// Acquire an advisory lock on `.pipit/.lock` in the given project root.
+    /// Returns `Err` if another session already holds the lock.
+    pub fn acquire(project_root: &Path) -> Result<Self> {
+        let lock_dir = project_root.join(".pipit");
+        std::fs::create_dir_all(&lock_dir)?;
+        let lock_path = lock_dir.join(".lock");
+
+        let file = File::create(&lock_path)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+            if ret != 0 {
+                anyhow::bail!(
+                    "Another pipit session is active in this project ({}). \
+                     Use --force to override.",
+                    project_root.display()
+                );
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, we just create the file as a best-effort lock signal.
+            // True advisory locking would need LockFileEx on Windows.
+            let _ = &file;
+        }
+
+        Ok(Self {
+            _file: file,
+            path: lock_path,
+        })
+    }
+}
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        // Lock is released automatically when _file is dropped (fd closed).
+        // Clean up the lock file for tidiness.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanningSnapshot {
@@ -39,7 +108,7 @@ pub fn persist_proof_packet(project_root: &Path, proof: &ProofPacket) -> Result<
         .as_secs();
     let file_path = proofs_dir.join(format!("proof-{}.json", timestamp));
     let json = serde_json::to_string_pretty(proof)?;
-    std::fs::write(&file_path, json)?;
+    atomic_write(&file_path, json.as_bytes())?;
     Ok(file_path)
 }
 
@@ -68,7 +137,7 @@ pub fn persist_planning_snapshot(
         proof_summary,
     };
     let json = serde_json::to_string_pretty(&snapshot)?;
-    std::fs::write(file_path, json)?;
+    atomic_write(&file_path, json.as_bytes())?;
     Ok(())
 }
 

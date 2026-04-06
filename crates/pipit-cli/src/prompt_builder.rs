@@ -7,6 +7,20 @@ use std::path::Path;
 
 use crate::workflow::WorkflowAssets;
 
+/// Sanitize user-controlled content before injection into the system prompt.
+/// Wraps content in XML delimiter tags and escapes XML special characters
+/// to prevent prompt injection via memory, skill, or knowledge files.
+fn sanitize_injected_content(content: &str, source: &str) -> String {
+    let escaped = content
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        "<injected_content source=\"{}\">\n{}\n</injected_content>",
+        source, escaped
+    )
+}
+
 /// Build the system prompt from composable sections.
 ///
 /// Includes tool selection heuristics, efficiency maxims, boot orientation,
