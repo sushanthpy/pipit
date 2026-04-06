@@ -183,7 +183,7 @@ impl BlobStore {
         let to_remove: Vec<String> = self
             .access_gen
             .iter()
-            .filter(|(_, &gen)| gen < cutoff)
+            .filter(|(_, generation)| **generation < cutoff)
             .map(|(hash, _)| hash.clone())
             .collect();
 

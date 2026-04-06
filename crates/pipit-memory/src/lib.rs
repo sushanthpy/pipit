@@ -17,6 +17,7 @@
 pub mod secret_scanner;
 pub mod auto_dream;
 pub mod memory_log;
+pub mod team_sync;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

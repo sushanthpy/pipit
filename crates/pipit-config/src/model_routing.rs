@@ -133,7 +133,7 @@ impl ModelRouter {
 
         // Resolve: first non-None source wins
         for (priority, source) in &self.sources {
-            if let Some(ref model) = source {
+            if let Some(model) = source {
                 let resolved = self.resolve_alias(model);
                 let mut current = self.current.write().unwrap();
                 *current = Some(ModelSelection {

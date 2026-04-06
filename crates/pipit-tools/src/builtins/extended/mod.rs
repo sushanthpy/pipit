@@ -511,12 +511,12 @@ impl Tool for ConfigTool {
                 for (i, part) in parts.iter().enumerate() {
                     if i == parts.len() - 1 {
                         // Set the value
-                        if let toml::Value::Table(ref mut table) = current {
+                        if let toml::Value::Table(table) = current {
                             table.insert(part.to_string(), toml::Value::String(value.to_string()));
                         }
                     } else {
                         // Navigate/create intermediate tables
-                        if let toml::Value::Table(ref mut table) = current {
+                        if let toml::Value::Table(table) = current {
                             current = table.entry(part.to_string())
                                 .or_insert(toml::Value::Table(toml::map::Map::new()));
                         }
@@ -856,7 +856,12 @@ impl Tool for CronTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Tool 9: Team — Team memory and shared context
+//  Tool 9: Team — Local-first team memory and shared context
+//
+//  Architecture: 3 of 4 actions (create, list, share) work offline via
+//  TOML/markdown file I/O. Only `sync` needs the daemon. Secret scanning
+//  runs on every `share` write. Graceful degradation when daemon is
+//  unavailable.
 // ═══════════════════════════════════════════════════════════════════════════
 
 pub struct TeamTool;
@@ -868,7 +873,7 @@ impl Tool for TeamTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["create", "list", "share", "sync"], "description": "Team action"},
+                "action": {"type": "string", "enum": ["create", "list", "share", "sync"], "description": "Team action: create a team, list teams, share a key-value, or sync with daemon"},
                 "name": {"type": "string", "description": "Team name (for create)"},
                 "key": {"type": "string", "description": "Shared memory key (for share)"},
                 "value": {"type": "string", "description": "Shared memory value (for share)"}
@@ -876,17 +881,226 @@ impl Tool for TeamTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "Manage team shared context, conventions, and memory." }
+    fn description(&self) -> &str { "Manage team shared context, conventions, and memory. Create, list, share work offline; sync requires pipit-daemon." }
     fn is_mutating(&self) -> bool { true }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
         let action = args.get("action").and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
-        Ok(ToolResult::text(format!(
-            "Team action '{action}' — team features require pipit-daemon for synchronization. \
-             Configure teams in .pipit/teams.toml."
-        )))
+
+        let project_root = &ctx.project_root;
+        let pipit_dir = project_root.join(".pipit");
+        let teams_path = pipit_dir.join("teams.toml");
+        let team_dir = pipit_dir.join("team");
+
+        match action {
+            "create" => {
+                let name = args.get("name").and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArgs("name is required for create".into()))?;
+
+                // Ensure directories exist
+                std::fs::create_dir_all(&team_dir)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create team dir: {}", e)))?;
+
+                // Read or create teams.toml
+                let mut teams: toml::Value = if teams_path.exists() {
+                    let content = std::fs::read_to_string(&teams_path)
+                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read teams.toml: {}", e)))?;
+                    content.parse::<toml::Value>()
+                        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                } else {
+                    toml::Value::Table(toml::map::Map::new())
+                };
+
+                // Add team entry
+                let team_id = format!("team-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000"));
+                if let toml::Value::Table(table) = &mut teams {
+                    let teams_arr = table.entry("teams".to_string())
+                        .or_insert(toml::Value::Array(Vec::new()));
+                    if let toml::Value::Array(arr) = teams_arr {
+                        let mut entry = toml::map::Map::new();
+                        entry.insert("id".to_string(), toml::Value::String(team_id.clone()));
+                        entry.insert("name".to_string(), toml::Value::String(name.to_string()));
+                        entry.insert("created_at".to_string(), toml::Value::String(
+                            chrono::Utc::now().to_rfc3339()
+                        ));
+                        entry.insert("members".to_string(), toml::Value::Array(Vec::new()));
+                        arr.push(toml::Value::Table(entry));
+                    }
+                }
+
+                // Write teams.toml
+                let content = toml::to_string_pretty(&teams)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to serialize teams: {}", e)))?;
+                std::fs::write(&teams_path, &content)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write teams.toml: {}", e)))?;
+
+                // Create team shared.toml
+                let shared_path = team_dir.join("shared.toml");
+                if !shared_path.exists() {
+                    std::fs::write(&shared_path, "# Team shared context\n[shared]\n")
+                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create shared.toml: {}", e)))?;
+                }
+
+                Ok(ToolResult::text(format!(
+                    "Created team '{}' (id: {}). Team config: {}\nShared context: {}",
+                    name, team_id,
+                    teams_path.display(),
+                    team_dir.join("shared.toml").display(),
+                )))
+            }
+
+            "list" => {
+                if !teams_path.exists() {
+                    return Ok(ToolResult::text(
+                        "No teams configured. Use `team create --name <name>` to create one.".to_string()
+                    ));
+                }
+
+                let content = std::fs::read_to_string(&teams_path)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read teams.toml: {}", e)))?;
+                let teams: toml::Value = content.parse()
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse teams.toml: {}", e)))?;
+
+                let mut output = String::from("Teams:\n");
+                if let Some(toml::Value::Array(arr)) = teams.get("teams") {
+                    for (i, team) in arr.iter().enumerate() {
+                        let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let id = team.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                        let members = team.get("members")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        output.push_str(&format!(
+                            "  {}. {} (id: {}, {} members)\n",
+                            i + 1, name, id, members
+                        ));
+                    }
+                } else {
+                    output.push_str("  (none)\n");
+                }
+
+                // Show shared context if present
+                let shared_path = team_dir.join("shared.toml");
+                if shared_path.exists() {
+                    if let Ok(shared_content) = std::fs::read_to_string(&shared_path) {
+                        let shared: toml::Value = shared_content.parse().unwrap_or(toml::Value::Table(toml::map::Map::new()));
+                        if let Some(toml::Value::Table(table)) = shared.get("shared") {
+                            output.push_str(&format!("\nShared context ({} entries):\n", table.len()));
+                            for (key, value) in table.iter().take(10) {
+                                let val_owned = value.to_string();
+                                let val_str = value.as_str().unwrap_or(&val_owned);
+                                let preview: String = val_str.chars().take(80).collect();
+                                output.push_str(&format!("  {}: {}\n", key, preview));
+                            }
+                        }
+                    }
+                }
+
+                Ok(ToolResult::text(output))
+            }
+
+            "share" => {
+                let key = args.get("key").and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArgs("key is required for share".into()))?;
+                let value = args.get("value").and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArgs("value is required for share".into()))?;
+
+                // Secret scanning — reject if secrets detected
+                if team_tool_scan_secrets(value) {
+                    return Ok(ToolResult::text(
+                        "REJECTED: The value contains what appears to be a secret (API key, token, password). \
+                         Secrets must not be shared via team memory. Use environment variables instead.".to_string()
+                    ));
+                }
+
+                // Ensure team dir exists
+                std::fs::create_dir_all(&team_dir)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create team dir: {}", e)))?;
+
+                let shared_path = team_dir.join("shared.toml");
+                let mut shared: toml::Value = if shared_path.exists() {
+                    let content = std::fs::read_to_string(&shared_path)
+                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read shared.toml: {}", e)))?;
+                    content.parse().unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                } else {
+                    let mut root = toml::map::Map::new();
+                    root.insert("shared".to_string(), toml::Value::Table(toml::map::Map::new()));
+                    toml::Value::Table(root)
+                };
+
+                // Set the key-value pair
+                if let toml::Value::Table(root) = &mut shared {
+                    let section = root.entry("shared".to_string())
+                        .or_insert(toml::Value::Table(toml::map::Map::new()));
+                    if let toml::Value::Table(table) = section {
+                        table.insert(key.to_string(), toml::Value::String(value.to_string()));
+                    }
+                }
+
+                let content = toml::to_string_pretty(&shared)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to serialize: {}", e)))?;
+                std::fs::write(&shared_path, &content)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write shared.toml: {}", e)))?;
+
+                Ok(ToolResult::text(format!(
+                    "Shared '{key}' to team context at {}",
+                    shared_path.display()
+                )))
+            }
+
+            "sync" => {
+                // Sync requires daemon — graceful degradation
+                Ok(ToolResult::text(
+                    "Sync requires pipit-daemon. Local team features (create, list, share) work without it.\n\
+                     To enable sync:\n\
+                     1. Start the daemon: pipit daemon start\n\
+                     2. Configure sync: set `team.sync_enabled = true` in .pipit/config.toml\n\
+                     3. Run `team sync` again to push/pull team shared context.".to_string()
+                ))
+            }
+
+            other => {
+                Ok(ToolResult::text(format!(
+                    "Unknown team action '{}'. Available: create, list, share, sync", other
+                )))
+            }
+        }
     }
+}
+
+/// Lightweight secret scanner for team shared values.
+/// Checks for common secret patterns (API keys, tokens, passwords).
+fn team_tool_scan_secrets(value: &str) -> bool {
+    let patterns = [
+        "sk-",         // OpenAI keys
+        "sk-ant-",     // Anthropic keys
+        "ghp_",        // GitHub PATs
+        "gho_",        // GitHub OAuth
+        "glpat-",      // GitLab PAT
+        "AKIA",        // AWS access key
+        "xoxb-",       // Slack bot token
+        "xoxp-",       // Slack user token
+        "-----BEGIN",  // PEM private keys
+        "Bearer ",     // Bearer tokens
+    ];
+
+    // Check for known prefixes
+    for pat in &patterns {
+        if value.contains(pat) {
+            return true;
+        }
+    }
+
+    // Check for base64-like high entropy strings (>40 chars, alphanumeric)
+    if value.len() > 40 {
+        let alnum_count = value.chars().filter(|c| c.is_alphanumeric() || *c == '+' || *c == '/' || *c == '=').count();
+        if alnum_count as f64 / value.len() as f64 > 0.85 {
+            return true;
+        }
+    }
+
+    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

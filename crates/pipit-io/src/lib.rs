@@ -1,5 +1,6 @@
 pub mod app;
 pub mod composer;
+pub mod components;
 pub mod editor_integration;
 pub mod render;
 pub mod render_engine;

@@ -19,3 +19,27 @@ pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
 similar = { workspace = true }
 once_cell = "1"
+
+# ── Ecosystem widget crates ──────────────────────────────────────────────
+# Official ratatui org widgets
+tui-scrollview = "0.6"
+tui-popup = "0.6"
+tui-big-text = "0.7"
+
+# Text editing
+tui-input = "0.11"
+tui-textarea = "0.7"
+
+# Data display
+tui-tree-widget = "0.22"
+tui-widget-list = "0.12"
+
+# Visual feedback
+throbber-widgets-tui = "0.8"
+
+# Terminal integration
+ansi-to-tui = "7"
+tui-term = "0.2"
+
+# Effects
+tachyonfx = "0.9"

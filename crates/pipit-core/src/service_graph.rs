@@ -179,7 +179,7 @@ impl ServiceGraph {
 
         let mut queue: VecDeque<&str> = in_degree
             .iter()
-            .filter(|(_, &deg)| deg == 0)
+            .filter(|(_, deg)| **deg == 0)
             .map(|(&id, _)| id)
             .collect();
 

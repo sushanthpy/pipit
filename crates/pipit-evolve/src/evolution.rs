@@ -164,14 +164,14 @@ impl EvolutionEngine {
     /// Run one generation: select parents, create offspring, evaluate, replace.
     pub fn step_generation(&mut self, offspring: Vec<(String, FitnessVector)>) -> GenerationReport {
         self.generation += 1;
-        let gen = self.generation;
+        let current_gen = self.generation;
 
         // Add offspring to population
         let base_id = self.population.len();
         for (i, (code, fitness)) in offspring.into_iter().enumerate() {
             self.population.push(Individual {
                 id: base_id + i,
-                generation: gen,
+                generation: current_gen,
                 code,
                 fitness,
                 parent_id: None,
@@ -228,7 +228,7 @@ impl EvolutionEngine {
         self.best_pareto_front = Some(front.clone());
 
         GenerationReport {
-            generation: gen,
+            generation: current_gen,
             population_size: self.population.len(),
             best_fitness: best,
             mean_fitness: mean,

@@ -504,14 +504,16 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_basic() {
-        std::env::set_var("PIPIT_TEST_VAR", "hello");
+        // SAFETY: test runs single-threaded; no concurrent env reads
+        unsafe { std::env::set_var("PIPIT_TEST_VAR", "hello"); }
         assert_eq!(expand_env_vars("${PIPIT_TEST_VAR}"), "hello");
-        std::env::remove_var("PIPIT_TEST_VAR");
+        unsafe { std::env::remove_var("PIPIT_TEST_VAR"); }
     }
 
     #[test]
     fn test_expand_env_vars_default() {
-        std::env::remove_var("PIPIT_MISSING_VAR");
+        // SAFETY: test runs single-threaded; no concurrent env reads
+        unsafe { std::env::remove_var("PIPIT_MISSING_VAR"); }
         assert_eq!(
             expand_env_vars("${PIPIT_MISSING_VAR:-fallback}"),
             "fallback"

@@ -145,7 +145,7 @@ fn generate_state() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     (0..32)
-        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .map(|_| format!("{:02x}", rng.gen_range(0u8..=255u8)))
         .collect()
 }
 

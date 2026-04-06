@@ -114,6 +114,12 @@ pub struct TuiState {
     pub working_since: Option<std::time::Instant>,
     /// Whether the current streaming text is thinking/reasoning (not response).
     pub is_thinking: bool,
+    /// Buffer for partial `<think>` / `</think>` tags split across ContentDelta boundaries.
+    pub tag_buffer: String,
+    /// Set to true when an agent run completes — prevents stale queued events
+    /// (e.g. a lingering "Preparing next turn…" Waiting event) from restarting
+    /// the working spinner after the outcome has been processed.
+    pub run_finished: bool,
     /// Whether we're inside a code block for rendering purposes.
     in_code_block: bool,
     /// Pre-parsed content lines for O(1) draw cost. Rebuilt only when
@@ -151,6 +157,8 @@ impl TuiState {
             spinner_frame: 0,
             working_since: None,
             is_thinking: false,
+            tag_buffer: String::new(),
+            run_finished: false,
             in_code_block: false,
             cached_parsed_lines: Vec::new(),
             cached_lines_count: 0,
@@ -163,6 +171,10 @@ impl TuiState {
 
     /// Start a working state (agent is processing).
     pub fn begin_working(&mut self, label: &str) {
+        // Don't restart spinner from stale queued events after a run completes
+        if self.run_finished {
+            return;
+        }
         self.is_working = true;
         self.working_label = label.to_string();
         self.phase_label = label.trim_end_matches('…').to_string();
@@ -758,8 +770,8 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         all_lines.push(style_paragraph_line(raw));
     }
 
-    // Show progress indicator when agent is working
-    if state.is_working && state.streaming_text.is_empty() {
+    // Show progress indicator when agent is working or thinking
+    if state.is_thinking || (state.is_working && state.streaming_text.is_empty()) {
         const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
         let spin_frame = (state.spinner_frame / 4) as usize % SPINNER.len();
         let elapsed = state.working_since
@@ -770,19 +782,35 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         } else {
             String::new()
         };
-        let label = if state.working_label.is_empty() {
+        let label = if state.is_thinking {
+            "reasoning".to_string()
+        } else if state.working_label.is_empty() {
             "thinking".to_string()
         } else {
             state.working_label.clone()
         };
+        let spinner_color = if state.is_thinking { Color::Magenta } else { Color::Cyan };
+
+        // Animated dots for thinking: ·· ··· ···· cycling
+        let dots = if state.is_thinking {
+            let n = ((state.spinner_frame / 8) % 4) as usize + 1;
+            format!(" {}", "·".repeat(n))
+        } else {
+            String::new()
+        };
+
         all_lines.push(Line::from(vec![
             Span::styled(
                 format!(" {} ", SPINNER[spin_frame]),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(spinner_color),
             ),
             Span::styled(
                 label,
                 Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                dots,
+                Style::default().fg(spinner_color),
             ),
             Span::styled(
                 elapsed_str,

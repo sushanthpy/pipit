@@ -152,11 +152,13 @@ pub async fn run(
             {
                 let mut s = tui_state_for_agent.lock().unwrap();
                 s.begin_working("Thinking…");
+                s.run_finished = false;
             }
             let cancel = cancel_for_agent.lock().unwrap().clone();
             let outcome = agent.run(prompt, cancel).await;
             {
                 let mut s = tui_state_for_agent.lock().unwrap();
+                s.run_finished = true;
                 s.finish_working();
                 match &outcome {
                     AgentOutcome::Completed { turns, cost, .. } => {
@@ -540,7 +542,7 @@ pub async fn run(
                                     }
                                     pipit_io::input::SlashCommand::Branch(ref name) => {
                                         let mut s = tui_state.lock().unwrap();
-                                        if let Some(ref branch_name) = name {
+                                        if let Some(branch_name) = name {
                                             drop(s);
                                             let output = std::process::Command::new("git")
                                                 .args(["checkout", "-b", branch_name])
@@ -742,6 +744,22 @@ pub async fn run(
     Ok(())
 }
 
+/// Check if `s` ends with a prefix of `<think>` or `</think>`.
+/// Returns the matching suffix (which might complete a tag with later input).
+fn think_tag_suffix(s: &str) -> &str {
+    // All possible prefixes of `<think>` and `</think>` (excluding the full tag)
+    const PREFIXES: &[&str] = &[
+        "</thin", "</thi", "</th", "</t", "</",
+        "<think", "<thin", "<thi", "<th", "<t", "<",
+    ];
+    for prefix in PREFIXES {
+        if s.ends_with(prefix) {
+            return &s[s.len() - prefix.len()..];
+        }
+    }
+    ""
+}
+
 /// Pure function: map an AgentEvent to TuiState mutations.
 /// Extracted from the inline closure for testability.
 fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
@@ -760,10 +778,22 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                 state.content_lines.push(String::new());
             }
             state.begin_working(&format!("Turn {}", turn_number));
+            // Reset thinking state for the new turn so stale state doesn't
+            // cause </think> from a fresh <think> block to leak.
+            state.is_thinking = false;
+            state.tag_buffer.clear();
         }
         AgentEvent::ContentDelta { text } => {
-            // Handle <think> tags: toggle thinking mode, strip tags
-            let mut remaining = text.as_str();
+            // Handle <think> tags: toggle thinking mode, strip tags.
+            // Prepend any buffered partial tag from a previous delta.
+            let combined = if state.tag_buffer.is_empty() {
+                text.clone()
+            } else {
+                let mut c = std::mem::take(&mut state.tag_buffer);
+                c.push_str(&text);
+                c
+            };
+            let mut remaining = combined.as_str();
             while !remaining.is_empty() {
                 if state.is_thinking {
                     if let Some(end) = remaining.find("</think>") {
@@ -771,25 +801,50 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                         remaining = &remaining[end + 8..];
                         state.is_thinking = false;
                     } else {
-                        // Still thinking — discard entire chunk
+                        // Check if we have a partial </think> at the end
+                        let suffix = think_tag_suffix(remaining);
+                        if !suffix.is_empty() {
+                            state.tag_buffer = suffix.to_string();
+                        }
+                        // Still thinking — discard
                         break;
                     }
                 } else if let Some(start) = remaining.find("<think>") {
                     // Content before <think> is real response
-                    let before = &remaining[..start];
-                    if !before.is_empty() {
-                        state.push_content(before);
+                    let before = remaining[..start].replace("</think>", "");
+                    if !before.trim().is_empty() {
+                        state.push_content(&before);
                     }
                     remaining = &remaining[start + 7..];
                     state.is_thinking = true;
                 } else {
-                    // No tags — normal response content
-                    state.push_content(remaining);
+                    // No open tags — strip stray </think> and check for partial tags
+                    let cleaned = remaining.replace("</think>", "");
+                    // Check if input ends with a potential partial tag
+                    let suffix = think_tag_suffix(remaining);
+                    if !suffix.is_empty() {
+                        // Buffer the potential partial tag; emit text before it
+                        let safe = &cleaned[..cleaned.len().saturating_sub(suffix.len())];
+                        if !safe.trim().is_empty() {
+                            state.push_content(safe);
+                        }
+                        state.tag_buffer = suffix.to_string();
+                    } else if !cleaned.trim().is_empty() {
+                        state.push_content(&cleaned);
+                    }
                     break;
                 }
             }
         }
         AgentEvent::ContentComplete { .. } => {
+            // Flush any buffered partial tag — it wasn't a real tag
+            if !state.tag_buffer.is_empty() {
+                let buf = std::mem::take(&mut state.tag_buffer);
+                let cleaned = buf.replace("</think>", "").replace("<think>", "");
+                if !cleaned.trim().is_empty() {
+                    state.push_content(&cleaned);
+                }
+            }
             state.finish_working();
         }
         AgentEvent::ToolCallStart { name, args, .. } => {
@@ -871,6 +926,16 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
         }
         AgentEvent::Waiting { label } => {
             state.begin_working(label);
+        }
+        AgentEvent::ThinkingDelta { .. } => {
+            // Provider is sending dedicated thinking events (e.g. Anthropic extended thinking).
+            // Mark as thinking so the content pane shows the reasoning animation.
+            if !state.is_thinking {
+                state.is_thinking = true;
+                if state.working_since.is_none() {
+                    state.working_since = Some(std::time::Instant::now());
+                }
+            }
         }
         AgentEvent::TurnEnd { turn_number, .. } => {
             state.finish_working();

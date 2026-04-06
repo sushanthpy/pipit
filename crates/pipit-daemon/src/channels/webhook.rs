@@ -178,7 +178,7 @@ impl Channel for WebhookChannel {
 
     async fn send_update(&self, update: TaskUpdate) -> Result<(), ChannelError> {
         if let MessageOrigin::Webhook {
-            callback_url: Some(ref url),
+            callback_url: Some(url),
             ..
         } = &update.origin
         {

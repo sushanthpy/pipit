@@ -133,7 +133,7 @@ impl FitnessEngine {
             })
             .collect();
 
-        for gen in 0..generations {
+        for generation in 0..generations {
             // Evaluate fitness
             let mut scored: Vec<(ArchGenome, FitnessScores)> = population.iter()
                 .map(|g| (g.clone(), self.evaluate(g)))
@@ -158,7 +158,7 @@ impl FitnessEngine {
             for i in (0..scored.len()).step_by(2) {
                 if i + 1 < scored.len() {
                     let mut child = scored[i].0.crossover(&scored[i + 1].0, &mut rng);
-                    if rng.gen::<f64>() < 0.3 { child.mutate(&mut rng); }
+                    if rng.gen_range(0.0..1.0) < 0.3 { child.mutate(&mut rng); }
                     offspring.push(child);
                 }
             }

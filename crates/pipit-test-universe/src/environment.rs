@@ -103,7 +103,7 @@ impl ServiceMock {
         self.stats.total_latency_ms += latency_ms as u64;
 
         // Bernoulli fault injection
-        if rng.gen::<f64>() < self.config.fault_probability {
+        if rng.gen_range(0.0..1.0) < self.config.fault_probability {
             self.stats.faults_injected += 1;
             let idx = rng.gen_range(0..self.config.error_codes.len().max(1));
             let code = self.config.error_codes.get(idx).copied().unwrap_or(500);
@@ -133,8 +133,8 @@ impl ServiceMock {
 
     /// Sample from LogNormal(μ, σ) using Box-Muller.
     fn sample_log_normal(&self, rng: &mut impl Rng) -> f64 {
-        let u1: f64 = rng.gen::<f64>().max(1e-10);
-        let u2: f64 = rng.gen::<f64>();
+        let u1: f64 = rng.gen_range(0.0..1.0f64).max(1e-10);
+        let u2: f64 = rng.gen_range(0.0..1.0);
         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
         let normal_sample = self.config.latency_mu + self.config.latency_sigma * z;
         normal_sample.exp().max(0.1) // ms, minimum 0.1ms

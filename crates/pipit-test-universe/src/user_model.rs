@@ -85,7 +85,7 @@ impl UserUniverse {
 
     fn select_archetype<R: Rng>(&self, rng: &mut R) -> &UserArchetype {
         let total_weight: f64 = self.archetypes.iter().map(|a| a.population_weight).sum();
-        let mut r = rng.gen::<f64>() * total_weight;
+        let mut r = rng.gen_range(0.0..1.0) * total_weight;
         for arch in &self.archetypes {
             r -= arch.population_weight;
             if r <= 0.0 {
@@ -240,7 +240,7 @@ fn select_action<R: Rng>(archetype: &UserArchetype, state: &str, rng: &mut R) ->
     }).collect();
 
     let total: f64 = probs.iter().map(|(_, p)| p).sum();
-    let mut r = rng.gen::<f64>() * total;
+    let mut r = rng.gen_range(0.0..1.0) * total;
 
     for (action, prob) in &probs {
         r -= prob;

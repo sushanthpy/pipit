@@ -331,7 +331,7 @@ fn build_explanation(
 ) -> String {
     let reasons: Vec<String> = verdicts
         .iter()
-        .filter(|(_, &d)| d > Decision::Allow)
+        .filter(|(_, d)| **d > Decision::Allow)
         .map(|(name, d)| format!("{name}: {d:?}"))
         .collect();
 

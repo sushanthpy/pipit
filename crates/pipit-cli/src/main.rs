@@ -1293,7 +1293,7 @@ async fn main() -> Result<()> {
                                 .current_dir(&project_root)
                                 .output();
                         }
-                        if let Some(ref message) = msg {
+                        if let Some(message) = msg {
                             // Direct commit with provided message
                             let output = std::process::Command::new("git")
                                 .args(["commit", "-m", message])
@@ -1520,7 +1520,7 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     SlashCommand::Background(ref prompt) => {
-                        if let Some(ref task) = prompt {
+                        if let Some(task) = prompt {
                             // Check if daemon is running
                             let daemon_running = std::process::Command::new("curl")
                                 .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:3141/health"])
@@ -1726,7 +1726,7 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     SlashCommand::Branch(ref name) => {
-                        if let Some(ref branch_name) = name {
+                        if let Some(branch_name) = name {
                             let output = std::process::Command::new("git")
                                 .args(["checkout", "-b", branch_name])
                                 .current_dir(&project_root)
