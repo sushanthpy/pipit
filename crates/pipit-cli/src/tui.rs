@@ -810,7 +810,7 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             if !state.content_lines.is_empty() {
                 state.content_lines.push(String::new());
                 state.content_lines.push(format!(
-                    "─── turn {} ───────────────────────────",
+                    "══ Turn {} ══",
                     turn_number
                 ));
                 state.content_lines.push(String::new());

@@ -679,7 +679,7 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
             if in_code_block {
                 in_code_block = false;
                 all_lines.push(Line::from(Span::styled(
-                    format!(" {}", "─".repeat(pane_width.saturating_sub(2).min(40))),
+                    format!(" └{}", "─".repeat(pane_width.saturating_sub(3).min(40))),
                     Style::default().fg(Color::DarkGray),
                 )));
                 code_lang.clear();
@@ -693,11 +693,11 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
                     format!(" {} ", code_lang)
                 };
                 all_lines.push(Line::from(vec![
+                    Span::styled(" ┌", Style::default().fg(Color::DarkGray)),
                     Span::styled(
-                        format!(" ┌{}", "─".repeat(label.len())),
-                        Style::default().fg(Color::DarkGray),
+                        label,
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(label, Style::default().fg(Color::Cyan)),
                     Span::styled(
                         "─".repeat(pane_width.saturating_sub(4 + code_lang.len()).min(30)),
                         Style::default().fg(Color::DarkGray),
@@ -721,6 +721,28 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         }
 
         // ── Turn separator ──
+        if trimmed.starts_with("══ Turn ") && trimmed.ends_with(" ══") {
+            let turn_label = trimmed;
+            let label_width = turn_label.len();
+            let side = pane_width.saturating_sub(label_width + 4) / 2;
+            all_lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {}", "─".repeat(side.min(20))),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!(" {} ", turn_label),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "─".repeat(side.min(20)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+            continue;
+        }
+
+        // ── Legacy turn separator (backward compat) ──
         if trimmed.starts_with("───") || trimmed.starts_with("═══") {
             all_lines.push(Line::from(Span::styled(
                 format!(" {}", trimmed),
@@ -733,9 +755,9 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         if trimmed.starts_with("### ") {
             let heading = trimmed.trim_start_matches("### ");
             all_lines.push(Line::from(vec![
-                Span::styled(" ", Style::default()),
+                Span::styled("   ", Style::default()),
                 Span::styled(
-                    format!("  {}", heading),
+                    heading.to_string(),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
             ]));
@@ -743,28 +765,38 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         }
         if trimmed.starts_with("## ") {
             let heading = trimmed.trim_start_matches("## ");
-            all_lines.push(Line::from(Span::styled(
-                format!(" ◆ {}", heading),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )));
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(vec![
+                Span::styled(" ◆ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    heading.to_string(),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+            ]));
             continue;
         }
         if trimmed.starts_with("# ") {
             let heading = trimmed.trim_start_matches("# ");
-            all_lines.push(Line::from(Span::styled(
-                format!(" ━ {} ━", heading),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )));
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" ━━ {} ", heading),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "━".repeat(pane_width.saturating_sub(heading.len() + 5).min(30)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
             continue;
         }
 
         // ── Bullet points ──
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             let text = &trimmed[2..];
-            all_lines.push(Line::from(vec![
-                Span::styled("  • ", Style::default().fg(Color::Cyan)),
-                Span::raw(style_inline_markdown(text)),
-            ]));
+            let mut spans = vec![Span::styled("  • ", Style::default().fg(Color::Cyan))];
+            spans.extend(parse_inline_spans(text));
+            all_lines.push(Line::from(spans));
             continue;
         }
 
@@ -774,10 +806,9 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
                 .and_then(|s| s.strip_prefix(". "))
             {
                 let num_str: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-                all_lines.push(Line::from(vec![
-                    Span::styled(format!("  {}. ", num_str), Style::default().fg(Color::Cyan)),
-                    Span::raw(style_inline_markdown(rest)),
-                ]));
+                let mut spans = vec![Span::styled(format!("  {}. ", num_str), Style::default().fg(Color::Cyan))];
+                spans.extend(parse_inline_spans(rest));
+                all_lines.push(Line::from(spans));
                 continue;
             }
         }
@@ -785,13 +816,53 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         // ── Blockquotes ──
         if trimmed.starts_with("> ") {
             let text = &trimmed[2..];
-            all_lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(" ▎ ", Style::default().fg(Color::Blue)),
-                Span::styled(
-                    text.to_string(),
-                    Style::default().fg(Color::White).add_modifier(Modifier::ITALIC),
-                ),
-            ]));
+            ];
+            for s in parse_inline_spans(text) {
+                spans.push(Span::styled(
+                    s.content.to_string(),
+                    s.style.add_modifier(Modifier::ITALIC),
+                ));
+            }
+            all_lines.push(Line::from(spans));
+            continue;
+        }
+
+        // ── Horizontal rule ──
+        if (trimmed == "---" || trimmed == "***" || trimmed == "___")
+            || (trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == ' '))
+        {
+            all_lines.push(Line::from(Span::styled(
+                format!(" {}", "─".repeat(pane_width.saturating_sub(2).min(60))),
+                Style::default().fg(Color::DarkGray),
+            )));
+            continue;
+        }
+
+        // ── Markdown table rows ──
+        if trimmed.starts_with('|') && trimmed.ends_with('|') {
+            // Table separator row (|---|---|)
+            if trimmed.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' ') {
+                all_lines.push(Line::from(Span::styled(
+                    format!("  {}", "─".repeat(pane_width.saturating_sub(4).min(60))),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                continue;
+            }
+            // Table data row — split cells and render with separators
+            let cells: Vec<&str> = trimmed.split('|')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim())
+                .collect();
+            let mut spans = vec![Span::styled("  ", Style::default())];
+            for (i, cell) in cells.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+                }
+                spans.extend(parse_inline_spans(cell));
+            }
+            all_lines.push(Line::from(spans));
             continue;
         }
 
