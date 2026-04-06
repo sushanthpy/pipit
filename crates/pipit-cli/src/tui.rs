@@ -906,11 +906,17 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                 "bash" => Color::Cyan,
                 _ => Color::DarkGray,
             };
-            state.push_activity(icon, color, summary);
+            state.push_activity(icon, color, summary.clone());
+            state.active_tool = Some(pipit_io::app::ActiveToolInfo {
+                tool_name: name.clone(),
+                args_summary: summary,
+                started_at: std::time::Instant::now(),
+            });
             state.begin_working(&format!("Running {}…", name));
         }
         AgentEvent::ToolCallEnd { name, result, .. } => {
             state.finish_working();
+            state.active_tool = None;
             match result {
                 pipit_core::ToolCallOutcome::Success { mutated: true, .. } => {
                     state.push_activity("✓", Color::Green, format!("{} done", name));

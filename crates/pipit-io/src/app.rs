@@ -382,6 +382,7 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
             Constraint::Length(2),         // status bar
             Constraint::Length(1),         // task / phase strip
             Constraint::Min(5),            // main pane (timeline | content)
+            Constraint::Length(1),         // activity status strip
             Constraint::Length(composer_h), // dynamic composer height
         ])
         .split(area);
@@ -412,11 +413,14 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
         draw_welcome_pane(frame, vertical[2], state);
     }
 
+    // Activity status strip — persistent status above the composer
+    draw_activity_strip(frame, vertical[3], state);
+
     // Draw the composer (replaces draw_input_bar)
-    composer::draw_composer(frame, vertical[3], &state.composer, state.is_working);
+    composer::draw_composer(frame, vertical[4], &state.composer, state.is_working);
 
     // Draw completion popup as overlay (must come LAST so it renders on top)
-    composer::draw_completion_popup(frame, vertical[3], &state.composer);
+    composer::draw_completion_popup(frame, vertical[4], &state.composer);
 }
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -940,6 +944,117 @@ fn style_inline_markdown(text: &str) -> String {
     // For list items, just return the text — the full span parsing
     // is done at the Line level in style_paragraph_line.
     text.to_string()
+}
+
+/// Persistent activity status strip above the composer.
+/// Shows current agent state: working, testing, sending, done, idle.
+fn draw_activity_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let mut spans: Vec<Span> = Vec::new();
+
+    if let Some(banner) = &state.completion_status {
+        // Task completed — show result
+        spans.push(Span::styled(
+            format!(" {} ", banner.icon),
+            Style::default().fg(banner.color),
+        ));
+        spans.push(Span::styled(
+            banner.message.clone(),
+            Style::default().fg(banner.color),
+        ));
+    } else if state.is_working {
+        // Active work — animated spinner + label + elapsed time
+        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
+        let elapsed = state.working_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+
+        let spinner_color = if state.is_thinking { Color::Magenta } else { Color::Cyan };
+
+        // Pick the right status label
+        let label = if state.is_thinking {
+            "Reasoning"
+        } else {
+            match state.working_label.as_str() {
+                l if l.contains("verification") || l.contains("Verification") => "Verifying",
+                l if l.contains("test") || l.contains("Test") => "Testing",
+                l if l.contains("Sending") || l.contains("model") => "Sending to model",
+                l if l.contains("compress") || l.contains("Compress") => "Compressing context",
+                l if l.is_empty() => "Working",
+                l => l,
+            }
+        };
+
+        spans.push(Span::styled(
+            format!(" {} ", SPINNER[idx]),
+            Style::default().fg(spinner_color),
+        ));
+        spans.push(Span::styled(
+            label.to_string(),
+            Style::default().fg(spinner_color).add_modifier(Modifier::BOLD),
+        ));
+
+        if elapsed > 0 {
+            spans.push(Span::styled(
+                format!(" {}s", elapsed),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        // Active tool info if available
+        if let Some(tool) = &state.active_tool {
+            let tool_elapsed = tool.started_at.elapsed().as_secs();
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                format!("{}", tool.tool_name),
+                Style::default().fg(Color::Yellow),
+            ));
+            if !tool.args_summary.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", truncate_str(&tool.args_summary, 40)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            if tool_elapsed > 2 {
+                spans.push(Span::styled(
+                    format!(" {}s", tool_elapsed),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+    } else if state.has_received_input {
+        // Idle — ready for input
+        spans.push(Span::styled(
+            " Ready",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        // Show turn count as context
+        if state.current_turn > 0 {
+            spans.push(Span::styled(
+                format!(" · turn {}", state.current_turn),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    } else {
+        // No interaction yet
+        spans.push(Span::styled(
+            " Type a prompt to get started",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    // Right-align: Esc/help hints
+    let left_width: usize = spans.iter().map(|s| s.content.len()).sum();
+    let hints = " Esc stop · /help · Ctrl-C quit ";
+    let padding = (area.width as usize).saturating_sub(left_width).saturating_sub(hints.len());
+    if padding > 0 {
+        spans.push(Span::raw(" ".repeat(padding)));
+    }
+    spans.push(Span::styled(hints, Style::default().fg(Color::DarkGray)));
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line)
+        .style(Style::default().bg(Color::Rgb(30, 30, 40)));
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_welcome_pane(frame: &mut Frame, area: Rect, _state: &TuiState) {
