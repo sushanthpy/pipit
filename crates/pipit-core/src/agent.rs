@@ -50,6 +50,9 @@ pub struct AgentLoopConfig {
     /// Hard cost ceiling in USD. Before every API call, the estimated cost
     /// is checked against this budget. `None` = unlimited.
     pub max_budget_usd: Option<f64>,
+    /// Dry-run mode: read-only tools execute normally, mutating tools
+    /// return a preview instead of executing.
+    pub dry_run: bool,
 }
 
 impl Default for AgentLoopConfig {
@@ -67,6 +70,7 @@ impl Default for AgentLoopConfig {
             lint_command: None,
             pev: None,
             max_budget_usd: None,
+            dry_run: false,
         }
     }
 }
@@ -489,6 +493,8 @@ impl AgentLoop {
         let mut last_mutation_turn: u32 = 0;
         /// Whether we're in the grace period (past max_turns but still active).
         let mut in_grace_period = false;
+        /// When the grace period started (wall-clock). Hard-abort if >120s.
+        let mut grace_start: Option<std::time::Instant> = None;
         /// Whether the wind-down warning has already been injected.
         let mut winddown_warned = false;
 
@@ -499,6 +505,24 @@ impl AgentLoop {
             // Check for steering messages
             if self.config.enable_steering {
                 self.drain_steering_messages().await;
+            }
+
+            // Grace period wall-clock timeout: if the grace period has been
+            // active for >120s with no completed turn, hard-abort.
+            if let Some(start) = grace_start {
+                if start.elapsed() > std::time::Duration::from_secs(120) {
+                    let usage = self.context.token_usage();
+                    self.emit(AgentEvent::TokenUsageUpdate {
+                        used: usage.total,
+                        limit: usage.limit,
+                        cost: usage.cost,
+                    });
+                    return AgentOutcome::Error(
+                        "Grace period timed out after 120s without completing. \
+                         The model may be stuck on a slow API call or unresponsive. Stopping."
+                            .to_string(),
+                    );
+                }
             }
 
             // Check context budget, compress if needed
@@ -549,6 +573,7 @@ impl AgentLoop {
                 if recent_progress {
                     // Grant grace period — agent is actively making edits
                     in_grace_period = true;
+                    grace_start = Some(std::time::Instant::now());
                     self.context.push_message(Message::user(
                         "[SYSTEM] You have reached the turn limit, but you have been making progress. \
                          You have been granted a few extra turns to wrap up. \
@@ -729,6 +754,16 @@ impl AgentLoop {
                 });
             }
 
+            // Record response text for semantic loop detection.
+            // The thinking text (or response text if no thinking) is tracked
+            // so we can detect when the model repeats the same reasoning.
+            let thinking_for_loop = if !response.thinking.is_empty() {
+                &response.thinking
+            } else {
+                &response.text
+            };
+            self.loop_detector.record_thinking(thinking_for_loop);
+
             // Add assistant response to context
             self.context.push_message(response.to_message());
 
@@ -899,6 +934,40 @@ impl AgentLoop {
                         self.consecutive_loop_hits = 0;
                     }
 
+                    // ── Semantic loop detection ──
+                    // Even if tool args differ, check if the model's reasoning text
+                    // is repetitive (e.g. "Let me try a different approach" × 4).
+                    if let Some(similar_count) = self.loop_detector.check_semantic_loop() {
+                        self.consecutive_loop_hits += 1;
+                        self.emit(AgentEvent::LoopDetected {
+                            tool_name: "semantic_loop".to_string(),
+                            count: similar_count,
+                        });
+
+                        if self.consecutive_loop_hits >= 3 {
+                            self.emit(AgentEvent::TurnEnd {
+                                turn_number: turn,
+                                reason: TurnEndReason::Error,
+                            });
+                            return AgentOutcome::Error(
+                                "Agent stuck in a semantic loop: reasoning text is >70% similar across \
+                                 recent turns despite varying tool arguments. The model is repeating \
+                                 the same approach without progress. Try rephrasing your request or \
+                                 breaking it into smaller steps.".to_string(),
+                            );
+                        }
+
+                        self.context.push_message(Message::user(
+                            "[SYSTEM] Your reasoning is very similar to your previous turns. \
+                             You appear to be stuck in a loop. STOP repeating the same approach. \
+                             Try a fundamentally different strategy:\n\
+                             - Use a different tool entirely\n\
+                             - Read the file first to understand the current state\n\
+                             - Ask the user for clarification\n\
+                             - If the task cannot be completed, explain why and stop"
+                        ));
+                    }
+
                     // Push tool results to context (with truncation)
                     for (call_id, result) in results {
                         let (content, is_error) = match &result {
@@ -1008,7 +1077,45 @@ impl AgentLoop {
         let mut response = AssistantResponse::new();
         let mut has_tool_calls = false;
 
-        while let Some(event) = stream.next().await {
+        // TTFT timeout: if no data arrives for 60 seconds, abort.
+        // This prevents indefinite hangs when the model server accepts
+        // the connection but never sends tokens (overloaded, crashed, etc.).
+        let chunk_timeout = std::time::Duration::from_secs(60);
+        let mut deadline = tokio::time::Instant::now() + chunk_timeout;
+
+        loop {
+            let event = tokio::select! {
+                event = stream.next() => event,
+                _ = tokio::time::sleep_until(deadline) => {
+                    tracing::warn!(
+                        "No data received for {}s — aborting stream",
+                        chunk_timeout.as_secs()
+                    );
+                    // If we have partial content, salvage it
+                    if !response.text.is_empty() || has_tool_calls {
+                        response.finish(
+                            pipit_provider::StopReason::EndTurn,
+                            pipit_provider::UsageMetadata::default(),
+                        );
+                        return Ok(response);
+                    }
+                    return Err(pipit_provider::ProviderError::Network(
+                        format!(
+                            "No data received for {}s. Model may be overloaded or unresponsive.",
+                            chunk_timeout.as_secs()
+                        ),
+                    ));
+                }
+            };
+
+            let event = match event {
+                Some(e) => e,
+                None => break,
+            };
+
+            // Reset the deadline on every received chunk
+            deadline = tokio::time::Instant::now() + chunk_timeout;
+
             if cancel.is_cancelled() {
                 return Err(pipit_provider::ProviderError::Cancelled);
             }
@@ -1499,7 +1606,7 @@ impl AgentLoop {
 
                     let mut tool_span = self.telemetry.start_span("tool.execute")
                         .attr("tool.name", SpanValue::String(call.tool_name.clone()));
-                    let outcome = execute_single_tool(&self.tools, &modified_call, &self.tool_context, cancel.clone()).await;
+                    let outcome = execute_single_tool(&self.tools, &modified_call, &self.tool_context, cancel.clone(), self.config.dry_run).await;
                     let success = matches!(outcome, ToolCallOutcome::Success { .. });
                     tool_span.finish(if success { SpanStatus::Ok } else { SpanStatus::Error });
                     self.telemetry.record_span(tool_span);
@@ -1531,6 +1638,7 @@ impl AgentLoop {
                         let ctx = self.tool_context.clone();
                         let cancel = cancel.clone();
                         let extensions = self.extensions.clone();
+                        let dry_run = self.config.dry_run;
                         async move {
                             let modified_args = match extensions.on_before_tool(&call.tool_name, &call.args).await {
                                 Ok(Some(new_args)) => new_args,
@@ -1541,7 +1649,7 @@ impl AgentLoop {
                             };
                             let mut modified_call = call.clone();
                             modified_call.args = modified_args;
-                            let outcome = execute_single_tool(&tools, &modified_call, &ctx, cancel).await;
+                            let outcome = execute_single_tool(&tools, &modified_call, &ctx, cancel, dry_run).await;
                             let outcome = apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
                             (call.call_id.clone(), outcome)
                         }
@@ -2137,6 +2245,83 @@ pub(crate) async fn apply_after_tool_hook(
     }
 }
 
+/// Enrich a tool error message with what/why/fix structure.
+/// Maps common stderr patterns to actionable guidance.
+fn enrich_tool_error(tool_name: &str, raw_error: &str) -> String {
+    let lower = raw_error.to_lowercase();
+
+    // Pattern-match common failures and return (what, why, fix)
+    if lower.contains("sed") && lower.contains("illegal option") {
+        format!(
+            "WHAT: sed command failed due to macOS/BSD incompatibility\n\
+             WHY:  macOS uses BSD sed which requires different flags than GNU sed\n\
+             FIX:  Use `sed -i '' 's/pattern/replacement/'` on macOS (note the empty quotes), \
+             or use `perl -pi -e` which works cross-platform.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else if lower.contains("permission denied") {
+        format!(
+            "WHAT: Permission denied\n\
+             WHY:  The file or directory lacks write permissions for the current user\n\
+             FIX:  Check file permissions with `ls -la`. Use `chmod` to fix, or run with appropriate privileges.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else if lower.contains("no such file or directory") {
+        format!(
+            "WHAT: File or directory not found\n\
+             WHY:  The specified path does not exist\n\
+             FIX:  Verify the path with `ls` or `find`. The file may have been moved, deleted, \
+             or the path may be relative to a different directory.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else if lower.contains("command not found") {
+        format!(
+            "WHAT: Command '{}' not found\n\
+             WHY:  The required program is not installed or not in PATH\n\
+             FIX:  Install the missing tool or use an alternative. Check with `which {}`.\n\n\
+             Raw error: {}",
+            tool_name, tool_name, raw_error
+        )
+    } else if lower.contains("connection refused") || lower.contains("econnrefused") {
+        format!(
+            "WHAT: Connection refused\n\
+             WHY:  The target server is not running or not accepting connections\n\
+             FIX:  Check if the service is running. Verify the host and port are correct.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        format!(
+            "WHAT: Operation timed out\n\
+             WHY:  The command took too long to complete\n\
+             FIX:  Try breaking the operation into smaller steps, or increase the timeout.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else if lower.contains("syntax error") || lower.contains("parse error") {
+        format!(
+            "WHAT: Syntax error in command or script\n\
+             WHY:  The command contains invalid syntax\n\
+             FIX:  Check the command syntax carefully. Shell quoting, escaping, and special characters are common issues.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else if lower.contains("disk full") || lower.contains("no space left") {
+        format!(
+            "WHAT: Disk full\n\
+             WHY:  No disk space remaining on the device\n\
+             FIX:  Free disk space with `df -h` to check usage and `du -sh *` to find large files.\n\n\
+             Raw error: {}",
+            raw_error
+        )
+    } else {
+        raw_error.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2279,6 +2464,7 @@ pub(crate) async fn execute_single_tool(
     call: &pipit_provider::ToolCall,
     ctx: &ToolContext,
     cancel: CancellationToken,
+    dry_run: bool,
 ) -> ToolCallOutcome {
     let tool = match tools.get(&call.tool_name) {
         Some(t) => t,
@@ -2350,6 +2536,23 @@ pub(crate) async fn execute_single_tool(
         return ToolCallOutcome::Error { message: msg };
     }
 
+    // ── Dry-run interception ──
+    // In dry-run mode, mutating tools return a preview instead of executing.
+    if dry_run {
+        let semantics = builtin_semantics(&call.tool_name);
+        if semantics.needs_approval_by_purity() {
+            let args_preview = serde_json::to_string_pretty(&call.args)
+                .unwrap_or_else(|_| call.args.to_string());
+            return ToolCallOutcome::Success {
+                content: format!(
+                    "[DRY RUN] Would execute '{}' with args:\n{}",
+                    call.tool_name, args_preview
+                ),
+                mutated: false,
+            };
+        }
+    }
+
     // Wrap tool execution in catch_unwind to isolate panics.
     // A panicking tool produces an error result instead of crashing the session.
     let tool_name = call.tool_name.clone();
@@ -2358,7 +2561,11 @@ pub(crate) async fn execute_single_tool(
 
     match std::panic::AssertUnwindSafe(execute_future).catch_unwind().await {
         Ok(Ok(result)) => ToolCallOutcome::Success { content: result.content, mutated: result.mutated },
-        Ok(Err(e)) => ToolCallOutcome::Error { message: e.to_string() },
+        Ok(Err(e)) => {
+            let raw = e.to_string();
+            let enriched = enrich_tool_error(&tool_name, &raw);
+            ToolCallOutcome::Error { message: enriched }
+        },
         Err(panic_payload) => {
             let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
                 s.clone()

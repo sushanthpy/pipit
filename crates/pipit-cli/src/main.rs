@@ -12,6 +12,7 @@ use persistence::{LoadedPlanningState, PlanningStateSource};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use clap::CommandFactory;
 use pipit_config::{ApprovalMode, CliOverrides, ProviderKind};
 use pipit_context::{ContextManager, budget::ContextSettings};
 use pipit_core::{AgentLoop, AgentLoopConfig, AgentOutcome, PlanningState};
@@ -54,7 +55,23 @@ pub(crate) fn dbg_log(msg: &str) {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "pipit", version = env!("CARGO_PKG_VERSION"), about = "AI coding agent")]
+#[command(
+    name = "pipit",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "AI coding agent",
+    after_help = "\
+EXAMPLES:
+  pipit \"fix the login bug in auth.rs\"
+  pipit --model opus \"refactor the auth module\"
+  pipit --mode guarded \"add pagination to the API\"
+  pipit --approval full_auto \"run tests and fix failures\"
+  pipit --classic                         # REPL mode
+  pipit --json \"run tests\" | jq '.cost'   # CI mode
+  pipit --dry-run \"delete unused imports\"  # preview only
+  pipit auth login anthropic              # store API key
+  pipit completions zsh > ~/.zfunc/_pipit # shell completions
+"
+)]
 struct Cli {
     /// Initial prompt (if provided, runs non-interactively)
     #[arg(value_name = "PROMPT")]
@@ -104,6 +121,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     classic: bool,
 
+    /// Output structured JSON (NDJSON events + final result). For CI/scripting.
+    #[arg(long, default_value_t = false)]
+    json: bool,
+
+    /// Dry-run mode: show what would be done without executing mutations
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+
     /// Write detailed startup diagnostics to /tmp/pipit-debug.log
     #[arg(long, default_value_t = false)]
     debug: bool,
@@ -116,6 +141,10 @@ struct Cli {
     /// custom   — guarded with user-specified role models
     #[arg(long, default_value = "fast")]
     mode: String,
+
+    /// Print startup timing breakdown
+    #[arg(long, default_value_t = false)]
+    timing: bool,
 
     // ── Expert: role model overrides (hidden from default --help) ──
 
@@ -158,6 +187,12 @@ enum Commands {
     Update,
     /// Interactive setup wizard — configure provider, model, and preferences
     Setup,
+    /// Generate shell completion script
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -204,6 +239,8 @@ fn env_var_for(provider: ProviderKind) -> &'static str {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let startup_start = std::time::Instant::now();
+
     // Initialize tracing with a TUI-safe writer that suppresses output
     // while the full-screen ratatui alternate screen is active.
     tracing_subscriber::fmt()
@@ -215,7 +252,9 @@ async fn main() -> Result<()> {
         .with_writer(|| pipit_io::TuiSafeStderr)
         .init();
 
+    let t_parse = std::time::Instant::now();
     let cli = Cli::parse();
+    let parse_ms = t_parse.elapsed().as_millis();
 
     // Enable debug logging if requested
     if cli.debug {
@@ -232,6 +271,11 @@ async fn main() -> Result<()> {
         Some(Commands::Auth { action }) => return auth::handle(action).await,
         Some(Commands::Update) => return update::self_update().await,
         Some(Commands::Setup) => return setup::run(),
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            clap_complete::generate(*shell, &mut cmd, "pipit", &mut std::io::stdout());
+            return Ok(());
+        }
         None => {}
     }
 
@@ -540,6 +584,7 @@ async fn main() -> Result<()> {
         test_command: config.project.test_command.clone(),
         lint_command: config.project.lint_command.clone(),
         pev: pev_config,
+        dry_run: cli.dry_run,
         ..Default::default()
     };
 
@@ -600,19 +645,102 @@ async fn main() -> Result<()> {
         _ => None,
     };
 
-    // Single-shot mode
+    // Single-shot mode (or JSON mode)
     if let Some(prompt) = cli.prompt {
         let cancel = CancellationToken::new();
+        let json_mode = cli.json;
 
         // Spawn event handler
         let _ui_handle = tokio::spawn(async move {
-            let mut ui = PipitUi::new(true, true, trace_ui, status);
-            while let Ok(event) = event_rx.recv().await {
-                ui.handle_event(&event);
+            if json_mode {
+                // JSON mode: emit NDJSON events to stderr (structured events)
+                while let Ok(event) = event_rx.recv().await {
+                    // Format events as JSON objects with type + data
+                    let json = match &event {
+                        pipit_core::AgentEvent::TurnStart { turn_number } =>
+                            serde_json::json!({"event": "turn_start", "turn": turn_number}),
+                        pipit_core::AgentEvent::TurnEnd { turn_number, .. } =>
+                            serde_json::json!({"event": "turn_end", "turn": turn_number}),
+                        pipit_core::AgentEvent::ContentDelta { text } =>
+                            serde_json::json!({"event": "content_delta", "text": text}),
+                        pipit_core::AgentEvent::ContentComplete { full_text } =>
+                            serde_json::json!({"event": "content_complete", "text": full_text}),
+                        pipit_core::AgentEvent::ToolCallStart { call_id, name, .. } =>
+                            serde_json::json!({"event": "tool_start", "call_id": call_id, "name": name}),
+                        pipit_core::AgentEvent::ToolCallEnd { call_id, name, .. } =>
+                            serde_json::json!({"event": "tool_end", "call_id": call_id, "name": name}),
+                        pipit_core::AgentEvent::TokenUsageUpdate { used, limit, cost } =>
+                            serde_json::json!({"event": "token_usage", "used": used, "limit": limit, "cost": cost}),
+                        pipit_core::AgentEvent::Waiting { label } =>
+                            serde_json::json!({"event": "waiting", "label": label}),
+                        _ => serde_json::json!({"event": "other"}),
+                    };
+                    eprintln!("{}", json);
+                }
+            } else {
+                let mut ui = PipitUi::new(true, true, trace_ui, status);
+                while let Ok(event) = event_rx.recv().await {
+                    ui.handle_event(&event);
+                }
             }
         });
 
         let outcome = agent.run(prompt, cancel).await;
+
+        if json_mode {
+            // Structured JSON result to stdout
+            let result = match &outcome {
+                AgentOutcome::Completed { turns, cost, proof, total_tokens } => {
+                    let files_modified: Vec<String> = proof.realized_edits.iter()
+                        .map(|e| e.path.clone())
+                        .collect();
+                    serde_json::json!({
+                        "status": "completed",
+                        "turns": turns,
+                        "total_tokens": total_tokens,
+                        "cost": cost,
+                        "files_modified": files_modified,
+                        "exit_code": 0,
+                    })
+                }
+                AgentOutcome::MaxTurnsReached(n) => {
+                    serde_json::json!({
+                        "status": "max_turns_reached",
+                        "turns": n,
+                        "exit_code": 2,
+                    })
+                }
+                AgentOutcome::BudgetExhausted { turns, cost, budget } => {
+                    serde_json::json!({
+                        "status": "budget_exhausted",
+                        "turns": turns,
+                        "cost": cost,
+                        "budget": budget,
+                        "exit_code": 2,
+                    })
+                }
+                AgentOutcome::Cancelled => {
+                    serde_json::json!({
+                        "status": "cancelled",
+                        "exit_code": 1,
+                    })
+                }
+                AgentOutcome::Error(e) => {
+                    serde_json::json!({
+                        "status": "error",
+                        "error": e,
+                        "exit_code": 1,
+                    })
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+
+            let exit_code = result["exit_code"].as_i64().unwrap_or(0);
+            if exit_code != 0 {
+                std::process::exit(exit_code as i32);
+            }
+            return Ok(());
+        }
 
         match outcome {
             AgentOutcome::Completed { turns, cost, proof, .. } => {
@@ -658,6 +786,17 @@ async fn main() -> Result<()> {
     }
 
     dbg_log("[12/12] pre-TUI: all init done, entering TUI/REPL");
+
+    // Print startup timing breakdown if --timing is set
+    if cli.timing {
+        let total_ms = startup_start.elapsed().as_millis();
+        eprintln!("\x1b[2m── startup timing ──\x1b[0m");
+        eprintln!("\x1b[2m  parse:  {}ms\x1b[0m", parse_ms);
+        eprintln!("\x1b[2m  total:  {}ms\x1b[0m", total_ms);
+        if total_ms > 200 {
+            eprintln!("\x1b[33m  ⚠ startup exceeded 200ms budget\x1b[0m");
+        }
+    }
 
     // ── TUI mode (default) vs classic REPL ───────────────────────────────
     if !cli.classic {

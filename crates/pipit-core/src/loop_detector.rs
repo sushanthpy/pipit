@@ -6,6 +6,10 @@ pub struct LoopDetector {
     history: VecDeque<ToolCallFingerprint>,
     window_size: usize,
     threshold: usize,
+    /// Thinking text history for semantic loop detection.
+    /// Tracks the model's reasoning across turns — if the text is >70% similar
+    /// across 3 turns, the model is semantically stuck even if tool args differ.
+    thinking_history: VecDeque<String>,
 }
 
 #[derive(Clone)]
@@ -37,6 +41,7 @@ impl LoopDetector {
             history: VecDeque::new(),
             window_size,
             threshold,
+            thinking_history: VecDeque::new(),
         }
     }
 
@@ -71,6 +76,52 @@ impl LoopDetector {
     /// from triggering false positives.
     pub fn reset(&mut self) {
         self.history.clear();
+        self.thinking_history.clear();
+    }
+
+    /// Record the model's thinking/response text for this turn.
+    /// Used by the semantic loop detector.
+    pub fn record_thinking(&mut self, text: &str) {
+        // Normalize: collapse whitespace, lowercase, trim to first 300 chars
+        let normalized: String = text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+            .chars()
+            .take(300)
+            .collect();
+        self.thinking_history.push_back(normalized);
+        if self.thinking_history.len() > 10 {
+            self.thinking_history.pop_front();
+        }
+    }
+
+    /// Check if the model is semantically stuck — same reasoning text
+    /// repeated across recent turns even though tool args may differ.
+    ///
+    /// Returns Some(count) if ≥2 of the last 3 thinking blocks are >70% similar
+    /// to the current one (via normalized Levenshtein distance).
+    pub fn check_semantic_loop(&self) -> Option<u32> {
+        if self.thinking_history.len() < 3 {
+            return None;
+        }
+        let current = self.thinking_history.back()?;
+        if current.is_empty() {
+            return None;
+        }
+        let recent: Vec<&String> = self.thinking_history.iter()
+            .rev()
+            .skip(1)  // skip current
+            .take(3)
+            .collect();
+        let similar_count = recent.iter()
+            .filter(|prev| normalized_levenshtein(prev, current) > 0.70)
+            .count() as u32;
+        if similar_count >= 2 {
+            Some(similar_count)
+        } else {
+            None
+        }
     }
 
     /// Check if any tool+args combo has been called >= threshold times with failures.
@@ -173,4 +224,40 @@ fn jaccard_similarity(left: &[String], right: &[String]) -> f64 {
     } else {
         intersection / union
     }
+}
+
+/// Normalized Levenshtein similarity: 1.0 = identical, 0.0 = completely different.
+/// Computes edit distance / max(len_a, len_b) and returns 1.0 - that ratio.
+/// O(m·n) but inputs are bounded to 300 chars (~90k operations max).
+fn normalized_levenshtein(a: &str, b: &str) -> f64 {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+
+    if m == 0 && n == 0 {
+        return 1.0;
+    }
+    if m == 0 || n == 0 {
+        return 0.0;
+    }
+
+    // Single-row DP for space efficiency
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    let dist = prev[n] as f64;
+    let max_len = m.max(n) as f64;
+    1.0 - (dist / max_len)
 }

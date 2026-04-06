@@ -279,22 +279,44 @@ impl<'a> StatusBar<'a> {
 
 impl Widget for &StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut spans = vec![
-            Span::styled(" pipit ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw(" "),
-            Span::styled("─", Style::default().fg(Color::DarkGray)),
-            Span::raw(" "),
-            Span::styled(self.model.to_string(), Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(self.mode.to_string(), Style::default().fg(Color::Yellow)),
-        ];
+        let no_color = crate::app::no_color();
+
+        let mut spans = if no_color {
+            vec![
+                Span::styled(
+                    format!(" pipit v{} ", env!("CARGO_PKG_VERSION")),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" - "),
+                Span::raw(self.model.to_string()),
+                Span::raw(" "),
+                Span::styled(format!("[{}]", self.mode), Style::default()),
+            ]
+        } else {
+            vec![
+                Span::styled(
+                    format!(" pipit v{} ", env!("CARGO_PKG_VERSION")),
+                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled("─", Style::default().fg(Color::DarkGray)),
+                Span::raw(" "),
+                Span::styled(self.model.to_string(), Style::default().fg(Color::White)),
+                Span::raw(" "),
+                Span::styled(self.mode.to_string(), Style::default().fg(Color::Yellow)),
+            ]
+        };
 
         if let Some(branch) = self.branch {
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                format!("⎇ {}", branch),
-                Style::default().fg(Color::Magenta),
-            ));
+            if no_color {
+                spans.push(Span::raw(format!("[{}]", branch)));
+            } else {
+                spans.push(Span::styled(
+                    format!("⎇ {}", branch),
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
         }
 
         // Right-aligned info
@@ -312,10 +334,11 @@ impl Widget for &StatusBar<'_> {
         let left_width: usize = spans.iter().map(|s| s.content.len()).sum();
         let padding = area.width as usize - left_width.min(area.width as usize) - right.len().min(area.width as usize);
         spans.push(Span::raw(" ".repeat(padding)));
-        spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(right, Style::default().fg(if no_color { Color::Reset } else { Color::DarkGray })));
 
+        let bg = if no_color { Style::default() } else { Style::default().bg(Color::DarkGray) };
         Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(Color::DarkGray))
+            .style(bg)
             .render(area, buf);
     }
 }

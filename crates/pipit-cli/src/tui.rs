@@ -733,6 +733,15 @@ pub async fn run(
                         }
                     }
                 }
+                Event::Mouse(mouse) => {
+                    let mut state = tui_state.lock().unwrap();
+                    let width = terminal.size().map(|s| s.width).unwrap_or(80);
+                    app::handle_mouse(&mut state, mouse, width);
+                }
+                Event::Resize(cols, rows) => {
+                    let mut state = tui_state.lock().unwrap();
+                    app::handle_resize(&mut state, cols, rows);
+                }
                 _ => {}
             }
         }

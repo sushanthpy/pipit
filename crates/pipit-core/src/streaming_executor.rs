@@ -146,7 +146,7 @@ impl StreamingToolExecutor {
                 let mut modified_call = call.clone();
                 modified_call.args = modified_args;
 
-                let outcome = crate::agent::execute_single_tool(&tools, &modified_call, &ctx, cancel).await;
+                let outcome = crate::agent::execute_single_tool(&tools, &modified_call, &ctx, cancel, false).await;
                 let outcome = crate::agent::apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
 
                 let evidence = Some(crate::agent::evidence_from_tool(&call, &outcome));
@@ -320,6 +320,7 @@ impl StreamingToolExecutor {
                 &modified_call,
                 &self.tool_context,
                 self.cancel.clone(),
+                false,
             )
             .await;
 

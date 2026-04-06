@@ -43,6 +43,16 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Check if colors should be suppressed (NO_COLOR standard, TERM=dumb).
+/// See https://no-color.org/
+pub fn no_color() -> bool {
+    static NO_COLOR: OnceLock<bool> = OnceLock::new();
+    *NO_COLOR.get_or_init(|| {
+        std::env::var("NO_COLOR").is_ok()
+            || std::env::var("TERM").as_deref() == Ok("dumb")
+    })
+}
+
 /// Cached syntect highlighting resources.
 fn syntax_set() -> &'static syntect::parsing::SyntaxSet {
     static SS: OnceLock<syntect::parsing::SyntaxSet> = OnceLock::new();
@@ -452,30 +462,17 @@ fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
     let paragraph = Paragraph::new(line).block(block);
     frame.render_widget(paragraph, chunks[0]);
 
-    // Right: turn progress gauge
+    // Right: turn progress gauge — use ProgressBar component
     if state.current_turn > 0 && state.max_turns > 0 {
         let ratio = (state.current_turn as f64 / state.max_turns as f64).min(1.0);
         let pct = (ratio * 100.0) as u16;
         let gauge_label = format!("{}/{}", state.current_turn, state.max_turns);
-
-        // Simple text-based progress bar (ratatui Gauge needs a different layout)
-        let bar_width = chunks[1].width.saturating_sub(4) as usize;
-        let filled = (ratio * bar_width as f64) as usize;
-        let empty = bar_width.saturating_sub(filled);
-        let bar = format!(" {}{}  {}",
-            "█".repeat(filled),
-            "░".repeat(empty),
-            gauge_label,
-        );
-
         let bar_color = if pct > 80 { Color::Yellow } else { Color::Cyan };
-        let bar_line = Line::from(Span::styled(bar, Style::default().fg(bar_color)));
 
-        let block = Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::DarkGray));
-        let p = Paragraph::new(bar_line).block(block);
-        frame.render_widget(p, chunks[1]);
+        let progress = crate::components::ProgressBar::new(ratio)
+            .label(&gauge_label)
+            .color(bar_color);
+        frame.render_widget(&progress, chunks[1]);
     } else {
         let block = Block::default()
             .borders(Borders::BOTTOM)
@@ -762,54 +759,8 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         all_lines.push(style_paragraph_line(raw));
     }
 
-    // Show progress indicator when agent is working or thinking
-    if state.is_thinking || (state.is_working && state.streaming_text.is_empty()) {
-        const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
-        let spin_frame = (state.spinner_frame / 4) as usize % SPINNER.len();
-        let elapsed = state.working_since
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let elapsed_str = if elapsed > 0 {
-            format!(" {}s", elapsed)
-        } else {
-            String::new()
-        };
-        let label = if state.is_thinking {
-            "reasoning".to_string()
-        } else if state.working_label.is_empty() {
-            "thinking".to_string()
-        } else {
-            state.working_label.clone()
-        };
-        let spinner_color = if state.is_thinking { Color::Magenta } else { Color::Cyan };
-
-        // Animated dots for thinking: ·· ··· ···· cycling
-        let dots = if state.is_thinking {
-            let n = ((state.spinner_frame / 8) % 4) as usize + 1;
-            format!(" {}", "·".repeat(n))
-        } else {
-            String::new()
-        };
-
-        all_lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {} ", SPINNER[spin_frame]),
-                Style::default().fg(spinner_color),
-            ),
-            Span::styled(
-                label,
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                dots,
-                Style::default().fg(spinner_color),
-            ),
-            Span::styled(
-                elapsed_str,
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
+    // Progress indicators (spinner, thinking) are consolidated in the
+    // timeline pane. The content pane shows pure content only.
 
     let total = all_lines.len();
     let start = if total > inner_height {
@@ -819,21 +770,11 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     };
     let visible: Vec<Line> = all_lines[start..].to_vec();
 
-    let scroll_info = if total > inner_height {
-        format!(" {}/{} ", start + inner_height, total)
-    } else {
-        String::new()
-    };
-
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(
             " response ",
-            Style::default().fg(Color::DarkGray),
-        ))
-        .title_bottom(Span::styled(
-            scroll_info,
             Style::default().fg(Color::DarkGray),
         ));
 
@@ -1045,15 +986,43 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
 }
 
 /// Handle a mouse event, updating state. Returns true if the event was consumed.
-pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> bool {
+/// Region-aware: scrolling in the timeline pane scrolls timeline,
+/// scrolling in the content pane scrolls content.
+pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent, terminal_width: u16) -> bool {
     match mouse.kind {
-        MouseEventKind::ScrollDown => {
-            let max = state.content_lines.len() as u16;
-            state.content_scroll_offset = (state.content_scroll_offset + 3).min(max);
-            true
-        }
-        MouseEventKind::ScrollUp => {
-            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(3);
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            let delta: i16 = if matches!(mouse.kind, MouseEventKind::ScrollDown) { 3 } else { -3 };
+
+            // Determine which pane the mouse is in based on column position
+            // and the same responsive layout breakpoints used in draw().
+            let has_sidebar = terminal_width >= 80;
+            let sidebar_width = if !has_sidebar {
+                0
+            } else if terminal_width >= 120 {
+                (terminal_width as f64 * 0.30) as u16
+            } else {
+                25
+            };
+
+            let in_timeline = has_sidebar && mouse.column < sidebar_width;
+
+            if in_timeline {
+                // Scroll the timeline pane
+                if delta > 0 {
+                    let max = state.activity_lines.len() as u16;
+                    state.scroll_offset = (state.scroll_offset + delta as u16).min(max);
+                } else {
+                    state.scroll_offset = state.scroll_offset.saturating_sub((-delta) as u16);
+                }
+            } else {
+                // Scroll the content pane
+                if delta > 0 {
+                    let max = state.content_lines.len() as u16;
+                    state.content_scroll_offset = (state.content_scroll_offset + delta as u16).min(max);
+                } else {
+                    state.content_scroll_offset = state.content_scroll_offset.saturating_sub((-delta) as u16);
+                }
+            }
             true
         }
         _ => false,
@@ -1083,15 +1052,58 @@ fn truncate_str(s: &str, max: usize) -> String {
     use unicode_width::UnicodeWidthStr;
     let width = UnicodeWidthStr::width(s);
     if width <= max {
-        s.to_string()
-    } else {
+        return s.to_string();
+    }
+    // For path-like strings, use middle-elision to preserve the filename
+    if s.contains('/') {
+        return middle_elide_path(s, max);
+    }
+    let mut current_width = 0;
+    let truncated: String = s.chars().take_while(|c| {
+        current_width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+        current_width <= max.saturating_sub(1)
+    }).collect();
+    format!("{}…", truncated)
+}
+
+/// Middle-elide a file path: keep the first component + … + last component(s).
+/// Example: `client/src/pages/admin/AdminPromotions.jsx` → `client/…/AdminPromotions.jsx`
+fn middle_elide_path(path: &str, max: usize) -> String {
+    if max <= 3 {
+        return "…".to_string();
+    }
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() <= 2 {
+        // Too few segments to middle-elide — just end-truncate
         let mut current_width = 0;
-        let truncated: String = s.chars().take_while(|c| {
+        let truncated: String = path.chars().take_while(|c| {
             current_width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
             current_width <= max.saturating_sub(1)
         }).collect();
-        format!("{}…", truncated)
+        return format!("{}…", truncated);
     }
+
+    let last = parts[parts.len() - 1];
+    // Try to fit: first/…/last
+    for i in 0..parts.len() - 1 {
+        let prefix: String = parts[..=i].join("/");
+        let candidate = format!("{}/…/{}", prefix, last);
+        if candidate.len() <= max {
+            return candidate;
+        }
+    }
+    // Can't even fit first/…/last — just show …/last
+    let candidate = format!("…/{}", last);
+    if candidate.len() <= max {
+        return candidate;
+    }
+    // Last resort: truncate the filename itself
+    let mut current_width = 0;
+    let truncated: String = last.chars().take_while(|c| {
+        current_width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+        current_width <= max.saturating_sub(1)
+    }).collect();
+    format!("{}…", truncated)
 }
 
 /// Highlight a single line of code using syntect.
