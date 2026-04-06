@@ -157,6 +157,17 @@ pub struct TuiState {
     total_content_produced: u64,
     /// Last frame timestamp for frame-budget rendering.
     last_frame_time: Option<std::time::Instant>,
+    /// Completion status — set when the agent finishes a task.
+    /// Rendered as a prominent banner in the phase strip.
+    pub completion_status: Option<CompletionBanner>,
+}
+
+/// Prominent completion indicator shown after the agent finishes.
+#[derive(Debug, Clone)]
+pub struct CompletionBanner {
+    pub icon: String,
+    pub message: String,
+    pub color: Color,
 }
 
 impl TuiState {
@@ -189,6 +200,7 @@ impl TuiState {
             max_turns: 10,
             total_content_produced: 0,
             last_frame_time: None,
+            completion_status: None,
         }
     }
 
@@ -199,6 +211,7 @@ impl TuiState {
             return;
         }
         self.is_working = true;
+        self.completion_status = None;  // Clear previous completion banner
         self.working_label = label.to_string();
         self.phase_label = label.trim_end_matches('…').to_string();
         if self.working_since.is_none() {
@@ -424,6 +437,26 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
+    // Show completion banner when the agent has finished
+    if let Some(banner) = &state.completion_status {
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {} ", banner.icon),
+                Style::default().fg(banner.color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                banner.message.clone(),
+                Style::default().fg(banner.color).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let block = Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(banner.color));
+        let paragraph = Paragraph::new(line).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     if state.task_label.is_empty() && state.phase_label.is_empty() && state.current_turn == 0 {
         let block = Block::default()
             .borders(Borders::BOTTOM)

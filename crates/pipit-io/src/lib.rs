@@ -8,7 +8,7 @@ pub mod tui;
 pub mod input;
 pub mod vim;
 
-pub use app::{TuiState, SharedTuiState, ActivityLine, handle_mouse, handle_resize};
+pub use app::{TuiState, SharedTuiState, ActivityLine, CompletionBanner, handle_mouse, handle_resize};
 pub use composer::Composer;
 pub use render::StreamingMarkdownRenderer;
 pub use render_engine::SyntaxHighlighter;

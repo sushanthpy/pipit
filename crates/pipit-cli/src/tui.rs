@@ -163,18 +163,44 @@ pub async fn run(
                 match &outcome {
                     AgentOutcome::Completed { turns, cost, .. } => {
                         s.push_activity("✓", Color::Green, format!("Done — {} turns, ${:.4}", turns, cost));
+                        s.completion_status = Some(pipit_io::app::CompletionBanner {
+                            icon: "✓".to_string(),
+                            message: format!("Completed — {} turns, ${:.4}", turns, cost),
+                            color: Color::Green,
+                        });
                     }
                     AgentOutcome::Error(e) => {
-                        s.push_activity("✗", Color::Red, format!("Error: {}", e));
+                        let short = if e.len() > 80 { format!("{}…", &e[..78]) } else { e.clone() };
+                        s.push_activity("✗", Color::Red, format!("Error: {}", short));
+                        s.completion_status = Some(pipit_io::app::CompletionBanner {
+                            icon: "✗".to_string(),
+                            message: format!("Error: {}", short),
+                            color: Color::Red,
+                        });
                     }
                     AgentOutcome::Cancelled => {
                         s.push_activity("·", Color::DarkGray, "Cancelled".to_string());
+                        s.completion_status = Some(pipit_io::app::CompletionBanner {
+                            icon: "·".to_string(),
+                            message: "Cancelled".to_string(),
+                            color: Color::DarkGray,
+                        });
                     }
                     AgentOutcome::MaxTurnsReached(n) => {
                         s.push_activity("⚠", Color::Yellow, format!("Max turns ({})", n));
+                        s.completion_status = Some(pipit_io::app::CompletionBanner {
+                            icon: "⚠".to_string(),
+                            message: format!("Max turns reached ({})", n),
+                            color: Color::Yellow,
+                        });
                     }
                     AgentOutcome::BudgetExhausted { cost, budget, .. } => {
                         s.push_activity("$", Color::Yellow, format!("Budget exhausted: ${:.4}/${:.2}", cost, budget));
+                        s.completion_status = Some(pipit_io::app::CompletionBanner {
+                            icon: "$".to_string(),
+                            message: format!("Budget exhausted: ${:.4} / ${:.2} limit", cost, budget),
+                            color: Color::Yellow,
+                        });
                     }
                 }
             }
