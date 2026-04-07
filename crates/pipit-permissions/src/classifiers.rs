@@ -50,7 +50,7 @@ impl Classifier for ReadOnlyClassifier {
 
 /// Detects destructive shell commands that should always be flagged.
 ///
-/// Pattern set derived from Claude Code's `dangerousPatterns.ts`:
+/// Pattern set for detecting destructive shell commands:
 /// rm -rf /, mkfs, dd if=/dev/zero, chmod 777, shutdown, reboot,
 /// format, fdisk, wipefs, kill -9 1, etc.
 pub struct DangerousCommandClassifier;
@@ -201,7 +201,7 @@ fn is_sensitive_system_path(path: &Path) -> bool {
 // ─── Classifier 4: Sed Mutation Detection ───────────────────────────────
 
 /// Detects `sed -i` (in-place edit) commands, which are a common source
-/// of unintended file modifications. Claude Code validates sed expressions
+/// of unintended file modifications. Validates sed expressions
 /// for correctness before allowing execution.
 pub struct SedMutationClassifier;
 

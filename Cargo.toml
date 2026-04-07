@@ -38,7 +38,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -129,6 +129,13 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Cron
 cron = "0.15"
+
+# JSON Schema generation
+schemars = "0.8"
+
+# WASM runtime for sandboxed hooks
+wasmtime = "19"
+wasmtime-wasi = "19"
 
 # Unix
 libc = "0.2"

@@ -17,6 +17,11 @@ globset = { workspace = true }
 tokio-util = { workspace = true }
 pipit-provider = { path = "../pipit-provider" }
 pipit-edit = { path = "../pipit-edit" }
+pipit-lsp = { path = "../pipit-lsp" }
+regex = { workspace = true }
+dirs = "5"
+schemars = { workspace = true }
+cron = { workspace = true }
 toml = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }

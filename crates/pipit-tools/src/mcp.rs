@@ -55,7 +55,7 @@ pub fn load_mcp_config(project_root: &Path) -> Option<McpConfig> {
     let candidates = [
         project_root.join(".pipit").join("mcp.json"),
         project_root.join("mcp.json"),
-        // Also support Claude Code's format for compatibility
+        // Support .claude/ directory format for cross-tool compatibility
         project_root.join(".claude").join("mcp.json"),
     ];
 

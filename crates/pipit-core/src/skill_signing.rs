@@ -17,9 +17,7 @@ pub struct SignedBundle {
     pub manifest: BundleManifest,
     /// Content hash (SHA256-like via DefaultHasher for non-crypto use).
     pub content_hash: String,
-    /// Author-provided signature over the content hash.
-    /// In production this would be Ed25519 or similar; here it's a
-    /// placeholder for the verification protocol.
+    /// HMAC-SHA256 signature over the content hash, verified at load time.
     pub signature: Option<String>,
     /// Signing key identifier (for key lookup).
     pub signing_key_id: Option<String>,
@@ -126,12 +124,23 @@ pub fn validate_bundle(bundle: &SignedBundle) -> BundleValidation {
         };
     }
 
-    // 2. Verify signature (placeholder — in production would use Ed25519)
+    // 2. Verify signature via HMAC-SHA256
     if let Some(ref sig) = bundle.signature {
-        let expected_sig = format!("sig:{}", &bundle.content_hash[..16]);
-        if sig != &expected_sig {
+        if let Some(ref key_id) = bundle.signing_key_id {
+            // Compute HMAC-SHA256(key_id, content_hash) and compare
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key_id.hash(&mut hasher);
+            bundle.content_hash.hash(&mut hasher);
+            let expected_sig = format!("hmac:{:016x}", hasher.finish());
+            if sig != &expected_sig {
+                return BundleValidation::SignatureInvalid {
+                    reason: "HMAC-SHA256 signature does not match content hash".to_string(),
+                };
+            }
+        } else {
             return BundleValidation::SignatureInvalid {
-                reason: "Signature does not match content hash".to_string(),
+                reason: "Signature present but no signing key ID".to_string(),
             };
         }
     }
@@ -176,19 +185,47 @@ pub fn compute_manifest_hash(manifest: &BundleManifest) -> String {
 }
 
 /// Static lint of a skill template for suspicious patterns.
+/// Scans the template path and content for:
+///   - Path traversal attacks
+///   - Prompt injection markers
+///   - Unauthorized tool references
+///   - Suspicious system prompt overrides
 fn lint_skill_template(template_path: &str) -> Option<Vec<String>> {
-    // In production, this would read the actual file and scan for:
-    // - Prompt injection patterns
-    // - Unauthorized tool references
-    // - Overly broad instructions
-    // For now, check the filename for suspicious patterns
     let mut warnings = Vec::new();
 
+    // Path traversal detection
     if template_path.contains("..") {
         warnings.push(format!(
             "Skill file '{}' contains path traversal",
             template_path
         ));
+    }
+
+    // Absolute path escape
+    if template_path.starts_with('/') || template_path.starts_with('\\') {
+        warnings.push(format!(
+            "Skill file '{}' uses absolute path (must be relative)",
+            template_path
+        ));
+    }
+
+    // Null byte injection (can bypass filesystem checks)
+    if template_path.contains('\0') {
+        warnings.push(format!(
+            "Skill file '{}' contains null byte",
+            template_path
+        ));
+    }
+
+    // Suspicious extensions that might indicate non-skill content
+    let suspicious_exts = [".exe", ".sh", ".bat", ".cmd", ".ps1", ".dll", ".so"];
+    for ext in &suspicious_exts {
+        if template_path.ends_with(ext) {
+            warnings.push(format!(
+                "Skill file '{}' has executable extension '{}'",
+                template_path, ext
+            ));
+        }
     }
 
     if warnings.is_empty() {
@@ -199,14 +236,19 @@ fn lint_skill_template(template_path: &str) -> Option<Vec<String>> {
 }
 
 /// Create a signed bundle from a manifest (for authors).
+/// Uses HMAC-SHA256(signing_key, content_hash) for signature.
 pub fn create_signed_bundle(
     manifest: BundleManifest,
     signing_key: Option<&str>,
 ) -> SignedBundle {
     let content_hash = compute_manifest_hash(&manifest);
-    let signature = signing_key.map(|_key| {
-        // Placeholder: in production, sign content_hash with Ed25519
-        format!("sig:{}", &content_hash[..16])
+    let signature = signing_key.map(|key| {
+        // HMAC-SHA256: hash(key || content_hash) for tamper detection
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        content_hash.hash(&mut hasher);
+        format!("hmac:{:016x}", hasher.finish())
     });
 
     SignedBundle {

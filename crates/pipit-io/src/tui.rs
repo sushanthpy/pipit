@@ -720,6 +720,16 @@ impl PipitUi {
                     "{DIM}turn {turn_number} · {tools} tool(s) · {reason_label}{RESET}"
                 );
             }
+            AgentEvent::TurnPhaseEntered { turn, phase, detail, .. } => {
+                // Live turn trace: show canonical phase transitions in activity feed
+                let detail_str = detail.as_deref().unwrap_or("");
+                let label = if detail_str.is_empty() {
+                    format!("phase› {phase}")
+                } else {
+                    format!("phase› {phase} ({detail_str})")
+                };
+                self.push_activity(ActivityKind::Info, label);
+            }
         }
     }
 

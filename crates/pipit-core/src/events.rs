@@ -254,6 +254,16 @@ pub enum AgentEvent {
         attempt: u32,
         reason: String,
     },
+
+    // --- Turn State Machine (canonical FSM events) ---
+    /// A canonical turn phase was entered. Derived from TurnKernel.
+    /// Single-source: UI, telemetry, logs, and replay all derive from this.
+    TurnPhaseEntered {
+        turn: u32,
+        phase: String,
+        detail: Option<String>,
+        timestamp_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -345,6 +355,9 @@ pub enum RuntimeEventKind {
     // ── Errors ──
     ProviderError { error: String, will_retry: bool },
 
+    // ── Canonical turn FSM ──
+    TurnPhaseEntered { turn: u32, phase: String, detail: Option<String>, timestamp_ms: u64 },
+
     // ── Termination ──
     SessionEnded { outcome: String },
 }
@@ -435,6 +448,11 @@ impl RuntimeEvent {
                 RuntimeEventKind::ProviderError { error: error.clone(), will_retry: *will_retry }
             }
             AgentEvent::ToolError { .. } => return None,
+            AgentEvent::TurnPhaseEntered { turn, phase, detail, timestamp_ms } => {
+                RuntimeEventKind::TurnPhaseEntered {
+                    turn: *turn, phase: phase.clone(), detail: detail.clone(), timestamp_ms: *timestamp_ms,
+                }
+            }
         };
         Some(Self::new(kind))
     }

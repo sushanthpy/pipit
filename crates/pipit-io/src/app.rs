@@ -1,28 +1,32 @@
 //! Full-screen ratatui TUI for pipit-cli.
 //!
-//! Fullscreen rendering mode — directly addresses visual lag and memory
-//! bloat during long agentic sessions by:
+//! Two-mode design: Shell mode (default, terminal-first) and Task mode
+//! (focused single-column view when agent is working).
 //!
-//!   1. Bounded ring buffers for content and activity (capped, auto-evict)
-//!   2. Virtual viewport — only visible lines are parsed/rendered per frame
-//!   3. Cached parsed lines — markdown re-parsing only when content changes
-//!   4. Frame-budget rendering — skip frames if behind schedule
-//!   5. Streaming text compaction — gc on turn boundaries
+//! Layout (Shell mode):
+//!   ┌─ top bar ─────────────────────────────────────────┐
+//!   │ repo · branch · model · mode                      │
+//!   │                                                   │
+//!   │ > _                                               │
+//!   │                                                   │
+//!   │ Recent task: …                                    │
+//!   │ Hints: /help  /review  /tasks                     │
+//!   │                                                   │
+//!   │ footer shortcuts                                  │
+//!   └───────────────────────────────────────────────────┘
 //!
-//! Layout:
-//!   ┌─ Status bar ──────────────────────────────────────┐
-//!   │ pipit · repo · branch · model · mode · tokens     │
-//!   ├─ Phase ───────────────────────────────────────────┤
-//!   │ executing                          phase: 3/10    │
-//!   ├─ Timeline ────────┬─ Response ───────────────────-┤
-//!   │ ◆ diagnostic plan │ The codebase is a Rust CLI... │
-//!   │ ○ Read src/main   │                               │
-//!   │ ● Edit lib.rs     │ ## Architecture               │
-//!   │ · turn 1 done     │ - pipit-core: agent loop      │
-//!   ├─ Composer ─────────────────────────────────────────┤
-//!   │ you› _                                             │
-//!   │ Tab commands · @file · !shell · Ctrl-J multiline   │
-//!   └───────────────────────────────────────────────────-┘
+//! Layout (Task mode):
+//!   ┌─ top bar ─────────────────────────────────────────┐
+//!   │ Task: … · status                                  │
+//!   │                                                   │
+//!   │ Activity                                          │
+//!   │  • opened file.rs                                 │
+//!   │  • ran tests                                      │
+//!   │                                                   │
+//!   │ Response stream                                   │
+//!   │                                                   │
+//!   │ footer shortcuts                                  │
+//!   └───────────────────────────────────────────────────┘
 
 use crate::composer::{self, Composer};
 use crate::tui::StatusBarState;
@@ -76,6 +80,45 @@ pub struct ActiveToolInfo {
     pub started_at: std::time::Instant,
 }
 
+/// UI mode — determines which screen is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiMode {
+    /// Default. Clean terminal-first prompt.
+    Shell,
+    /// Focused single-column task view while the agent works.
+    Task,
+}
+
+/// Overlay — temporary modal/drawer on top of the current mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    None,
+}
+
+/// Terminal width classification for responsive layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidthClass {
+    /// >= 140 cols
+    Wide,
+    /// 100–139 cols
+    Standard,
+    /// 80–99 cols
+    Compact,
+    /// < 80 cols
+    TooSmall,
+}
+
+impl WidthClass {
+    pub fn from_width(w: u16) -> Self {
+        match w {
+            0..=79 => Self::TooSmall,
+            80..=99 => Self::Compact,
+            100..=139 => Self::Standard,
+            _ => Self::Wide,
+        }
+    }
+}
+
 /// Lines displayed in the timeline (left pane: tool actions, plans, turns).
 #[derive(Debug, Clone)]
 pub struct ActivityLine {
@@ -102,9 +145,13 @@ const MAX_STREAMING_BYTES: usize = 256_000;
 #[derive(Debug)]
 pub struct TuiState {
     pub status: StatusBarState,
-    /// Timeline entries (left pane): compact agent actions.
+    /// Current UI mode.
+    pub ui_mode: UiMode,
+    /// Current overlay (temporary modal/drawer).
+    pub overlay: Overlay,
+    /// Timeline entries: compact agent actions.
     pub activity_lines: Vec<ActivityLine>,
-    /// Content lines (right pane): natural-language responses.
+    /// Content lines: natural-language responses.
     /// Bounded to MAX_CONTENT_LINES — oldest are evicted.
     pub content_lines: Vec<String>,
     /// The rich input composer (replaces bare input_buffer).
@@ -174,6 +221,8 @@ impl TuiState {
     pub fn new(status: StatusBarState, project_root: PathBuf) -> Self {
         Self {
             status,
+            ui_mode: UiMode::Shell,
+            overlay: Overlay::None,
             activity_lines: Vec::with_capacity(MAX_ACTIVITY_LINES),
             content_lines: Vec::with_capacity(256),
             composer: Composer::new(project_root),
@@ -221,33 +270,11 @@ impl TuiState {
 
     /// Finish working — commit the streaming text to the content pane.
     /// Applies bounded eviction to prevent memory bloat.
-    /// Pre-wraps long lines so they fit within notebook cell borders.
     pub fn finish_working(&mut self) {
         if !self.streaming_text.is_empty() {
-            // Pre-wrap lines that are too long for the cell.
-            // Use 100 chars as the soft wrap limit — this ensures text
-            // stays inside the notebook cell borders.
-            const WRAP_WIDTH: usize = 100;
-            let mut new_lines: Vec<String> = Vec::new();
-            for raw_line in self.streaming_text.lines() {
-                if raw_line.len() <= WRAP_WIDTH || raw_line.starts_with("```") || raw_line.starts_with("══") {
-                    new_lines.push(raw_line.to_string());
-                } else {
-                    // Word-wrap at WRAP_WIDTH
-                    let mut remaining = raw_line;
-                    while remaining.len() > WRAP_WIDTH {
-                        // Find last space before WRAP_WIDTH
-                        let break_at = remaining[..WRAP_WIDTH]
-                            .rfind(' ')
-                            .unwrap_or(WRAP_WIDTH);
-                        new_lines.push(remaining[..break_at].to_string());
-                        remaining = remaining[break_at..].trim_start();
-                    }
-                    if !remaining.is_empty() {
-                        new_lines.push(remaining.to_string());
-                    }
-                }
-            }
+            let new_lines: Vec<String> = self.streaming_text.lines()
+                .map(|line| line.to_string())
+                .collect();
             self.total_content_produced += new_lines.len() as u64;
             self.content_lines.extend(new_lines);
             self.streaming_text.clear();
@@ -336,17 +363,11 @@ impl TuiState {
     }
 
     fn auto_scroll_timeline(&mut self) {
-        let total = self.activity_lines.len() as u16;
-        if total > 10 {
-            self.scroll_offset = total.saturating_sub(10);
-        }
+        self.scroll_offset = 0;
     }
 
     pub fn auto_scroll_content(&mut self) {
-        let total = self.content_lines.len() as u16;
-        if total > 10 {
-            self.content_scroll_offset = total.saturating_sub(10);
-        }
+        self.content_scroll_offset = 0;
     }
 }
 
@@ -392,247 +413,375 @@ pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>) -
     Ok(())
 }
 
-/// Draw the full TUI frame.
+/// Draw the full TUI frame — mode-based dispatch.
 pub fn draw(frame: &mut Frame, state: &TuiState) {
     let area = frame.area();
+    let wc = WidthClass::from_width(area.width);
 
-    let composer_h = composer::composer_height(&state.composer);
+    // Hard minimum: 80 cols
+    if wc == WidthClass::TooSmall {
+        let msg = Paragraph::new(Line::from(vec![
+            Span::styled("  Resize to at least 80 columns", Style::default().fg(Color::Yellow)),
+        ]));
+        frame.render_widget(msg, area);
+        return;
+    }
 
-    let vertical = Layout::default()
+    // Root layout: top bar · body · footer
+    let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),         // status bar
-            Constraint::Length(1),         // task / phase strip
-            Constraint::Min(5),            // main pane (timeline | content)
-            Constraint::Length(1),         // activity status strip
-            Constraint::Length(composer_h), // dynamic composer height
+            Constraint::Length(1),  // top bar
+            Constraint::Min(6),    // body
+            Constraint::Length(1), // footer
         ])
         .split(area);
 
-    draw_status_bar(frame, vertical[0], state);
-    draw_task_phase_strip(frame, vertical[1], state);
+    draw_top_bar(frame, root[0], state);
 
-    if state.has_received_input {
-        // Responsive layout: collapse sidebar at narrow widths
-        let has_sidebar = area.width >= 80;
-        if has_sidebar {
-            let sidebar_constraint = if area.width >= 120 {
-                Constraint::Percentage(30)
-            } else {
-                Constraint::Length(25)  // Fixed 25 cols for narrow-ish terminals
-            };
-            let cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([sidebar_constraint, Constraint::Min(40)])
-                .split(vertical[2]);
-            draw_timeline_pane(frame, cols[0], state);
-            draw_content_pane(frame, cols[1], state);
-        } else {
-            // Terminal too narrow for sidebar — content fills full width
-            draw_content_pane(frame, vertical[2], state);
-        }
-    } else {
-        draw_welcome_pane(frame, vertical[2], state);
+    match state.ui_mode {
+        UiMode::Shell => draw_shell_mode(frame, root[1], state),
+        UiMode::Task => draw_task_mode(frame, root[1], state, wc),
     }
 
-    // Activity status strip — persistent status above the composer
-    draw_activity_strip(frame, vertical[3], state);
-
-    // Draw the composer (replaces draw_input_bar)
-    composer::draw_composer(frame, vertical[4], &state.composer, state.is_working);
+    draw_footer(frame, root[2], state);
 
     // Draw completion popup as overlay (must come LAST so it renders on top)
-    composer::draw_completion_popup(frame, vertical[4], &state.composer);
+    // Find the composer area for popup positioning — it's the bottom of the body
+    let body = root[1];
+    let composer_h = composer::composer_height(&state.composer);
+    if body.height > composer_h {
+        let composer_area = Rect::new(body.x, body.y + body.height - composer_h, body.width, composer_h);
+        composer::draw_completion_popup(frame, composer_area, &state.composer);
+    }
 }
 
-fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
+// ═══════════════════════════════════════════════════════════════════════════
+//  Top bar — 1 row, always visible
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn draw_top_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
     let s = &state.status;
+    let no_c = no_color();
 
-    // Use the component library's StatusBar widget
-    let status_bar = crate::components::ComponentStatusBar {
-        model: &s.model,
-        mode: s.approval_mode.label(),
-        branch: Some(s.branch.as_str()),
-        tokens_used: s.tokens_used,
-        tokens_limit: s.tokens_limit,
-        cost: s.cost,
-        turn: state.current_turn,
-        max_turns: state.max_turns,
+    let mode_label = match state.ui_mode {
+        UiMode::Shell => "SHELL",
+        UiMode::Task => "TASK",
     };
-    frame.render_widget(&status_bar, area);
+
+    let mut left = vec![
+        Span::styled(
+            format!(" pipit v{} ", env!("CARGO_PKG_VERSION")),
+            if no_c { Style::default().add_modifier(Modifier::BOLD) }
+            else { Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD) },
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            format!("{}", s.repo_name),
+            if no_c { Style::default().add_modifier(Modifier::BOLD) }
+            else { Style::default().fg(Color::White).add_modifier(Modifier::BOLD) },
+        ),
+        Span::styled(" ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&s.branch, if no_c { Style::default() } else { Style::default().fg(Color::Magenta) }),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            mode_label,
+            if no_c { Style::default().add_modifier(Modifier::BOLD) }
+            else { Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD) },
+        ),
+    ];
+
+    // Right side: model · approvals · status
+    let right_text = format!(
+        "model:{} {}{}",
+        s.model,
+        s.approval_mode.label(),
+        if state.is_working { "  running" } else { "" },
+    );
+    let left_width: usize = left.iter().map(|sp| sp.content.len()).sum();
+    let pad = (area.width as usize).saturating_sub(left_width).saturating_sub(right_text.len() + 1);
+    if pad > 0 {
+        left.push(Span::raw(" ".repeat(pad)));
+    }
+    left.push(Span::styled(
+        format!("{} ", right_text),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let paragraph = Paragraph::new(Line::from(left))
+        .style(if no_c { Style::default() } else { Style::default().bg(Color::Rgb(30, 30, 40)) });
+    frame.render_widget(paragraph, area);
 }
 
-fn draw_task_phase_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
-    // Show completion banner when the agent has finished
+// ═══════════════════════════════════════════════════════════════════════════
+//  Footer — 1 row, always visible, context-sensitive shortcuts
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn draw_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let hints = match state.ui_mode {
+        UiMode::Shell => {
+            if state.is_working {
+                " esc stop · /help · ctrl+c quit"
+            } else {
+                " /help · @file · !shell · enter send · esc cancel · ctrl+c quit"
+            }
+        }
+        UiMode::Task => {
+            " g shell · alt+↑↓ scroll · /help · esc stop · ctrl+c quit"
+        }
+    };
+
+    // Completion banner on the right if present.
+    if let Some(_banner) = &state.completion_status {
+        // Banner is shown above the composer in Task mode, not in footer
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(hints, Style::default().fg(Color::DarkGray)))
+            .style(Style::default().bg(Color::Rgb(30, 30, 40))),
+        area,
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Shell mode — clean terminal-first prompt
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn draw_shell_mode(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let composer_h = composer::composer_height(&state.composer);
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),          // gap
+            Constraint::Length(composer_h), // composer / input
+            Constraint::Length(1),          // gap
+            Constraint::Min(3),            // recent task + hints
+        ])
+        .split(area);
+
+    // Composer
+    composer::draw_composer(frame, body[1], &state.composer, state.is_working);
+
+    // Recent task card + hints
+    draw_shell_hints(frame, body[3], state);
+}
+
+fn draw_shell_hints(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Recent task card — show the last completed task if any
+    if let Some(banner) = &state.completion_status {
+        lines.push(Line::from(vec![
+            Span::styled(" Recent task", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("   ", Style::default()),
+            Span::styled(&banner.icon, Style::default().fg(banner.color)),
+            Span::styled(format!("  {}", banner.message), Style::default().fg(Color::White)),
+        ]));
+        if !state.task_label.is_empty() {
+            let label = truncate_str(&state.task_label, (area.width as usize).saturating_sub(6));
+            lines.push(Line::from(vec![
+                Span::styled("   ", Style::default()),
+                Span::styled(label, Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    } else if state.has_received_input && !state.task_label.is_empty() {
+        // Show task in progress
+        lines.push(Line::from(vec![
+            Span::styled(" Active task", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+        ]));
+        let label = truncate_str(&state.task_label, (area.width as usize).saturating_sub(6));
+        lines.push(Line::from(vec![
+            Span::styled("   ", Style::default()),
+            Span::styled(label, Style::default().fg(Color::White)),
+        ]));
+        if !state.phase_label.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("   status: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&state.phase_label, Style::default().fg(Color::Cyan)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Hint lines
+    lines.push(Line::from(vec![
+        Span::styled(" Hints", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("   /help       ", Style::default().fg(Color::Cyan)),
+        Span::styled("commands and shortcuts", Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("   @file       ", Style::default().fg(Color::Green)),
+        Span::styled("attach file as context", Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("   !cmd        ", Style::default().fg(Color::Magenta)),
+        Span::styled("run shell command", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, area);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task mode — single-column focused task view
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClass) {
+    let composer_h = composer::composer_height(&state.composer);
+    let activity_h = if wc == WidthClass::Compact { 5 } else { 7 };
+    let banner_h: u16 = if state.completion_status.is_some() { 1 } else { 0 };
+    let status_h: u16 = 2; // dedicated status box above composer (border + content)
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),            // task title (single row)
+            Constraint::Length(activity_h),   // activity feed
+            Constraint::Min(4),              // response stream
+            Constraint::Length(banner_h),    // completion banner
+            Constraint::Length(status_h),    // status bar (above input)
+            Constraint::Length(composer_h),   // composer
+        ])
+        .split(area);
+
+    draw_task_header(frame, body[0], state);
+    draw_task_activity(frame, body[1], state);
+    draw_content_pane(frame, body[2], state);
+
+    // Completion banner
     if let Some(banner) = &state.completion_status {
         let line = Line::from(vec![
             Span::styled(
                 format!(" {} ", banner.icon),
-                Style::default().fg(banner.color).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Black).bg(banner.color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                banner.message.clone(),
+                format!(" {}", banner.message),
                 Style::default().fg(banner.color).add_modifier(Modifier::BOLD),
             ),
         ]);
-        let block = Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(banner.color));
-        let paragraph = Paragraph::new(line).block(block);
-        frame.render_widget(paragraph, area);
-        return;
+        frame.render_widget(Paragraph::new(line), body[3]);
     }
 
-    if state.task_label.is_empty() && state.phase_label.is_empty() && state.current_turn == 0 {
-        let block = Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(block, area);
-        return;
-    }
+    // Status bar — dedicated row above the composer
+    draw_status_bar(frame, body[4], state);
 
-    // Split area: left for task info, right for progress
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(30), Constraint::Length(20)])
-        .split(area);
+    composer::draw_composer(frame, body[5], &state.composer, state.is_working);
+}
 
-    // Left: prompt + phase labels
-    let task_display = if state.task_label.len() > 50 {
-        format!("{}…", &state.task_label.chars().take(48).collect::<String>())
+fn draw_task_header(frame: &mut Frame, area: Rect, state: &TuiState) {
+    // Single-row header: just the task label
+    let task_display = if state.task_label.is_empty() {
+        "Working…".to_string()
     } else {
-        state.task_label.clone()
+        truncate_str(&state.task_label, (area.width as usize).saturating_sub(20))
     };
 
     let line = Line::from(vec![
-        Span::styled(" ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&task_display, Style::default().fg(Color::White)),
-        Span::raw("  "),
-        Span::styled("phase: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            &state.phase_label,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(" Task: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(task_display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
     ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Dedicated status bar rendered directly above the composer input.
+fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let status_text = if state.is_working {
+        if state.is_thinking {
+            "reasoning"
+        } else if !state.phase_label.is_empty() {
+            &state.phase_label
+        } else {
+            "working"
+        }
+    } else {
+        "idle"
+    };
+
+    let mut spans = Vec::new();
+
+    // Spinner
+    if state.is_working {
+        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
+        spans.push(Span::styled(
+            format!(" {} ", SPINNER[idx]),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+
+    spans.push(Span::styled(" Status: ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(status_text, Style::default().fg(Color::Cyan)));
+
+    // Show active tool name if executing
+    if let Some(ref tool_info) = state.active_tool {
+        spans.push(Span::styled(
+            format!("  ▸ {}", tool_info.tool_name),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    if state.current_turn > 0 {
+        spans.push(Span::styled(
+            format!("  turn {}/{}", state.current_turn, state.max_turns),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    if let Some(since) = state.working_since {
+        let elapsed = since.elapsed().as_secs();
+        if elapsed > 0 {
+            spans.push(Span::styled(
+                format!("  {}s", elapsed),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    let line = Line::from(spans);
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let paragraph = Paragraph::new(line).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_task_activity(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let inner_height = area.height.saturating_sub(1) as usize;
+    let total = state.activity_lines.len();
+    let start = total.saturating_sub(inner_height);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            " Activity",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    for entry in state.activity_lines[start..].iter() {
+        let max_text = (area.width as usize).saturating_sub(6);
+        if entry.icon.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("   {}", truncate_str(&entry.text, max_text)),
+                Style::default().fg(entry.color),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {} ", entry.icon), Style::default().fg(entry.color)),
+                Span::raw(truncate_str(&entry.text, max_text)),
+            ]));
+        }
+    }
 
     let block = Block::default()
         .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, chunks[0]);
-
-    // Right: turn progress gauge — use ProgressBar component
-    if state.current_turn > 0 && state.max_turns > 0 {
-        let ratio = (state.current_turn as f64 / state.max_turns as f64).min(1.0);
-        let pct = (ratio * 100.0) as u16;
-        let gauge_label = format!("{}/{}", state.current_turn, state.max_turns);
-        let bar_color = if pct > 80 { Color::Yellow } else { Color::Cyan };
-
-        let progress = crate::components::ProgressBar::new(ratio)
-            .label(&gauge_label)
-            .color(bar_color);
-        frame.render_widget(&progress, chunks[1]);
-    } else {
-        let block = Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(block, chunks[1]);
-    }
-}
-
-fn draw_timeline_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let total = state.activity_lines.len();
-
-    // Reserve 1 line for the spinner when the agent is working,
-    // otherwise it gets clipped by the Block border.
-    let spinner_active = state.is_working && !state.working_label.is_empty();
-    let lines_available = if spinner_active {
-        inner_height.saturating_sub(1)
-    } else {
-        inner_height
-    };
-
-    let start = if total > lines_available {
-        total - lines_available
-    } else {
-        0
-    };
-
-    let lines: Vec<Line> = state.activity_lines[start..]
-        .iter()
-        .map(|entry| {
-            if entry.icon.is_empty() {
-                Line::from(Span::styled(
-                    truncate_str(&entry.text, (area.width as usize).saturating_sub(4)),
-                    Style::default().fg(entry.color),
-                ))
-            } else {
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", entry.icon),
-                        Style::default().fg(entry.color),
-                    ),
-                    Span::raw(truncate_str(
-                        &entry.text,
-                        (area.width as usize).saturating_sub(6),
-                    )),
-                ])
-            }
-        })
-        .collect();
-
-    // Working indicator at bottom
-    let mut display = lines;
-    if state.is_working && !state.working_label.is_empty() {
-        const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
-        let frame = (state.spinner_frame / 4) as usize % SPINNER.len();
-        let spinner_char = SPINNER[frame];
-
-        let elapsed = state.working_since
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let elapsed_str = if elapsed > 0 {
-            format!(" {}s", elapsed)
-        } else {
-            String::new()
-        };
-
-        display.push(Line::from(vec![
-            Span::styled(
-                format!(" {} ", spinner_char),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                state.working_label.clone(),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                elapsed_str,
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
-
-    let scroll_info = if total > lines_available {
-        format!(" {}/{} ", start + lines_available, total)
-    } else {
-        String::new()
-    };
-
-    let block = Block::default()
-        .borders(Borders::RIGHT | Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            " timeline ",
-            Style::default().fg(Color::DarkGray),
-        ))
-        .title_bottom(Span::styled(
-            scroll_info,
-            Style::default().fg(Color::DarkGray),
-        ));
-
-    let paragraph = Paragraph::new(display).block(block);
+        .border_style(Style::default().fg(Color::Rgb(40, 40, 50)));
+    let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }
 
@@ -640,210 +789,179 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let pane_width = area.width.saturating_sub(2) as usize;
 
-    // ── Virtual viewport: only process lines that will be visible ──
-    // Instead of parsing ALL lines then slicing, we compute the visible
-    // window first and only parse those lines. This is O(visible) instead
-    // of O(total), critical for long sessions.
-
     // Collect all raw lines: committed + streaming
-    let committed_count = state.content_lines.len();
     let streaming_lines: Vec<&str> = if !state.streaming_text.is_empty() {
         state.streaming_text.lines().collect()
     } else {
         Vec::new()
     };
-    let total_raw = committed_count + streaming_lines.len();
 
-    // Compute visible window (last inner_height lines, auto-scroll)
-    let start = if total_raw > inner_height {
-        total_raw - inner_height
+    // Live streaming indicator: blinking cursor at end of current output
+    let is_streaming = !state.streaming_text.is_empty() && state.is_working;
+    let cursor_char = if is_streaming {
+        // Blink every ~500ms (spinner_frame increments at draw rate)
+        if (state.spinner_frame / 8) % 2 == 0 { "▌" } else { " " }
     } else {
-        0
+        ""
     };
-    let end = total_raw;
 
-    // Build lines ONLY for the visible range
     let mut all_lines: Vec<Line> = Vec::with_capacity(inner_height + 2);
     let mut in_code_block = false;
     let mut code_lang = String::new();
-    let mut in_turn_cell = false;  // Track notebook cell borders
-    let cell_width = pane_width.saturating_sub(4).min(120);  // Max cell content width
+    let mut in_turn_cell = false;
+    let mut turn_has_body = false;
+    let mut turn_start_index: Option<usize> = None;
+    let mut prev_was_empty = false;
 
-    // We need to track code-block state AND turn-cell state from before
-    // the visible window.
-    for i in 0..start {
-        let raw = if i < committed_count {
-            state.content_lines[i].as_str()
-        } else {
-            streaming_lines[i - committed_count]
-        };
-        let trimmed = raw.trim();
-        if trimmed.starts_with("```") {
-            if in_code_block {
-                in_code_block = false;
-                code_lang.clear();
+    // Helper: push with optional turn gutter
+    macro_rules! emit {
+        ($line:expr) => {{
+            let line: Line<'static> = $line;
+            if in_turn_cell && !in_code_block {
+                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+                bordered.extend(line.spans);
+                all_lines.push(Line::from(bordered));
             } else {
-                in_code_block = true;
-                code_lang = trimmed.trim_start_matches('`').to_string();
+                all_lines.push(line);
             }
-        }
-        if trimmed.starts_with("══ Turn ") && trimmed.ends_with(" ══") {
-            in_turn_cell = true;
-        }
+        }};
     }
 
-    // Now render only the visible lines
-    for i in start..end {
-        let raw = if i < committed_count {
-            state.content_lines[i].as_str()
-        } else {
-            streaming_lines[i - committed_count]
-        };
+    for raw in state.content_lines.iter().map(String::as_str).chain(streaming_lines.iter().copied()) {
         let trimmed = raw.trim();
 
-        // Helper: wrap a line with cell borders if inside a turn cell
-        macro_rules! push_line {
-            ($line:expr) => {
-                if in_turn_cell && !in_code_block {
-                    let inner: Line = $line;
-                    let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
-                    bordered.extend(inner.spans);
-                    all_lines.push(Line::from(bordered));
-                } else {
-                    all_lines.push($line);
-                }
-            };
-        }
-
-        // ── Code fence toggle ──
+        // ── Code fence ──
         if trimmed.starts_with("```") {
             if in_code_block {
                 in_code_block = false;
-                all_lines.push(Line::from(Span::styled(
-                    format!(" └{}", "─".repeat(pane_width.saturating_sub(3).min(40))),
+                turn_has_body |= in_turn_cell;
+                emit!(Line::from(Span::styled(
+                    format!("  └{}", "─".repeat(pane_width.saturating_sub(5).min(30))),
                     Style::default().fg(Color::DarkGray),
                 )));
                 code_lang.clear();
-                continue;
+                prev_was_empty = false;
             } else {
                 in_code_block = true;
+                turn_has_body |= in_turn_cell;
                 code_lang = trimmed.trim_start_matches('`').to_string();
-                let label = if code_lang.is_empty() {
-                    " code ".to_string()
-                } else {
-                    format!(" {} ", code_lang)
-                };
-                all_lines.push(Line::from(vec![
-                    Span::styled(" ┌", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        label,
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "─".repeat(pane_width.saturating_sub(4 + code_lang.len()).min(30)),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                if !prev_was_empty {
+                    emit!(Line::from(""));
+                }
+                let label = if code_lang.is_empty() { " code ".to_string() } else { format!(" {} ", code_lang) };
+                emit!(Line::from(vec![
+                    Span::styled("  ┌", Style::default().fg(Color::DarkGray)),
+                    Span::styled(label, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled("─".repeat(pane_width.saturating_sub(6 + code_lang.len()).min(16)), Style::default().fg(Color::DarkGray)),
                 ]));
-                continue;
+                prev_was_empty = false;
             }
+            continue;
         }
 
         // ── Inside code block ──
         if in_code_block {
-            let mut spans = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+            turn_has_body |= in_turn_cell;
+            let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
             let highlighted = highlight_code_line(raw, &code_lang);
             if highlighted.is_empty() {
                 spans.push(Span::styled(raw.to_string(), Style::default().fg(Color::Green)));
             } else {
                 spans.extend(highlighted);
             }
-            all_lines.push(Line::from(spans));
+            if in_turn_cell {
+                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+                bordered.extend(spans);
+                all_lines.push(Line::from(bordered));
+            } else {
+                all_lines.push(Line::from(spans));
+            }
+            prev_was_empty = false;
             continue;
         }
 
-        // ── Turn separator → notebook cell border ──
+        // ── Turn separator ──
         if trimmed.starts_with("══ Turn ") && trimmed.ends_with(" ══") {
-            // Close previous cell if open
             if in_turn_cell {
-                all_lines.push(Line::from(Span::styled(
-                    format!(" └{}┘", "─".repeat(cell_width + 2)),
-                    Style::default().fg(Color::DarkGray),
-                )));
+                if turn_has_body {
+                    all_lines.push(Line::from(""));
+                } else if let Some(start_idx) = turn_start_index.take() {
+                    all_lines.truncate(start_idx);
+                }
             }
-            // Open new cell with turn header
             let turn_label = trimmed.trim_start_matches("══ ").trim_end_matches(" ══");
-            let label_width = turn_label.len() + 2; // " Turn N "
-            let right_fill = (cell_width + 2).saturating_sub(label_width + 1);
+            turn_start_index = Some(all_lines.len());
+            all_lines.push(Line::from(""));
             all_lines.push(Line::from(vec![
-                Span::styled(" ┌─", Style::default().fg(Color::DarkGray)),
+                Span::styled(" ╭─ ", Style::default().fg(Color::Cyan)),
                 Span::styled(
-                    format!(" {} ", turn_label),
+                    turn_label.to_string(),
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}┐", "─".repeat(right_fill)),
-                    Style::default().fg(Color::DarkGray),
+                    format!(" {}", "─".repeat(pane_width.saturating_sub(turn_label.len() + 6).min(40))),
+                    Style::default().fg(Color::Rgb(50, 50, 60)),
                 ),
             ]));
             in_turn_cell = true;
+            turn_has_body = false;
+            prev_was_empty = false;
             continue;
         }
 
-        // ── Legacy turn separator (backward compat) ──
+        // ── Legacy separator ──
         if trimmed.starts_with("───") || trimmed.starts_with("═══") {
-            push_line!(Line::from(Span::styled(
-                format!(" {}", trimmed),
-                Style::default().fg(Color::DarkGray),
-            )));
+            emit!(Line::from(Span::styled(format!(" {}", trimmed), Style::default().fg(Color::DarkGray))));
+            prev_was_empty = false;
             continue;
+        }
+
+        if in_turn_cell && !trimmed.is_empty() {
+            turn_has_body = true;
         }
 
         // ── Markdown headers ──
         if trimmed.starts_with("### ") {
             let heading = trimmed.trim_start_matches("### ");
-            push_line!(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(
-                    heading.to_string(),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
+            if !prev_was_empty { emit!(Line::from("")); }
+            emit!(Line::from(vec![
+                Span::styled("   ", Style::default()),
+                Span::styled(heading.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]));
+            emit!(Line::from(""));
+            prev_was_empty = true;
             continue;
         }
         if trimmed.starts_with("## ") {
             let heading = trimmed.trim_start_matches("## ");
-            push_line!(Line::from(""));
-            push_line!(Line::from(vec![
-                Span::styled("◆ ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    heading.to_string(),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
+            if !prev_was_empty { emit!(Line::from("")); }
+            emit!(Line::from(vec![
+                Span::styled(" ◆ ", Style::default().fg(Color::Yellow)),
+                Span::styled(heading.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             ]));
+            emit!(Line::from(""));
+            prev_was_empty = true;
             continue;
         }
         if trimmed.starts_with("# ") {
             let heading = trimmed.trim_start_matches("# ");
-            push_line!(Line::from(""));
-            push_line!(Line::from(vec![
-                Span::styled(
-                    format!("━━ {} ", heading),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "━".repeat(pane_width.saturating_sub(heading.len() + 5).min(30)),
-                    Style::default().fg(Color::DarkGray),
-                ),
+            if !prev_was_empty { emit!(Line::from("")); }
+            emit!(Line::from(vec![
+                Span::styled(format!(" ━━ {} ", heading), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("━".repeat(pane_width.saturating_sub(heading.len() + 6).min(20)), Style::default().fg(Color::DarkGray)),
             ]));
+            emit!(Line::from(""));
+            prev_was_empty = true;
             continue;
         }
 
         // ── Bullet points ──
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             let text = &trimmed[2..];
-            let mut spans = vec![Span::styled(" • ", Style::default().fg(Color::Cyan))];
+            let mut spans = vec![Span::styled("   • ", Style::default().fg(Color::Cyan))];
             spans.extend(parse_inline_spans(text));
-            push_line!(Line::from(spans));
+            emit!(Line::from(spans));
+            prev_was_empty = false;
             continue;
         }
 
@@ -853,9 +971,10 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
                 .and_then(|s| s.strip_prefix(". "))
             {
                 let num_str: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-                let mut spans = vec![Span::styled(format!(" {}. ", num_str), Style::default().fg(Color::Cyan))];
+                let mut spans = vec![Span::styled(format!("   {}. ", num_str), Style::default().fg(Color::Cyan))];
                 spans.extend(parse_inline_spans(rest));
-                push_line!(Line::from(spans));
+                emit!(Line::from(spans));
+                prev_was_empty = false;
                 continue;
             }
         }
@@ -863,16 +982,12 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         // ── Blockquotes ──
         if trimmed.starts_with("> ") {
             let text = &trimmed[2..];
-            let mut spans = vec![
-                Span::styled("▎ ", Style::default().fg(Color::Blue)),
-            ];
+            let mut spans = vec![Span::styled("  ▎ ", Style::default().fg(Color::Blue))];
             for s in parse_inline_spans(text) {
-                spans.push(Span::styled(
-                    s.content.to_string(),
-                    s.style.add_modifier(Modifier::ITALIC),
-                ));
+                spans.push(Span::styled(s.content.to_string(), s.style.add_modifier(Modifier::ITALIC)));
             }
-            push_line!(Line::from(spans));
+            emit!(Line::from(spans));
+            prev_was_empty = false;
             continue;
         }
 
@@ -880,63 +995,62 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         if (trimmed == "---" || trimmed == "***" || trimmed == "___")
             || (trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == ' '))
         {
-            push_line!(Line::from(Span::styled(
-                format!("{}", "─".repeat(cell_width.min(60))),
-                Style::default().fg(Color::DarkGray),
+            emit!(Line::from(Span::styled(
+                format!("  {}", "─".repeat(pane_width.saturating_sub(4).min(50))),
+                Style::default().fg(Color::Rgb(50, 50, 60)),
             )));
+            prev_was_empty = false;
             continue;
         }
 
-        // ── Markdown table rows ──
+        // ── Table rows ──
         if trimmed.starts_with('|') && trimmed.ends_with('|') {
-            // Table separator row (|---|---|)
             if trimmed.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' ') {
-                push_line!(Line::from(Span::styled(
-                    format!(" {}", "─".repeat(cell_width.saturating_sub(2).min(60))),
+                emit!(Line::from(Span::styled(
+                    format!("   {}", "─".repeat(pane_width.saturating_sub(6).min(50))),
                     Style::default().fg(Color::DarkGray),
                 )));
-                continue;
-            }
-            // Table data row — split cells and render with separators
-            let cells: Vec<&str> = trimmed.split('|')
-                .filter(|s| !s.is_empty())
-                .map(|s| s.trim())
-                .collect();
-            let mut spans = vec![Span::styled(" ", Style::default())];
-            for (i, cell) in cells.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            } else {
+                let cells: Vec<&str> = trimmed.split('|').filter(|s| !s.is_empty()).map(|s| s.trim()).collect();
+                let mut spans = vec![Span::styled("   ", Style::default())];
+                for (i, cell) in cells.iter().enumerate() {
+                    if i > 0 { spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray))); }
+                    spans.extend(parse_inline_spans(cell));
                 }
-                spans.extend(parse_inline_spans(cell));
+                emit!(Line::from(spans));
             }
-            push_line!(Line::from(spans));
+            prev_was_empty = false;
             continue;
         }
 
         // ── Empty line ──
         if trimmed.is_empty() {
-            push_line!(Line::from(""));
+            if in_turn_cell && !turn_has_body { continue; }
+            if !prev_was_empty {
+                emit!(Line::from(""));
+                prev_was_empty = true;
+            }
             continue;
         }
 
-        // ── Default: inline markdown (bold, code spans, etc.) ──
-        push_line!(style_paragraph_line(raw));
+        // ── Default paragraph text ──
+        turn_has_body |= in_turn_cell;
+        prev_was_empty = false;
+        emit!(style_paragraph_line(raw));
     }
 
-    // Close the last open notebook cell
-    if in_turn_cell {
-        all_lines.push(Line::from(Span::styled(
-            format!(" └{}┘", "─".repeat(cell_width + 2)),
-            Style::default().fg(Color::DarkGray),
-        )));
+    // Close last turn section
+    if in_turn_cell && turn_has_body {
+        all_lines.push(Line::from(""));
+    } else if in_turn_cell {
+        if let Some(start_idx) = turn_start_index {
+            all_lines.truncate(start_idx);
+        }
     }
 
-    // Show a minimal thinking indicator in the content pane when
-    // the agent is reasoning but hasn't produced any visible output yet.
-    // Full progress info stays in the timeline; this just prevents a
-    // blank pane from confusing the user.
+    // Thinking indicator
     if all_lines.is_empty() && (state.is_thinking || (state.is_working && state.streaming_text.is_empty())) {
-        const SPINNER: &[&str] = &["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"];
+        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let spin_frame = (state.spinner_frame / 4) as usize % SPINNER.len();
         let label = if state.is_thinking { "reasoning" } else { "thinking" };
         let spinner_color = if state.is_thinking { Color::Magenta } else { Color::Cyan };
@@ -947,22 +1061,47 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     let total = all_lines.len();
-    let start = if total > inner_height {
-        total - inner_height
+    let max_scroll = total.saturating_sub(inner_height);
+    let scroll_from_bottom = usize::from(state.content_scroll_offset).min(max_scroll);
+    let top_scroll = max_scroll.saturating_sub(scroll_from_bottom);
+    let end = total.saturating_sub(scroll_from_bottom);
+    let scroll_info = if total > inner_height {
+        format!(" {}/{} ", end, total)
     } else {
-        0
+        String::new()
     };
-    let visible: Vec<Line> = all_lines[start..].to_vec();
 
     let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::Rgb(50, 50, 60)))
         .title(Span::styled(
             " response ",
             Style::default().fg(Color::DarkGray),
+        ))
+        .title_bottom(Span::styled(
+            scroll_info,
+            Style::default().fg(Color::DarkGray),
         ));
 
-    let paragraph = Paragraph::new(visible).block(block);
+    // Append live streaming cursor at the end of content
+    if !cursor_char.is_empty() {
+        if let Some(last_line) = all_lines.last_mut() {
+            last_line.spans.push(Span::styled(
+                cursor_char.to_string(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            all_lines.push(Line::from(Span::styled(
+                format!("   {}", cursor_char),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(all_lines)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((top_scroll.min(u16::MAX as usize) as u16, 0))
+        .block(block);
     frame.render_widget(paragraph, area);
 }
 
@@ -970,10 +1109,9 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
 fn style_paragraph_line(raw: &str) -> Line<'static> {
     let spans = parse_inline_spans(raw);
     if spans.len() == 1 {
-        // Fast path — no inline formatting
-        Line::from(Span::styled(format!(" {}", raw), Style::default().fg(Color::White)))
+        Line::from(Span::styled(format!("   {}", raw), Style::default().fg(Color::White)))
     } else {
-        let mut result = vec![Span::raw(" ")];
+        let mut result = vec![Span::raw("   ")];
         result.extend(spans);
         Line::from(result)
     }
@@ -1072,168 +1210,6 @@ fn style_inline_markdown(text: &str) -> String {
     text.to_string()
 }
 
-/// Persistent activity status strip above the composer.
-/// Shows current agent state: working, testing, sending, done, idle.
-fn draw_activity_strip(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let mut spans: Vec<Span> = Vec::new();
-
-    if let Some(banner) = &state.completion_status {
-        // Task completed — show result
-        spans.push(Span::styled(
-            format!(" {} ", banner.icon),
-            Style::default().fg(banner.color),
-        ));
-        spans.push(Span::styled(
-            banner.message.clone(),
-            Style::default().fg(banner.color),
-        ));
-    } else if state.is_working {
-        // Active work — animated spinner + label + elapsed time
-        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
-        let elapsed = state.working_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
-
-        let spinner_color = if state.is_thinking { Color::Magenta } else { Color::Cyan };
-
-        // Pick the right status label
-        let label = if state.is_thinking {
-            "Reasoning"
-        } else {
-            match state.working_label.as_str() {
-                l if l.contains("verification") || l.contains("Verification") => "Verifying",
-                l if l.contains("test") || l.contains("Test") => "Testing",
-                l if l.contains("Sending") || l.contains("model") => "Sending to model",
-                l if l.contains("compress") || l.contains("Compress") => "Compressing context",
-                l if l.is_empty() => "Working",
-                l => l,
-            }
-        };
-
-        spans.push(Span::styled(
-            format!(" {} ", SPINNER[idx]),
-            Style::default().fg(spinner_color),
-        ));
-        spans.push(Span::styled(
-            label.to_string(),
-            Style::default().fg(spinner_color).add_modifier(Modifier::BOLD),
-        ));
-
-        if elapsed > 0 {
-            spans.push(Span::styled(
-                format!(" {}s", elapsed),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-
-        // Active tool info if available
-        if let Some(tool) = &state.active_tool {
-            let tool_elapsed = tool.started_at.elapsed().as_secs();
-            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                format!("{}", tool.tool_name),
-                Style::default().fg(Color::Yellow),
-            ));
-            if !tool.args_summary.is_empty() {
-                spans.push(Span::styled(
-                    format!(" {}", truncate_str(&tool.args_summary, 40)),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-            if tool_elapsed > 2 {
-                spans.push(Span::styled(
-                    format!(" {}s", tool_elapsed),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-        }
-    } else if state.has_received_input {
-        // Idle — ready for input
-        spans.push(Span::styled(
-            " Ready",
-            Style::default().fg(Color::DarkGray),
-        ));
-
-        // Show turn count as context
-        if state.current_turn > 0 {
-            spans.push(Span::styled(
-                format!(" · turn {}", state.current_turn),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-    } else {
-        // No interaction yet
-        spans.push(Span::styled(
-            " Type a prompt to get started",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    // Right-align: Esc/help hints
-    let left_width: usize = spans.iter().map(|s| s.content.len()).sum();
-    let hints = " Esc stop · /help · Ctrl-C quit ";
-    let padding = (area.width as usize).saturating_sub(left_width).saturating_sub(hints.len());
-    if padding > 0 {
-        spans.push(Span::raw(" ".repeat(padding)));
-    }
-    spans.push(Span::styled(hints, Style::default().fg(Color::DarkGray)));
-
-    let line = Line::from(spans);
-    let paragraph = Paragraph::new(line)
-        .style(Style::default().bg(Color::Rgb(30, 30, 40)));
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_welcome_pane(frame: &mut Frame, area: Rect, _state: &TuiState) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            r"       _._", Style::default().fg(Color::Yellow),
-        )),
-        Line::from(Span::styled(
-            r"      (o >", Style::default().fg(Color::Yellow),
-        )),
-        Line::from(Span::styled(
-            r"     / / \", Style::default().fg(Color::Yellow),
-        )),
-        Line::from(Span::styled(
-            r"    (_|  /", Style::default().fg(Color::Yellow),
-        )),
-        Line::from(Span::styled(
-            r#"      " ""#, Style::default().fg(Color::Yellow),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "      pipit",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            "      AI coding agent",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("      /help", Style::default().fg(Color::Cyan)),
-            Span::styled("  commands", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled("      @file", Style::default().fg(Color::Green)),
-            Span::styled("  attach context", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled("      !cmd ", Style::default().fg(Color::Magenta)),
-            Span::styled("  run shell", Style::default().fg(Color::DarkGray)),
-        ]),
-    ];
-
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
-}
-
 /// Handle a key event, updating state. Returns true if the event was consumed.
 pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
     if key.kind == KeyEventKind::Release {
@@ -1255,22 +1231,27 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
 
     // Content pane scrolling: Alt-Up/Down
     match key.code {
-        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
-            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(1);
+        // Mode switching: 'g' goes to shell (only when composer is empty)
+        KeyCode::Char('g') if state.ui_mode == UiMode::Task && state.composer.is_empty() && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.ui_mode = UiMode::Shell;
             return true;
         }
-        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-            let max = state.content_lines.len() as u16;
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            let max = (state.content_lines.len() + state.streaming_text.lines().count()) as u16;
             state.content_scroll_offset = (state.content_scroll_offset + 1).min(max);
             return true;
         }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(1);
+            return true;
+        }
         KeyCode::PageUp if key.modifiers.contains(KeyModifiers::ALT) => {
-            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(10);
+            let max = (state.content_lines.len() + state.streaming_text.lines().count()) as u16;
+            state.content_scroll_offset = (state.content_scroll_offset + 10).min(max);
             return true;
         }
         KeyCode::PageDown if key.modifiers.contains(KeyModifiers::ALT) => {
-            let max = state.content_lines.len() as u16;
-            state.content_scroll_offset = (state.content_scroll_offset + 10).min(max);
+            state.content_scroll_offset = state.content_scroll_offset.saturating_sub(10);
             return true;
         }
         _ => {}
@@ -1283,40 +1264,15 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
 /// Handle a mouse event, updating state. Returns true if the event was consumed.
 /// Region-aware: scrolling in the timeline pane scrolls timeline,
 /// scrolling in the content pane scrolls content.
-pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent, terminal_width: u16) -> bool {
+pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent, _terminal_width: u16) -> bool {
     match mouse.kind {
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-            let delta: i16 = if matches!(mouse.kind, MouseEventKind::ScrollDown) { 3 } else { -3 };
-
-            // Determine which pane the mouse is in based on column position
-            // and the same responsive layout breakpoints used in draw().
-            let has_sidebar = terminal_width >= 80;
-            let sidebar_width = if !has_sidebar {
-                0
-            } else if terminal_width >= 120 {
-                (terminal_width as f64 * 0.30) as u16
+            // Scroll the content pane
+            if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                let max = (state.content_lines.len() + state.streaming_text.lines().count()) as u16;
+                state.content_scroll_offset = (state.content_scroll_offset + 3).min(max);
             } else {
-                25
-            };
-
-            let in_timeline = has_sidebar && mouse.column < sidebar_width;
-
-            if in_timeline {
-                // Scroll the timeline pane
-                if delta > 0 {
-                    let max = state.activity_lines.len() as u16;
-                    state.scroll_offset = (state.scroll_offset + delta as u16).min(max);
-                } else {
-                    state.scroll_offset = state.scroll_offset.saturating_sub((-delta) as u16);
-                }
-            } else {
-                // Scroll the content pane
-                if delta > 0 {
-                    let max = state.content_lines.len() as u16;
-                    state.content_scroll_offset = (state.content_scroll_offset + delta as u16).min(max);
-                } else {
-                    state.content_scroll_offset = state.content_scroll_offset.saturating_sub((-delta) as u16);
-                }
+                state.content_scroll_offset = state.content_scroll_offset.saturating_sub(3);
             }
             true
         }

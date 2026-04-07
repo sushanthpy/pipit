@@ -182,6 +182,124 @@ pub fn persist_cwd(session_dir: &Path, cwd: &Path) -> Result<(), std::io::Error>
     std::fs::write(&cwd_file, cwd.to_string_lossy().as_bytes())
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  DEPENDENCY DAG (Task 3: DAG-aligned execution & hydration)
+// ═══════════════════════════════════════════════════════════════
+//
+// Both live execution and hydration traverse the same dependency DAG
+// in dependency order (topological sort). The DAG is:
+//
+//   Ledger ← Context ← Worktree ← Permissions ← UI
+//
+// Live execution order (forward path):
+//   Input → Ledger Intent → Context Freeze → Permission Gate → Tool/Model → UI Publish
+//
+// Hydration order (restore path):
+//   Ledger Replay → Context Restore → Worktree Restore → Permission Restore → UI Reattach
+//
+// Both are the SAME topological ordering of the same DAG.
+// The invariant: resume(execute(S)) == S modulo in-flight transient state.
+
+/// Subsystem node in the dependency DAG.
+/// Execution and hydration both traverse in dependency order (not reverse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Subsystem {
+    /// Event-sourced ledger — foundation of all state.
+    Ledger = 0,
+    /// Context manager — depends on ledger for message replay.
+    Context = 1,
+    /// Worktree/filesystem — depends on context for cwd information.
+    Worktree = 2,
+    /// Permission state — derived from ledger replay.
+    Permissions = 3,
+    /// UI/bridge — depends on everything else.
+    Ui = 4,
+}
+
+/// The dependency edges in the subsystem DAG.
+/// Each pair (A, B) means B depends on A.
+pub const DEPENDENCY_EDGES: &[(Subsystem, Subsystem)] = &[
+    (Subsystem::Ledger, Subsystem::Context),
+    (Subsystem::Ledger, Subsystem::Permissions),
+    (Subsystem::Context, Subsystem::Worktree),
+    (Subsystem::Worktree, Subsystem::Ui),
+    (Subsystem::Permissions, Subsystem::Ui),
+];
+
+/// Topological order of subsystems (same for execution and hydration).
+pub const SUBSYSTEM_ORDER: &[Subsystem] = &[
+    Subsystem::Ledger,
+    Subsystem::Context,
+    Subsystem::Worktree,
+    Subsystem::Permissions,
+    Subsystem::Ui,
+];
+
+/// Verify that a given execution order respects the dependency DAG.
+/// Returns Ok(()) if valid, Err with the violating pair if not.
+pub fn verify_order(order: &[Subsystem]) -> Result<(), (Subsystem, Subsystem)> {
+    for &(dep, dependant) in DEPENDENCY_EDGES {
+        let dep_pos = order.iter().position(|s| *s == dep);
+        let dependant_pos = order.iter().position(|s| *s == dependant);
+        if let (Some(d), Some(n)) = (dep_pos, dependant_pos) {
+            if d >= n {
+                return Err((dep, dependant));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Maps a HydrationStage to its corresponding Subsystem.
+/// This ensures hydration and execution share the same DAG.
+pub fn stage_to_subsystem(stage: HydrationStage) -> Option<Subsystem> {
+    match stage {
+        HydrationStage::LedgerReplay => Some(Subsystem::Ledger),
+        HydrationStage::ContextRestore => Some(Subsystem::Context),
+        HydrationStage::WorktreeRestore => Some(Subsystem::Worktree),
+        HydrationStage::PermissionRestore => Some(Subsystem::Permissions),
+        HydrationStage::UiReattach => Some(Subsystem::Ui),
+        HydrationStage::Complete => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MANDATORY PERSISTENCE BOUNDARIES
+// ═══════════════════════════════════════════════════════════════
+
+/// The mandatory persistence boundaries per turn.
+/// These are the causal cut points that MUST be journaled.
+/// Everything else is opportunistic.
+///
+/// Persistence cost: O(b) per turn where b = |MANDATORY_BOUNDARIES|.
+/// Recovery completeness: any recovered state is a prefix-consistent
+/// image of the committed event stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MandatoryBoundary {
+    /// User message must be persisted before model step.
+    UserAccepted,
+    /// Response start must be persisted before streaming.
+    ResponseBegin,
+    /// Tool proposal must be persisted before permission check.
+    ToolProposed,
+    /// Permission decision must be persisted before execution.
+    PermissionResolved,
+    /// Tool outcome must be persisted after execution.
+    ToolCompleted,
+    /// Turn commit — makes turn externally visible.
+    TurnCommitted,
+}
+
+/// All mandatory boundaries in execution order.
+pub const MANDATORY_BOUNDARIES: &[MandatoryBoundary] = &[
+    MandatoryBoundary::UserAccepted,
+    MandatoryBoundary::ResponseBegin,
+    MandatoryBoundary::ToolProposed,
+    MandatoryBoundary::PermissionResolved,
+    MandatoryBoundary::ToolCompleted,
+    MandatoryBoundary::TurnCommitted,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +320,39 @@ mod tests {
         for (i, stage) in stages.iter().enumerate() {
             assert_eq!(*stage as usize, i);
         }
+    }
+
+    #[test]
+    fn test_subsystem_order_respects_dag() {
+        assert!(verify_order(SUBSYSTEM_ORDER).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_order_detected() {
+        let bad_order = [
+            Subsystem::Context, // before Ledger — violation!
+            Subsystem::Ledger,
+            Subsystem::Worktree,
+            Subsystem::Permissions,
+            Subsystem::Ui,
+        ];
+        assert!(verify_order(&bad_order).is_err());
+    }
+
+    #[test]
+    fn test_hydration_stages_map_to_subsystems() {
+        // Verify that hydration stage order matches subsystem DAG order
+        let stages = [
+            HydrationStage::LedgerReplay,
+            HydrationStage::ContextRestore,
+            HydrationStage::WorktreeRestore,
+            HydrationStage::PermissionRestore,
+            HydrationStage::UiReattach,
+        ];
+        let subsystems: Vec<Subsystem> = stages
+            .iter()
+            .filter_map(|s| stage_to_subsystem(*s))
+            .collect();
+        assert!(verify_order(&subsystems).is_ok());
     }
 }

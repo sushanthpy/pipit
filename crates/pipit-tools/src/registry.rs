@@ -38,6 +38,8 @@ impl ToolRegistry {
         registry.register(Arc::new(crate::builtins::BashTool));
         // Register extended tools
         crate::builtins::extended::register_extended_tools(&mut registry);
+        // Register new typed tools (Phase 0+ foundation)
+        crate::builtins::typed::register_all_typed_tools(&mut registry);
         registry
     }
 

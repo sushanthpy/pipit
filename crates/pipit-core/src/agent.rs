@@ -308,6 +308,9 @@ impl AgentLoop {
                     SessionEvent::PlanPivoted { from_strategy, to_strategy, trigger } => {
                         let _ = kernel.pivot_plan(from_strategy, to_strategy, trigger);
                     }
+                    SessionEvent::TurnCompleted { turn } => {
+                        let _ = kernel.gate_turn_committed(*turn);
+                    }
                     _ => {
                         // Events not handled by kernel fall through to legacy ledger
                     }
@@ -343,6 +346,16 @@ impl AgentLoop {
     /// Borrow the context manager (for serialization / inspection).
     pub fn context(&self) -> &ContextManager {
         &self.context
+    }
+
+    /// Mutable access to the context manager (for resume/hydration).
+    pub fn context_mut(&mut self) -> &mut ContextManager {
+        &mut self.context
+    }
+
+    /// Mutable access to the tool context (for resume cwd restoration).
+    pub fn tool_context_mut(&mut self) -> &mut ToolContext {
+        &mut self.tool_context
     }
 
     /// Whether any tool calls have been executed in the current context.
@@ -399,6 +412,24 @@ impl AgentLoop {
             metadata: Default::default(),
         };
         self.context.push_message(msg);
+    }
+
+    /// Process TurnKernel outputs and emit canonical events.
+    /// This is the single-source event derivation point: UI, telemetry,
+    /// logs, and replay all stem from TurnKernel phase changes emitted here.
+    fn process_turn_outputs(&self, outputs: &[TurnOutput]) {
+        for output in outputs {
+            if let TurnOutput::PhaseChange(phase) = output {
+                let snapshot = self.turn_kernel.snapshot();
+                let milestone = snapshot.milestones.last();
+                self.emit(AgentEvent::TurnPhaseEntered {
+                    turn: snapshot.turn_number,
+                    phase: format!("{:?}", phase),
+                    detail: milestone.and_then(|m| m.detail.clone()),
+                    timestamp_ms: milestone.map(|m| m.timestamp_ms).unwrap_or(0),
+                });
+            }
+        }
     }
 
     /// Run the agent loop for a single user message.
@@ -480,8 +511,15 @@ impl AgentLoop {
 
         // Add user message to context
         self.context.push_message(Message::user(&processed));
-        // Drive turn kernel: user message → planning → requesting
-        let _outputs = self.turn_kernel.transition(TurnInput::UserMessage(processed.clone()));
+        // ── Canonical FSM: Idle → Accepted ──
+        let outputs = self.turn_kernel.transition(TurnInput::UserMessage(processed.clone()));
+        self.process_turn_outputs(&outputs);
+        // ── Canonical FSM: Accepted → ContextFrozen ──
+        // Control-plane snapshot: freeze tool registry, policy view, context budget
+        // for this turn. Actual snapshot is taken here; per-LLM-call refresh happens
+        // inside the loop for MCP reconnections and budget updates.
+        let outputs = self.turn_kernel.transition(TurnInput::ContextFrozen);
+        self.process_turn_outputs(&outputs);
         self.emit(AgentEvent::TurnStart { turn_number: 0 });
 
         let mut turn = 0u32;
@@ -496,6 +534,12 @@ impl AgentLoop {
         /// When the grace period started (wall-clock). Hard-abort if >120s.
         let mut grace_start: Option<std::time::Instant> = None;
         /// Whether the wind-down warning has already been injected.
+        let mut winddown_warned = false;
+
+        // ── Adaptive turn budget (replaces dumb counter for extension decisions) ──
+        let mut adaptive_budget = crate::adaptive_budget::AdaptiveTurnBudget::new(self.config.max_turns);
+        /// Track unique files modified across the session.
+        let mut unique_files: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut winddown_warned = false;
 
         // ═══════════════════════════════════════════════════════
@@ -546,74 +590,68 @@ impl AgentLoop {
                 }
             }
 
-            // ── Smart turn limit with grace period ──
-            // Instead of hard-stopping at max_turns, we:
-            // 1. Warn the model WINDDOWN_WARNING_TURNS before the limit
-            // 2. At the limit: if recent forward progress, grant GRACE_TURNS to wrap up
-            // 3. Hard-stop at max_turns + GRACE_TURNS regardless
+            // ── Adaptive turn budget ──
+            // Instead of a hard ceiling, the budget extends dynamically based
+            // on forward progress (file mutations), idle detection, and
+            // completion signals in the model's response.
             turn += 1;
-            let hard_limit = self.config.max_turns + GRACE_TURNS;
 
-            if turn > hard_limit {
-                // Hard cap — no more extensions
-                let usage = self.context.token_usage();
-                self.emit(AgentEvent::TokenUsageUpdate {
-                    used: usage.total,
-                    limit: usage.limit,
-                    cost: usage.cost,
-                });
-                return AgentOutcome::MaxTurnsReached(turn);
-            }
-
-            if turn > self.config.max_turns && !in_grace_period {
-                // Check if the agent had recent forward progress (mutation in last 3 turns)
-                let recent_progress = last_mutation_turn > 0
-                    && (turn - last_mutation_turn) <= WINDDOWN_WARNING_TURNS;
-
-                if recent_progress {
-                    // Grant grace period — agent is actively making edits
-                    in_grace_period = true;
-                    grace_start = Some(std::time::Instant::now());
+            // Use the adaptive budget for smart decisions
+            match adaptive_budget.evaluate(turn) {
+                crate::adaptive_budget::TurnBudgetDecision::Continue => {
+                    // Under budget — proceed normally
+                }
+                crate::adaptive_budget::TurnBudgetDecision::WindDown { turns_remaining } => {
                     self.context.push_message(Message::user(
-                        "[SYSTEM] You have reached the turn limit, but you have been making progress. \
-                         You have been granted a few extra turns to wrap up. \
-                         IMPORTANT: Finish your current task NOW. Do not start new work. \
-                         Complete any in-progress edits, run a final verification if needed, \
-                         and then stop."
+                        &crate::adaptive_budget::AdaptiveTurnBudget::wind_down_message(turns_remaining)
                     ));
                     self.emit(AgentEvent::Waiting {
-                        label: format!("Grace period — {} bonus turns to finish", GRACE_TURNS),
+                        label: format!("{} turns remaining", turns_remaining),
+                    });
+                }
+                crate::adaptive_budget::TurnBudgetDecision::Extend { extra_turns, ref reason } => {
+                    let is_final = adaptive_budget.extensions_granted >= adaptive_budget.max_auto_extensions;
+                    let msg = if is_final {
+                        crate::adaptive_budget::AdaptiveTurnBudget::final_extension_message(extra_turns)
+                    } else {
+                        crate::adaptive_budget::AdaptiveTurnBudget::extension_message(extra_turns, reason)
+                    };
+                    self.context.push_message(Message::user(&msg));
+                    self.emit(AgentEvent::Waiting {
+                        label: format!("Budget extended +{} turns ({})", extra_turns, reason),
                     });
                     tracing::info!(
-                        turn, last_mutation_turn,
-                        "Smart turn limit: granting grace period ({} bonus turns)",
-                        GRACE_TURNS
+                        turn, extra_turns, reason = reason.as_str(),
+                        "Adaptive budget: extension granted",
                     );
-                } else {
-                    // No recent progress — hard stop
+                    in_grace_period = true;
+                    grace_start = Some(std::time::Instant::now());
+                }
+                crate::adaptive_budget::TurnBudgetDecision::Stop { reason } => {
                     let usage = self.context.token_usage();
                     self.emit(AgentEvent::TokenUsageUpdate {
                         used: usage.total,
                         limit: usage.limit,
                         cost: usage.cost,
                     });
+                    self.emit(AgentEvent::Waiting {
+                        label: format!("Stopped: {}", reason),
+                    });
                     return AgentOutcome::MaxTurnsReached(turn);
                 }
             }
 
-            // Wind-down warning: inject a gentle nudge a few turns before the limit
-            if !winddown_warned
-                && !in_grace_period
-                && self.config.max_turns > WINDDOWN_WARNING_TURNS
-                && turn == self.config.max_turns - WINDDOWN_WARNING_TURNS + 1
-            {
-                winddown_warned = true;
-                self.context.push_message(Message::user(&format!(
-                    "[SYSTEM] You have {} turns remaining before the limit. \
-                     Start wrapping up: finish current edits, verify your changes, \
-                     and prepare to conclude.",
-                    self.config.max_turns - turn
-                )));
+            // Grace period wall-clock safety: hard-abort after 300s of continuous extension
+            if let Some(start) = grace_start {
+                if start.elapsed() > std::time::Duration::from_secs(300) {
+                    let usage = self.context.token_usage();
+                    self.emit(AgentEvent::TokenUsageUpdate {
+                        used: usage.total, limit: usage.limit, cost: usage.cost,
+                    });
+                    return AgentOutcome::Error(
+                        "Extension period timed out after 300s. Stopping.".to_string(),
+                    );
+                }
             }
 
             self.emit(AgentEvent::TurnStart { turn_number: turn });
@@ -681,6 +719,11 @@ impl AgentLoop {
 
             // Stream the LLM response
             self.emit(AgentEvent::Waiting { label: "Sending to model\u{2026}".to_string() });
+
+            // ── Canonical FSM: → Requesting ──
+            let tk = self.turn_kernel.transition(TurnInput::RequestSent);
+            self.process_turn_outputs(&tk);
+
             let mut llm_span = self.telemetry.start_span("llm.complete")
                 .attr("model.name", SpanValue::String(
                     self.models.for_role(crate::pev::ModelRole::Executor).model_id.clone()
@@ -711,6 +754,10 @@ impl AgentLoop {
                     return AgentOutcome::Error(e.to_string());
                 }
             };
+
+            // ── Canonical FSM: Requesting → ResponseStarted ──
+            let tk = self.turn_kernel.transition(TurnInput::StreamStarted);
+            self.process_turn_outputs(&tk);
 
             // Track cost via telemetry facade (Kahan summation for precision)
             if response.stop_reason.is_some() {
@@ -770,8 +817,15 @@ impl AgentLoop {
             // Handle stop reason
             match response.stop_reason.unwrap_or(StopReason::EndTurn) {
                 StopReason::EndTurn | StopReason::Stop => {
-                    // Drive turn kernel: response complete (no tools)
-                    let _tk_outputs = self.turn_kernel.transition(TurnInput::ResponseComplete);
+                    // ── Canonical FSM: ResponseStarted → ResponseCompleted ──
+                    let tk_outputs = self.turn_kernel.transition(TurnInput::ResponseComplete);
+                    self.process_turn_outputs(&tk_outputs);
+
+                    // Record turn signals (no tools, response only)
+                    adaptive_budget.record_turn(crate::adaptive_budget::TurnSignals {
+                        model_signaled_done: crate::adaptive_budget::detect_completion_signal(&response.text),
+                        ..Default::default()
+                    });
 
                     // No tool calls, done
                     self.emit(AgentEvent::TurnEnd {
@@ -812,6 +866,13 @@ impl AgentLoop {
                         cost: usage.cost,
                     });
 
+                    // ── Canonical FSM: ResponseCompleted → Committed ──
+                    // Kernel-gated commit: turn result is only externally visible
+                    // after the kernel records the terminal milestone.
+                    self.record(SessionEvent::TurnCompleted { turn });
+                    let tk_outputs = self.turn_kernel.transition(TurnInput::TurnCommitted);
+                    self.process_turn_outputs(&tk_outputs);
+
                     return AgentOutcome::Completed {
                         turns: turn,
                         total_tokens: usage.total,
@@ -820,8 +881,14 @@ impl AgentLoop {
                     };
                 }
                 StopReason::ToolUse => {
-                    // Execute tool calls with turn-level timeout
+                    // ── Canonical FSM: ResponseStarted → ToolProposed ──
                     let tool_calls = response.tool_calls.clone();
+                    let tk_outputs = self.turn_kernel.transition(TurnInput::ToolCallsReceived {
+                        call_count: tool_calls.len(),
+                    });
+                    self.process_turn_outputs(&tk_outputs);
+
+                    // Execute tool calls with turn-level timeout
                     let turn_timeout = std::time::Duration::from_secs(
                         self.config.tool_timeout_secs.max(30) * (tool_calls.len() as u64).max(1)
                     );
@@ -870,10 +937,11 @@ impl AgentLoop {
                         proof.update_risk(tool_risk);
                     }
 
-                    // Drive turn kernel: tool calls completed
-                    let _tk_outputs = self.turn_kernel.transition(TurnInput::AllToolsCompleted {
+                    // ── Canonical FSM: ToolStarted → ToolCompleted ──
+                    let tk_outputs = self.turn_kernel.transition(TurnInput::AllToolsCompleted {
                         modified_files: modified_files.clone(),
                     });
+                    self.process_turn_outputs(&tk_outputs);
 
                     // Track failures/successes for loop detection
                     let mut had_mutation_success = false;
@@ -901,6 +969,21 @@ impl AgentLoop {
                         self.consecutive_loop_hits = 0;
                         last_mutation_turn = turn;
                     }
+
+                    // ── Record turn signals for adaptive budget ──
+                    for f in &modified_files {
+                        unique_files.insert(f.clone());
+                    }
+                    adaptive_budget.record_turn(crate::adaptive_budget::TurnSignals {
+                        files_mutated: modified_files.len() as u32,
+                        tool_calls: tool_calls.len() as u32,
+                        had_error: results.iter().any(|(_, r)| matches!(r, ToolCallOutcome::Error { .. })),
+                        total_files_mutated: realized_edits.len() as u32,
+                        unique_files_modified: unique_files.len() as u32,
+                        idle_turns: if had_mutation_success { 0 } else { turn.saturating_sub(last_mutation_turn) },
+                        model_signaled_done: crate::adaptive_budget::detect_completion_signal(&response.text),
+                        verification_passed: false, // updated after verification
+                    });
 
                     // Check for loops
                     if let Some((name, count)) = self.loop_detector.is_looping() {

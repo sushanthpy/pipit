@@ -233,7 +233,16 @@ fn apply_env_policy(
 }
 
 fn plain_command(command: &str, cwd: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("sh");
+    // Use bash for brace expansion, arrays, and other bashisms that models emit.
+    // Falls back to sh if bash is not available.
+    let shell = if std::path::Path::new("/bin/bash").exists() {
+        "bash"
+    } else if std::path::Path::new("/usr/bin/bash").exists() {
+        "bash"
+    } else {
+        "sh"
+    };
+    let mut cmd = tokio::process::Command::new(shell);
     cmd.arg("-c").arg(command).current_dir(cwd);
     cmd
 }

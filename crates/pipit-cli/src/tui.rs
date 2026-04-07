@@ -153,6 +153,7 @@ pub async fn run(
                 let mut s = tui_state_for_agent.lock().unwrap();
                 s.begin_working("Thinking…");
                 s.run_finished = false;
+                s.ui_mode = pipit_io::app::UiMode::Task;
             }
             let cancel = cancel_for_agent.lock().unwrap().clone();
             let outcome = agent.run(prompt, cancel).await;
@@ -203,6 +204,8 @@ pub async fn run(
                         });
                     }
                 }
+                // Stay in Task mode so the user can see results.
+                // They can press 'g' to return to Shell.
             }
         }
     });
@@ -274,16 +277,13 @@ pub async fn run(
                     if let Some(submitted) = state.composer.submitted.take() {
                         let input = submitted.text.clone();
 
-                        // Set task label from first input
-                        if !state.has_received_input {
-                            state.has_received_input = true;
-                            state.task_label = if input.len() > 80 {
-                                format!("{}…", &input.chars().take(78).collect::<String>())
-                            } else {
-                                input.clone()
-                            };
-                            state.content_lines.clear();
-                        }
+                        // Update task label for every submission
+                        state.has_received_input = true;
+                        state.task_label = if input.len() > 80 {
+                            format!("{}…", &input.chars().take(78).collect::<String>())
+                        } else {
+                            input.clone()
+                        };
 
                         let display = if input.len() > 120 {
                             format!("{}… [{} chars]", &input.chars().take(100).collect::<String>(), input.chars().count())
@@ -298,7 +298,11 @@ pub async fn run(
                         match classified {
                             pipit_io::input::UserInput::Command(cmd) => {
                                 match cmd {
-                                    pipit_io::input::SlashCommand::Quit => break,
+                                    pipit_io::input::SlashCommand::Quit => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        s.should_quit = true;
+                                        break;
+                                    }
                                     pipit_io::input::SlashCommand::Help => {
                                         let mut s = tui_state.lock().unwrap();
                                         s.push_activity("?", Color::Cyan, "/help".to_string());
@@ -386,6 +390,7 @@ pub async fn run(
                                             s.content_lines.push(line.to_string());
                                         }
                                         s.has_received_input = true;
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Clear => {
                                         let _ = prompt_tx.send("/clear".to_string()).await;
@@ -395,6 +400,7 @@ pub async fn run(
                                         s.scroll_offset = 0;
                                         s.content_scroll_offset = 0;
                                         s.push_activity("·", Color::DarkGray, "Context cleared".to_string());
+                                        s.ui_mode = pipit_io::app::UiMode::Shell;
                                     }
                                     pipit_io::input::SlashCommand::Cost => {
                                         let s = tui_state.lock().unwrap();
@@ -402,6 +408,7 @@ pub async fn run(
                                         drop(s);
                                         let mut s = tui_state.lock().unwrap();
                                         s.push_activity("$", Color::Green, cost_msg);
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Status => {
                                         let s = tui_state.lock().unwrap();
@@ -413,6 +420,7 @@ pub async fn run(
                                         drop(s);
                                         let mut s = tui_state.lock().unwrap();
                                         s.push_activity("·", Color::Cyan, info);
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Config(ref _key) => {
                                         let mut s = tui_state.lock().unwrap();
@@ -463,6 +471,7 @@ pub async fn run(
                                         s.content_lines.extend(lines.into_iter().filter(|l| !l.is_empty() || true));
 
                                         s.has_received_input = true;
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Setup => {
                                         let mut s = tui_state.lock().unwrap();
@@ -495,6 +504,7 @@ pub async fn run(
                                         s.content_lines.push("Edit this file directly for advanced settings.".to_string());
 
                                         s.has_received_input = true;
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Doctor => {
                                         let mut s = tui_state.lock().unwrap();
@@ -534,6 +544,7 @@ pub async fn run(
                                         ];
                                         s.content_lines.extend(lines);
                                         s.has_received_input = true;
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Skills => {
                                         // Delegate to agent — it will list skills
@@ -548,6 +559,7 @@ pub async fn run(
                                     pipit_io::input::SlashCommand::Undo | pipit_io::input::SlashCommand::Rewind => {
                                         let mut s = tui_state.lock().unwrap();
                                         s.push_activity("↩", Color::Yellow, "/undo".to_string());
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                         // Check git for recently modified files by the agent
                                         let output = std::process::Command::new("git")
                                             .args(["diff", "--name-only", "HEAD~1"])
@@ -595,6 +607,7 @@ pub async fn run(
                                     }
                                     pipit_io::input::SlashCommand::Branch(ref name) => {
                                         let mut s = tui_state.lock().unwrap();
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                         if let Some(branch_name) = name {
                                             drop(s);
                                             let output = std::process::Command::new("git")
@@ -638,10 +651,12 @@ pub async fn run(
                                             Err(e) => s.content_lines.push(format!("Error: {}", e)),
                                         }
                                         s.has_received_input = true;
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::BranchSwitch(ref target) => {
                                         if target.is_empty() {
                                             let mut s = tui_state.lock().unwrap();
+                                            s.ui_mode = pipit_io::app::UiMode::Task;
                                             s.push_activity("⚠", Color::Yellow, "Usage: /switch <branch>".to_string());
                                         } else {
                                             let output = std::process::Command::new("git")
@@ -649,6 +664,7 @@ pub async fn run(
                                                 .current_dir(project_root)
                                                 .output();
                                             let mut s = tui_state.lock().unwrap();
+                                            s.ui_mode = pipit_io::app::UiMode::Task;
                                             match output {
                                                 Ok(o) if o.status.success() => {
                                                     s.push_activity("✓", Color::Green, format!("Switched to '{}'", target));
@@ -709,6 +725,7 @@ pub async fn run(
                                             s.content_lines.push("*No uncommitted changes*".to_string());
                                         }
                                         s.has_received_input = true;
+                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     other => {
                                         let cmd_str = format!("/{}", slash_command_to_str(&other));
@@ -770,6 +787,7 @@ pub async fn run(
                                     }
                                 }
                                 s.has_received_input = true;
+                                s.ui_mode = pipit_io::app::UiMode::Task;
                                 s.auto_scroll_content();
                             }
                             pipit_io::input::UserInput::PromptWithFiles { prompt, files } => {
@@ -864,12 +882,12 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             // Add a visual turn separator in the content pane
             if !state.content_lines.is_empty() {
                 state.content_lines.push(String::new());
-                state.content_lines.push(format!(
-                    "══ Turn {} ══",
-                    turn_number
-                ));
-                state.content_lines.push(String::new());
             }
+            state.content_lines.push(format!(
+                "══ Turn {} ══",
+                turn_number
+            ));
+            state.content_lines.push(String::new());
             state.begin_working(&format!("Turn {}", turn_number));
             // Reset thinking state for the new turn so stale state doesn't
             // cause </think> from a fresh <think> block to leak.

@@ -851,6 +851,16 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
         y += 1;
     }
 
+    // Input box
+    let input_rows = composer.lines.len().min(4) as u16;
+    let input_area = Rect::new(area.x, y, area.width, input_rows + 2);
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" input ", Style::default().fg(Color::DarkGray)));
+    let inner = input_block.inner(input_area);
+    frame.render_widget(input_block, input_area);
+
     // Input line(s)
     let prompt = "you› ";
     let prompt_width = UnicodeWidthStr::width(prompt);
@@ -876,17 +886,17 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
 
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
-            Rect::new(area.x, y, area.width, 1),
+            Rect::new(inner.x, inner.y + row_idx as u16, inner.width, 1),
         );
 
         if row_idx == composer.cursor_row {
             let display_col = char_to_display_col(line, composer.cursor_col);
-            let cursor_x = area.x + prompt_width as u16 + display_col as u16;
-            frame.set_cursor_position((cursor_x.min(area.x + area.width - 1), y));
+            let cursor_x = inner.x + prompt_width as u16 + display_col as u16;
+            let cursor_y = inner.y + row_idx as u16;
+            frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), cursor_y));
         }
 
-        y += 1;
-        if y >= area.y + area.height - 1 { break; }
+        if row_idx as u16 + 1 >= inner.height { break; }
     }
 
     // Hint bar
@@ -909,6 +919,12 @@ pub fn draw_completion_popup(frame: &mut Frame, composer_area: Rect, composer: &
     let completion = &composer.completion;
     if !completion.active || completion.candidates.is_empty() { return; }
 
+    let attachment_rows = if composer.attachments.is_empty() { 0 } else { 1 };
+    let input_box_y = composer_area.y + attachment_rows;
+    let input_inner_x = composer_area.x + 1;
+    let input_inner_width = composer_area.width.saturating_sub(2);
+    let max_popup_width = input_inner_width.saturating_sub(2).max(1);
+
     let max_visible = 6.min(completion.candidates.len());
     let popup_height = max_visible as u16 + 2;
 
@@ -919,16 +935,16 @@ pub fn draw_completion_popup(frame: &mut Frame, composer_area: Rect, composer: &
         .map(|c| c.insert_text.len() + c.description.len() + 6)
         .max()
         .unwrap_or(20)
-        .min(composer_area.width as usize - 4) as u16;
+        .min(max_popup_width as usize) as u16;
 
     let prompt_offset = UnicodeWidthStr::width("you› ") as u16;
     let trigger_display_col = char_to_display_col(
         &composer.lines[composer.cursor_row],
         completion.trigger_start,
     ) as u16;
-    let popup_x = (composer_area.x + prompt_offset + trigger_display_col)
-        .min(composer_area.x + composer_area.width - max_width - 2);
-    let popup_y = composer_area.y.saturating_sub(popup_height);
+    let popup_x = (input_inner_x + prompt_offset + trigger_display_col)
+        .min(input_inner_x + input_inner_width.saturating_sub(max_width + 2));
+    let popup_y = input_box_y.saturating_sub(popup_height);
 
     let popup_rect = Rect::new(popup_x, popup_y, max_width + 2, popup_height);
 
@@ -966,7 +982,7 @@ pub fn composer_height(composer: &Composer) -> u16 {
     let attachment_row = if composer.attachments.is_empty() { 0 } else { 1 };
     let input_rows = composer.lines.len().min(4) as u16;
     let hint_row = 1;
-    attachment_row + input_rows + hint_row
+    attachment_row + input_rows + hint_row + 2
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

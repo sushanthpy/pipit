@@ -1,3 +1,18 @@
+pub mod hook_kind;
+pub mod event;
+pub mod wasm_runtime;
+pub mod prompt_runtime;
+pub mod replay;
+
+pub use hook_kind::{HookKind, TypedHookManifest, HookContext, HookDecision, ReplayMode};
+pub use event::{HookEventMask, event_name_to_mask, events_to_mask};
+pub use wasm_runtime::WasmHookRuntime;
+pub use prompt_runtime::{
+    execute_prompt_hook, PromptHookConfig, PromptHookResult,
+    execute_agent_hook, AgentHookConfig, AgentHookResult,
+};
+pub use replay::{HookReplayCache, HookRecord, execute_with_replay};
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
@@ -458,7 +473,7 @@ async fn run_lifecycle_hook(
 /// Load hook manifests from a JSON file.
 /// Supports two formats:
 /// 1. Single-hook format: `{"event": "PreToolUse", "matcher": "bash", "script": {...}}`
-/// 2. Claude Code grouped format: `{"hooks": {"PreToolUse": [...], "PostToolUse": [...]}}`
+/// 2. Grouped format: `{"hooks": {"PreToolUse": [...], "PostToolUse": [...]}}`
 fn load_hook_manifest(path: &Path) -> Result<HookManifest, ExtensionError> {
     let raw = std::fs::read_to_string(path)
         .map_err(|err| ExtensionError::Other(format!("Failed to read hook {}: {}", path.display(), err)))?;

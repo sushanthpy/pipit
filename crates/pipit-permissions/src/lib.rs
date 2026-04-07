@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Permission Modes — 5-level enum matching Claude Code's permission model
+//  Permission Modes — 5-level approval model
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// The 5 permission modes, ordered from most restrictive to least.

@@ -129,6 +129,32 @@ pub trait LlmProvider: Send + Sync {
 
     /// Model capabilities for edit format selection and context budgeting.
     fn capabilities(&self) -> &ModelCapabilities;
+
+    // ── Cache-Edit Protocol (Task 6: Cached Microcompact) ──
+
+    /// Whether this provider supports in-place cache editing.
+    /// When true, microcompact can mutate the prompt cache directly
+    /// instead of invalidating and rebuilding it — saving up to 90%+
+    /// of input token cost on cache-warm turns.
+    ///
+    /// Default: false (providers that don't support cache editing).
+    fn supports_cache_edit(&self) -> bool { false }
+
+    /// Edit the provider's prompt cache in place by removing specific
+    /// tool_use_ids without invalidating the entire cache.
+    ///
+    /// Only called when `supports_cache_edit()` returns true.
+    /// The `session` handle is provider-specific (e.g. the Anthropic
+    /// cache_control session token).
+    ///
+    /// For providers that support this, the cost is O(|edits|) rather
+    /// than O(|cache|), making microcompact a constant-cost operation.
+    async fn edit_cache(
+        &self,
+        _edits: &[CacheEdit],
+    ) -> Result<CacheEditReceipt, ProviderError> {
+        Err(ProviderError::Other("Cache editing not supported".into()))
+    }
 }
 
 /// Create a provider from configuration.

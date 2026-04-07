@@ -277,8 +277,71 @@ impl Tool for SkillTool {
                 if entries.is_empty() { Ok(ToolResult::text("No skills found in .pipit/skills/")) }
                 else { Ok(ToolResult::text(format!("Available skills:\n{}", entries.join("\n")))) }
             }
-            "search" => Ok(ToolResult::text(format!("Searching skills for '{query}'..."))),
-            "info" => Ok(ToolResult::text(format!("Skill info for '{query}': use /skill {query} in REPL"))),
+            "search" => {
+                let skills_dir = ctx.project_root.join(".pipit").join("skills");
+                let global_dir = dirs::config_dir()
+                    .map(|d| d.join("pipit").join("skills"))
+                    .unwrap_or_default();
+
+                let mut matches = Vec::new();
+                for dir in [&skills_dir, &global_dir] {
+                    if !dir.exists() { continue; }
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let name_lower = name.to_lowercase();
+                            let query_lower = query.to_lowercase();
+                            // Check filename match
+                            if name_lower.contains(&query_lower) {
+                                matches.push(format!("  {} (name match)", name));
+                                continue;
+                            }
+                            // Check content match for .md and .toml files
+                            if name.ends_with(".md") || name.ends_with(".toml") {
+                                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                    if content.to_lowercase().contains(&query_lower) {
+                                        let preview = content.lines()
+                                            .find(|l| l.to_lowercase().contains(&query_lower))
+                                            .unwrap_or("")
+                                            .trim();
+                                        let preview = if preview.len() > 80 { &preview[..80] } else { preview };
+                                        matches.push(format!("  {} — {}", name, preview));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if matches.is_empty() {
+                    Ok(ToolResult::text(format!("No skills matching '{query}' found.")))
+                } else {
+                    Ok(ToolResult::text(format!("Skills matching '{query}':\n{}", matches.join("\n"))))
+                }
+            }
+            "info" => {
+                if query.is_empty() {
+                    return Ok(ToolResult::text("Usage: skill info <name>"));
+                }
+                let skills_dir = ctx.project_root.join(".pipit").join("skills");
+                // Try .md then .toml extensions
+                let candidates = vec![
+                    skills_dir.join(format!("{query}.md")),
+                    skills_dir.join(format!("{query}.toml")),
+                    skills_dir.join(query),
+                ];
+                for path in &candidates {
+                    if path.exists() {
+                        let content = std::fs::read_to_string(path)
+                            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                        let truncated = if content.len() > 4000 { &content[..4000] } else { &content };
+                        return Ok(ToolResult::text(format!(
+                            "Skill: {query}\nPath: {}\n\n{truncated}",
+                            path.display()
+                        )));
+                    }
+                }
+                Ok(ToolResult::text(format!("Skill '{query}' not found in {}", skills_dir.display())))
+            }
             _ => Ok(ToolResult::text(format!("Skill action '{action}' on '{query}'")))
         }
     }
@@ -299,22 +362,166 @@ impl Tool for LspTool {
                 "file": {"type": "string"}, "line": {"type": "integer"}, "column": {"type": "integer"},
                 "new_name": {"type": "string", "description": "New name (for rename)"}
             },
-            "required": ["action", "file", "line", "column"]
+            "required": ["action", "file"]
         })
     }
     fn description(&self) -> &str { "Query language servers for go-to-definition, find-references, diagnostics, type info, rename." }
     fn is_mutating(&self) -> bool { false }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
         let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("action required".into()))?;
         let file = args.get("file").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("file required".into()))?;
-        let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(1);
-        let column = args.get("column").and_then(|v| v.as_u64()).unwrap_or(1);
-        Ok(ToolResult::text(format!(
-            "LSP {action} at {file}:{line}:{column}\n\
-             [Requires LSP server. Pipit auto-detects rust-analyzer, pyright, typescript-language-server, gopls.]"
-        )))
+        let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+        let column = args.get("column").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+
+        let file_path = ctx.project_root.join(file);
+        if !file_path.exists() {
+            return Err(ToolError::ExecutionFailed(format!("File not found: {file}")));
+        }
+
+        match action {
+            "definition" | "references" | "type_info" => {
+                // Use grep/ripgrep to find symbol under cursor, then search for definitions/references
+                let file_content = tokio::fs::read_to_string(&file_path).await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read {file}: {e}")))?;
+
+                let target_line = file_content.lines().nth((line - 1) as usize)
+                    .ok_or_else(|| ToolError::InvalidArgs(format!("Line {line} out of range")))?;
+
+                // Extract word at column position
+                let symbol = extract_symbol_at(target_line, column as usize);
+                if symbol.is_empty() {
+                    return Ok(ToolResult::text(format!("No symbol found at {file}:{line}:{column}")));
+                }
+
+                // Search project for the symbol using grep
+                let search_pattern = if action == "definition" {
+                    // Look for definitions: fn/struct/enum/class/def/const declarations
+                    format!(r"(fn |struct |enum |trait |type |class |def |const |let |var |pub )\b{}\b", regex::escape(&symbol))
+                } else {
+                    // All references
+                    format!(r"\b{}\b", regex::escape(&symbol))
+                };
+
+                let output = tokio::process::Command::new("grep")
+                    .args(["-rn", "--include=*.rs", "--include=*.py", "--include=*.ts",
+                           "--include=*.js", "--include=*.go", "--include=*.java",
+                           "-E", &search_pattern])
+                    .arg(".")
+                    .current_dir(&ctx.project_root)
+                    .output()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("grep failed: {e}")))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let results: Vec<&str> = stdout.lines().take(50).collect();
+
+                if results.is_empty() {
+                    Ok(ToolResult::text(format!("No {action} found for `{symbol}` at {file}:{line}:{column}")))
+                } else {
+                    Ok(ToolResult::text(format!(
+                        "{} for `{symbol}` ({} results):\n{}",
+                        if action == "definition" { "Definitions" } else { "References" },
+                        results.len(),
+                        results.join("\n")
+                    )))
+                }
+            }
+            "diagnostics" => {
+                // Run language-specific linter
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let (cmd, args_list): (&str, Vec<&str>) = match ext {
+                    "rs" => ("cargo", vec!["check", "--message-format=short", "2>&1"]),
+                    "py" => ("python3", vec!["-m", "py_compile", file]),
+                    "ts" | "tsx" => ("npx", vec!["tsc", "--noEmit", file]),
+                    "js" | "jsx" => ("node", vec!["--check", file]),
+                    _ => return Ok(ToolResult::text(format!("No diagnostic support for .{ext} files"))),
+                };
+
+                let output = tokio::process::Command::new(cmd)
+                    .args(&args_list)
+                    .current_dir(&ctx.project_root)
+                    .output()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Diagnostic command failed: {e}")))?;
+
+                let combined = format!("{}{}", 
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let truncated = if combined.len() > 8000 { &combined[..8000] } else { &combined };
+
+                Ok(ToolResult::text(format!(
+                    "Diagnostics for {file}:\n{}",
+                    if truncated.trim().is_empty() { "No issues found." } else { truncated }
+                )))
+            }
+            "rename" => {
+                let new_name = args.get("new_name").and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArgs("new_name required for rename".into()))?;
+
+                let file_content = tokio::fs::read_to_string(&file_path).await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read: {e}")))?;
+                let target_line = file_content.lines().nth((line - 1) as usize).unwrap_or("");
+                let symbol = extract_symbol_at(target_line, column as usize);
+
+                if symbol.is_empty() {
+                    return Err(ToolError::InvalidArgs(format!("No symbol at {file}:{line}:{column}")));
+                }
+
+                // Find all files containing the symbol
+                let output = tokio::process::Command::new("grep")
+                    .args(["-rln", "--include=*.rs", "--include=*.py", "--include=*.ts",
+                           "--include=*.js", "--include=*.go", "-w", &symbol])
+                    .arg(".")
+                    .current_dir(&ctx.project_root)
+                    .output()
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("grep failed: {e}")))?;
+
+                let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+                let files: Vec<&str> = stdout_str.lines().take(100).collect();
+
+                // Perform sed rename across all files
+                let file_count = files.len();
+                for f in &files {
+                    let fpath = ctx.project_root.join(f.trim_start_matches("./"));
+                    if let Ok(content) = tokio::fs::read_to_string(&fpath).await {
+                        let replaced = content.replace(&symbol, new_name);
+                        if replaced != content {
+                            let _ = tokio::fs::write(&fpath, replaced).await;
+                        }
+                    }
+                }
+
+                Ok(ToolResult::mutating(format!(
+                    "Renamed `{symbol}` → `{new_name}` across {file_count} file(s)"
+                )))
+            }
+            _ => Err(ToolError::InvalidArgs(format!("Unknown LSP action: {action}")))
+        }
     }
+}
+
+/// Extract the symbol (identifier) at a given column in a line.
+fn extract_symbol_at(line: &str, col: usize) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    if col == 0 || col > chars.len() {
+        return String::new();
+    }
+    let idx = col - 1; // 1-indexed to 0-indexed
+    if !chars[idx].is_alphanumeric() && chars[idx] != '_' {
+        return String::new();
+    }
+    let mut start = idx;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    let mut end = idx;
+    while end < chars.len() - 1 && (chars[end + 1].is_alphanumeric() || chars[end + 1] == '_') {
+        end += 1;
+    }
+    chars[start..=end].iter().collect()
 }
 
 // ─── Remote Trigger Tool ────────────────────────────────────────────────
@@ -338,14 +545,52 @@ impl Tool for RemoteTriggerTool {
     fn description(&self) -> &str { "Trigger a task on a remote pipit-daemon or agent mesh node." }
     fn is_mutating(&self) -> bool { true }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
         let target = args.get("target").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("target required".into()))?;
         let task = args.get("task").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("task required".into()))?;
         let priority = args.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
-        Ok(ToolResult::mutating(format!(
-            "Remote task dispatched:\n  Target: {target}\n  Priority: {priority}\n  Task: {task}\n\
-             [Requires pipit-daemon running at target]"
-        )))
+        let project = args.get("project").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Build the daemon API URL
+        let url = if target.starts_with("http") {
+            format!("{}/api/tasks", target.trim_end_matches('/'))
+        } else {
+            format!("http://{}/api/tasks", target)
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| ToolError::ExecutionFailed(format!("HTTP client error: {e}")))?;
+
+        let body = serde_json::json!({
+            "prompt": task,
+            "priority": priority,
+            "project": project,
+        });
+
+        let response = tokio::select! {
+            r = client.post(&url).json(&body).send() => {
+                r.map_err(|e| ToolError::ExecutionFailed(format!(
+                    "Failed to reach pipit-daemon at {target}: {e}\n\
+                     Ensure pipit-daemon is running: pipit daemon start"
+                )))?
+            }
+            _ = cancel.cancelled() => return Err(ToolError::ExecutionFailed("Cancelled".into())),
+        };
+
+        let status = response.status();
+        let body_text = response.text().await.unwrap_or_default();
+
+        if status.is_success() {
+            Ok(ToolResult::mutating(format!(
+                "Task dispatched to {target}:\n  Priority: {priority}\n  Task: {task}\n  Response: {body_text}"
+            )))
+        } else {
+            Err(ToolError::ExecutionFailed(format!(
+                "Daemon at {target} returned {status}: {body_text}"
+            )))
+        }
     }
 }
 

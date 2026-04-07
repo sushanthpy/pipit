@@ -22,6 +22,8 @@ pipit-mcp = { path = "../pipit-mcp" }
 pipit-bench = { path = "../pipit-bench" }
 pipit-browser = { path = "../pipit-browser" }
 pipit-deps = { path = "../pipit-deps" }
+pipit-voice = { path = "../pipit-voice" }
+pipit-mesh = { path = "../pipit-mesh" }
 clap = { workspace = true }
 clap_complete = "4"
 tokio = { workspace = true }

@@ -1,13 +1,13 @@
-//! Production-parity tools — fills the 8 missing-tool gap vs Claude Code.
+//! Production tools — MCP resources, auth, messaging, and task output.
 //!
-//! Tools:
-//!   1. EnterPlanMode / ExitPlanMode — mode-switching for planning
-//!   2. EnterWorktree / ExitWorktree — git worktree isolation
-//!   3. ListMcpResources / ReadMcpResource — MCP resource protocol
-//!   4. McpAuth — OAuth flow trigger
-//!   5. SendMessage — inter-agent messaging
-//!   6. TaskOutput — read background task output
-//!   7. FileStateCache — stale-write detection shared state
+//! Active tools registered here:
+//!   1. ListMcpResources / ReadMcpResource — MCP resource protocol
+//!   2. McpAuth — OAuth flow trigger
+//!   3. SendMessage — inter-agent messaging
+//!   4. TaskOutput — read background task output
+//!   5. FileStateCache — stale-write detection shared state
+//!
+//! PlanMode and Worktree tools now live in the typed tool system.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -774,13 +774,10 @@ impl Tool for TaskOutputTool {
 //  Registration
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Register all production-parity tools into the tool registry.
+/// Register production-parity tools (non-overlapping with typed tools).
+///
+/// PlanMode and Worktree are now handled by typed tools (plan_mode, worktree).
 pub fn register_production_tools(registry: &mut crate::ToolRegistry) {
-    let mode_stack = Arc::new(Mutex::new(Vec::new()));
-    registry.register(Arc::new(EnterPlanModeTool::new(mode_stack.clone())));
-    registry.register(Arc::new(ExitPlanModeTool::new(mode_stack)));
-    registry.register(Arc::new(EnterWorktreeTool));
-    registry.register(Arc::new(ExitWorktreeTool));
     registry.register(Arc::new(ListMcpResourcesTool));
     registry.register(Arc::new(ReadMcpResourceTool));
     registry.register(Arc::new(McpAuthTool));

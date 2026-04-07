@@ -424,6 +424,70 @@ impl SessionKernel {
         Ok(())
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  KERNEL-GATED COMMIT PROTOCOL
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // Mandatory persistence boundaries (selective journaling):
+    //   1. UserAccepted    — user message recorded before model step
+    //   2. ResponseBegin   — response start recorded before streaming
+    //   3. ToolProposed    — tool call recorded before permission check
+    //   4. PermissionResolved — approval/denial recorded before execution
+    //   5. ToolCompleted   — outcome recorded after execution
+    //   6. TurnCommitted   — terminal milestone, makes turn externally visible
+    //
+    // Everything else (stream chunks, telemetry, UI status) is opportunistic.
+    // This keeps persistence cost O(b) per turn where b = mandatory boundaries,
+    // rather than O(b + e) for every micro-event.
+    //
+    // Recovery completeness: a recovered state is a prefix-consistent image
+    // of the committed event stream (monotonicity theorem).
+
+    /// Gate: no model step starts until this succeeds.
+    /// This is the write-ahead intent record for the turn.
+    pub fn gate_user_accepted(&mut self, content: &str) -> Result<u64, SessionKernelError> {
+        self.accept_user_message(content)?;
+        Ok(self.ledger.current_seq())
+    }
+
+    /// Gate: tool execution doesn't begin until proposal is recorded.
+    pub fn gate_tool_proposed(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<u64, SessionKernelError> {
+        self.propose_tool_call(call_id, tool_name, args)?;
+        Ok(self.ledger.current_seq())
+    }
+
+    /// Gate: tool execution doesn't begin until permission decision is recorded.
+    pub fn gate_permission_resolved(
+        &mut self,
+        call_id: &str,
+        approved: bool,
+        reason: Option<&str>,
+    ) -> Result<u64, SessionKernelError> {
+        if approved {
+            self.approve_tool(call_id)?;
+        } else {
+            // For denied tools, we use the existing deny_tool method
+            // The caller should use deny_tool directly for full denial metadata
+            self.ledger.append(SessionEvent::ToolDenied {
+                call_id: call_id.to_string(),
+                reason: reason.unwrap_or("denied").to_string(),
+            })?;
+        }
+        Ok(self.ledger.current_seq())
+    }
+
+    /// Gate: assistant completion is only surfaced as committed after this.
+    pub fn gate_turn_committed(&mut self, turn: u32) -> Result<u64, SessionKernelError> {
+        self.ensure_started()?;
+        self.ledger.append(SessionEvent::TurnCompleted { turn })?;
+        Ok(self.ledger.current_seq())
+    }
+
     /// Spawn a child session kernel for a subagent execution branch.
     ///
     /// The child kernel writes to its own ledger under the parent's session directory,

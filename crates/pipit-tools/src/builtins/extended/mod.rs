@@ -1,18 +1,13 @@
 
-//! Extended Tool Suite — 20 additional tools (Task 2)
+//! Extended Tool Suite
 //!
-//! Fills the tool breadth gap: Pipit had 8 builtins, Claude Code has 30+.
+//! Network and execution tools that complement the typed tool system.
 //! Each tool implements the `Tool` trait, provides JSON Schema, and declares
 //! a `ResourceSignature` for the conflict-aware scheduler.
 //!
-//! Tool categories:
-//!   1. Network: WebFetch, WebSearch
-//!   2. Execution: PowerShell, REPL, Sleep
-//!   3. Project management: Task, Todo, Brief, Cron, Team
-//!   4. Meta: Config, Skill, ToolSearch
-//!   5. File: NotebookEdit
-//!
-//! Total new tools: 14 (bringing Pipit to 22+ builtins).
+//! Active tools registered here: WebFetch, WebSearch.
+//! Remaining tools (Sleep, Task, Todo, Config, Brief, Cron, Notebook,
+//! ToolSearch, PlanMode, Worktree) have been superseded by typed equivalents.
 
 pub mod extra_tools;
 pub mod production_tools;
@@ -1360,22 +1355,17 @@ impl Tool for ToolSearchTool {
 //  Enhanced Registry — registers all extended tools
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Register all extended tools into an existing registry.
+/// Register extended tools into an existing registry.
+///
+/// Only registers tools that are NOT superseded by the typed tool system.
+/// Typed equivalents (task, brief, config, sleep, notebook, tool_search,
+/// schedule, plan_mode, worktree) are registered via `typed::register_all_typed_tools()`.
 pub fn register_extended_tools(registry: &mut crate::ToolRegistry) {
     use std::sync::Arc;
     registry.register(Arc::new(WebFetchTool));
     registry.register(Arc::new(WebSearchTool));
-    registry.register(Arc::new(SleepTool));
-    registry.register(Arc::new(TodoTool::new()));
-    registry.register(Arc::new(ConfigTool));
-    registry.register(Arc::new(TaskTool::new()));
-    registry.register(Arc::new(BriefTool));
-    registry.register(Arc::new(CronTool::new()));
-    registry.register(Arc::new(TeamTool));
-    registry.register(Arc::new(NotebookEditTool));
-    registry.register(Arc::new(ToolSearchTool::new()));
     // Extra tools (PowerShell, REPL, Skill, LSP, RemoteTrigger)
     extra_tools::register_extra_tools(registry);
-    // Production-parity tools (PlanMode, Worktree, MCP resources, Auth, SendMessage, TaskOutput)
+    // MCP resources, Auth, SendMessage, TaskOutput
     production_tools::register_production_tools(registry);
 }

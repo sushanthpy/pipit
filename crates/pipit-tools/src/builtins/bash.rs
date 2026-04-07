@@ -283,11 +283,35 @@ impl Tool for BashTool {
         }
 
         if output.is_empty() {
-            output = "[No output]".to_string();
+            if let Some(code) = exit_code {
+                if code != 0 {
+                    output = format!(
+                        "Command exited with code {} but produced no output.\n\
+                         This usually means: the command was not found, a binary is missing, \
+                         or the command failed silently.\n\
+                         Try: `which <command>` or `command -v <command>` to check availability.",
+                        code
+                    );
+                } else {
+                    output = "Command completed successfully (no output).".to_string();
+                }
+            } else {
+                output = "Command completed (no output).".to_string();
+            }
         }
 
         if !result.status.success() {
-            return Err(ToolError::ExecutionFailed(output));
+            // Return as Ok with error content — the model needs to see
+            // the failure details to adapt its approach. Returning Err
+            // here causes the agent loop to treat it as a system error.
+            let mut tool_result = ToolResult::text(output);
+            tool_result.display = Some(ToolDisplay::ShellOutput {
+                command: command.to_string(),
+                stdout: stdout_truncated,
+                stderr,
+                exit_code,
+            });
+            return Ok(tool_result);
         }
 
         let mut result = ToolResult::mutating(output);
@@ -464,12 +488,14 @@ mod tests {
             )
             .await;
 
+        // Non-zero exit returns Ok with error details (not Err) so the model
+        // can see what happened and adapt its approach.
         match result {
-            Err(ToolError::ExecutionFailed(message)) => {
-                assert!(message.contains("before-fail"));
-                assert!(message.contains("Exit code: 3"));
+            Ok(tool_result) => {
+                assert!(tool_result.content.contains("before-fail"));
+                assert!(tool_result.content.contains("Exit code: 3"));
             }
-            other => panic!("expected execution failure, got {:?}", other),
+            Err(e) => panic!("expected Ok with error info, got Err: {:?}", e),
         }
     }
 }

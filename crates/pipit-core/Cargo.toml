@@ -21,6 +21,18 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 pipit-agent-mesh = { path = "../pipit-agent-mesh" }
+pipit-memory = { path = "../pipit-memory" }
+pipit-verify = { path = "../pipit-verify" }
+pipit-perf = { path = "../pipit-perf" }
+pipit-env = { path = "../pipit-env" }
+pipit-spec = { path = "../pipit-spec" }
+pipit-compliance = { path = "../pipit-compliance" }
+pipit-evolve = { path = "../pipit-evolve" }
+pipit-arch-evolution = { path = "../pipit-arch-evolution" }
+pipit-hw-codesign = { path = "../pipit-hw-codesign" }
+pipit-agents = { path = "../pipit-agents" }
+pipit-bridge = { path = "../pipit-bridge" }
+pipit-permissions = { path = "../pipit-permissions" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -114,7 +114,7 @@ You have these tools. Choose the RIGHT one on the FIRST try:
         boot_listing = boot_listing,
     );
 
-    // PIPIT.md — project root instructions (like Claude Code's CLAUDE.md)
+    // PIPIT.md — project root instructions
     let pipit_md_candidates = [
         project_root.join("PIPIT.md"),
         project_root.join(".pipit").join("PIPIT.md"),

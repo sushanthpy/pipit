@@ -1,3 +1,4 @@
+pub mod adaptive_budget;
 pub mod adaptive_context;
 pub mod agent;
 pub mod adversarial;
@@ -89,3 +90,20 @@ pub use proof::{
 pub use verifier::{NullVerifier, Verifier};
 pub use verifier_llm::LlmVerifier;
 pub use worktree::WorktreeManager;
+
+// ── Wired subsystem crates ──
+// Each of these is a dependency of pipit-core, making them reachable
+// through the crate graph. They provide specialized capabilities that
+// the agent loop, tools, or CLI can consume.
+pub use pipit_memory as memory;
+pub use pipit_verify as verify;
+pub use pipit_perf as perf;
+pub use pipit_env as env;
+pub use pipit_spec as spec;
+pub use pipit_compliance as compliance;
+pub use pipit_evolve as evolve;
+pub use pipit_arch_evolution as arch_evolution;
+pub use pipit_hw_codesign as hw_codesign;
+pub use pipit_agents as agents;
+pub use pipit_bridge as bridge;
+pub use pipit_permissions as permissions;

@@ -11,6 +11,7 @@ pub mod sandbox;
 pub mod subagent;
 pub mod structured_output;
 pub mod extended;
+pub mod typed;
 
 pub use read_file::ReadFileTool;
 pub use write_file::WriteFileTool;

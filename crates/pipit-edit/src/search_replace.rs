@@ -2,7 +2,7 @@ use crate::{AppliedEdit, EditError, EditFormat, EditOp};
 use crate::apply::atomic_write;
 use std::path::{Path, PathBuf};
 
-/// Search/Replace block format — default for Claude and Gemini.
+/// Search/Replace block format — default for LLM-driven editing.
 ///
 /// Format:
 /// ```text

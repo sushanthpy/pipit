@@ -363,3 +363,41 @@ impl AssistantResponse {
         !self.tool_calls.is_empty()
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Cache-Edit Protocol Types
+// ═══════════════════════════════════════════════════════════════
+
+/// An edit operation on the provider's prompt cache.
+///
+/// Instead of invalidating the entire cache and rebuilding from scratch
+/// (O(|cache|) in tokens), cache edits mutate specific entries (O(|edits|)).
+/// Savings: for 100K cached tokens and 5 stale tool results, rebuild costs
+/// ~$0.30/turn; cache-edit costs ~$0.015/turn. A 20× reduction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CacheEdit {
+    /// Remove a tool result by its call_id from the cache.
+    RemoveToolResult {
+        call_id: String,
+    },
+    /// Remove a message by index from the cache.
+    RemoveMessage {
+        index: usize,
+    },
+    /// Replace a message's content in the cache (for summarization).
+    ReplaceContent {
+        index: usize,
+        new_content: String,
+    },
+}
+
+/// Receipt from a cache-edit operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEditReceipt {
+    /// Number of edits applied.
+    pub edits_applied: usize,
+    /// Tokens freed by the edits.
+    pub tokens_freed: u64,
+    /// Whether the cache is still warm (not fully invalidated).
+    pub cache_warm: bool,
+}

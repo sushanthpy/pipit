@@ -5,9 +5,17 @@ pub mod lazy_index;
 pub mod mcp;
 pub mod typed_output;
 pub mod tool_semantics_bridge;
+pub mod typed_tool;
 
 pub use registry::*;
 pub use mcp::{McpConfig, McpManager, McpClient, load_mcp_config};
+pub use typed_tool::{
+    TypedTool, TypedToolAdapter, TypedToolResult, ToolCard, ToolExample,
+    ToolEvent, ToolSearchIndex, Purity as TypedPurity,
+    CapabilitySet as TypedCapabilitySet, ArtifactKind, OutputStream,
+    RealizedEdit as TypedRealizedEdit,
+    register_typed,
+};
 
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
@@ -93,9 +101,13 @@ pub struct ToolContext {
 
 impl ToolContext {
     pub fn new(project_root: PathBuf, approval_mode: ApprovalMode) -> Self {
+        // Canonicalize the project root to resolve symlinks (e.g. /tmp → /private/tmp on macOS).
+        // This prevents path-containment checks from failing when file paths are canonical
+        // but the project root is a symlink.
+        let canonical_root = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
         Self {
-            cwd: Arc::new(Mutex::new(project_root.clone())),
-            project_root,
+            cwd: Arc::new(Mutex::new(canonical_root.clone())),
+            project_root: canonical_root,
             approval_mode,
         }
     }

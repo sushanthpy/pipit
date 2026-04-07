@@ -129,6 +129,15 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     dry_run: bool,
 
+    /// Resume the last interrupted session. Hydrates ledger, context,
+    /// worktree, and permissions from the session WAL before continuing.
+    #[arg(long, default_value_t = false)]
+    resume: bool,
+
+    /// Session name for resume (default: latest session)
+    #[arg(long)]
+    session: Option<String>,
+
     /// Write detailed startup diagnostics to /tmp/pipit-debug.log
     #[arg(long, default_value_t = false)]
     debug: bool,
@@ -604,6 +613,46 @@ async fn main() -> Result<()> {
         project_root.clone(),
     );
 
+    // ── Session kernel + resume support ──
+    // Enable durable session tracking. When --resume is set, hydrate from
+    // the last session's WAL before accepting new input.
+    let session_dir = project_root.join(".pipit").join("sessions").join("latest");
+    if let Ok(kernel) = pipit_core::session_kernel::SessionKernel::new(
+        pipit_core::session_kernel::SessionKernelConfig {
+            session_dir: session_dir.clone(),
+            durable_writes: true,
+            snapshot_interval: 50,
+        },
+    ) {
+        if cli.resume {
+            // Hydrate from persisted state
+            let mut kernel = kernel;
+            match pipit_core::hydration::hydrate_session(
+                &mut kernel,
+                agent.context_mut(),
+                &session_dir,
+            ) {
+                Ok(result) => {
+                    eprintln!(
+                        "Resumed session: {} events replayed, {} messages restored{}",
+                        result.events_replayed,
+                        result.messages_restored.len(),
+                        if result.worktree_restored { ", worktree restored" } else { "" },
+                    );
+                    if let Some(cwd) = result.restored_cwd {
+                        agent.tool_context_mut().set_cwd(cwd);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Resume failed (starting fresh): {e}");
+                }
+            }
+            agent.enable_session_kernel(kernel);
+        } else {
+            agent.enable_session_kernel(kernel);
+        }
+    }
+
     if let Some(map) = &repo_map_text {
         agent.set_repo_map(map.clone());
     }
@@ -694,6 +743,7 @@ async fn main() -> Result<()> {
                     let files_modified: Vec<String> = proof.realized_edits.iter()
                         .map(|e| e.path.clone())
                         .collect();
+                    let confidence = &proof.confidence;
                     serde_json::json!({
                         "status": "completed",
                         "turns": turns,
@@ -701,6 +751,26 @@ async fn main() -> Result<()> {
                         "cost": cost,
                         "files_modified": files_modified,
                         "exit_code": 0,
+                        "proof": {
+                            "objective": proof.objective.statement,
+                            "strategy": format!("{:?}", proof.selected_plan.strategy),
+                            "plan_source": format!("{:?}", proof.selected_plan.plan_source),
+                            "plan_pivots": proof.plan_pivots.len(),
+                            "evidence_count": proof.evidence.len(),
+                            "realized_edits": proof.realized_edits.len(),
+                            "risk_score": proof.risk.score,
+                            "risk_class": format!("{:?}", proof.risk.action_class),
+                            "confidence": {
+                                "overall": confidence.overall(),
+                                "root_cause": confidence.root_cause,
+                                "semantic_understanding": confidence.semantic_understanding,
+                                "side_effect_risk": confidence.side_effect_risk,
+                                "verification_strength": confidence.verification_strength,
+                                "environment_certainty": confidence.environment_certainty,
+                            },
+                            "rollback_checkpoint": proof.rollback_checkpoint.checkpoint_id,
+                            "unresolved_assumptions": proof.unresolved_assumptions.len(),
+                        }
                     })
                 }
                 AgentOutcome::MaxTurnsReached(n) => {

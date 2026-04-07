@@ -146,6 +146,11 @@ pub enum SessionEvent {
         events_rewound: u64,
     },
 
+    // ── Turn commit (mandatory persistence boundary) ──
+    TurnCompleted {
+        turn: u32,
+    },
+
     // ── Snapshots (replay accelerators) ──
     Snapshot {
         at_seq: EventSeq,
@@ -500,6 +505,11 @@ impl SessionState {
                 if let Some(pos) = self.checkpoints.iter().position(|c| c == to_checkpoint) {
                     self.checkpoints.truncate(pos + 1);
                 }
+            }
+
+            // ── Turn commit ──
+            SessionEvent::TurnCompleted { turn } => {
+                self.current_turn = *turn;
             }
 
             // ── Snapshots ──
