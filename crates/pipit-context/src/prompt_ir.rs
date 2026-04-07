@@ -1,4 +1,4 @@
-//! Canonical Prompt IR and Cache-Stable Context Graph (Architecture Task 7)
+ //! Canonical Prompt IR and Cache-Stable Context Graph (Architecture Task 7)
 //!
 //! Defines a canonical intermediate representation for prompt construction.
 //! Features:

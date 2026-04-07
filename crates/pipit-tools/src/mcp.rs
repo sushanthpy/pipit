@@ -107,6 +107,7 @@ struct JsonRpcRequest {
 
 /// JSON-RPC 2.0 response.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcResponse {
     jsonrpc: String,
     id: Option<u64>,
@@ -115,6 +116,7 @@ struct JsonRpcResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcError {
     code: i32,
     message: String,
