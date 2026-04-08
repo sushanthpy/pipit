@@ -30,8 +30,18 @@ pub fn run() -> Result<()> {
 
     // Provider
     println!("  \x1b[1mProvider\x1b[0m");
-    println!("  \x1b[90mSupported: anthropic, openai, deepseek, google, openrouter,\x1b[0m");
-    println!("  \x1b[90m           ollama, groq, cerebras, mistral, xai, openai_compatible\x1b[0m");
+    println!("  \x1b[90mSupported: amazon_bedrock, anthropic, openai, openai_codex,\x1b[0m");
+    println!("  \x1b[90m           azure_openai, deepseek, google, google_gemini_cli,\x1b[0m");
+    println!(
+        "  \x1b[90m           google_antigravity, vertex, openrouter, vercel_ai_gateway,\x1b[0m"
+    );
+    println!("  \x1b[90m           github_copilot, xai, zai, cerebras, groq, mistral,\x1b[0m");
+    println!(
+        "  \x1b[90m           huggingface, minimax, minimax_cn, opencode, opencode_go,\x1b[0m"
+    );
+    println!(
+        "  \x1b[90m           kimi_coding, ollama, openai_compatible, anthropic_compatible\x1b[0m"
+    );
     println!();
     let provider_str = prompt_input("  Provider [anthropic]: ")?;
     let provider_str = if provider_str.is_empty() {
@@ -185,17 +195,29 @@ fn prompt_input(prompt: &str) -> Result<String> {
 
 fn default_model_for_provider(provider: ProviderKind) -> &'static str {
     match provider {
+        ProviderKind::AmazonBedrock => "us.anthropic.claude-opus-4-6-v1",
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "claude-sonnet-4-20250514",
         ProviderKind::OpenAi => "gpt-4o",
+        ProviderKind::OpenAiCodex => "gpt-5.3-codex",
         ProviderKind::AzureOpenAi => "gpt-4o",
         ProviderKind::DeepSeek => "deepseek-chat",
         ProviderKind::Google => "gemini-2.5-flash",
+        ProviderKind::GoogleGeminiCli => "gemini-2.5-pro",
+        ProviderKind::GoogleAntigravity => "gemini-3.1-pro-high",
         ProviderKind::Vertex => "gemini-2.5-pro",
         ProviderKind::OpenRouter => "anthropic/claude-sonnet-4-20250514",
+        ProviderKind::VercelAiGateway => "anthropic/claude-opus-4-6",
+        ProviderKind::GitHubCopilot => "gpt-4o",
         ProviderKind::XAi => "grok-3",
+        ProviderKind::ZAi => "glm-5",
         ProviderKind::Cerebras => "llama-4-scout-17b-16e-instruct",
         ProviderKind::Groq => "llama-4-scout-17b-16e-instruct",
         ProviderKind::Mistral => "mistral-large-latest",
+        ProviderKind::HuggingFace => "moonshotai/Kimi-K2.5",
+        ProviderKind::MiniMax | ProviderKind::MiniMaxCn => "MiniMax-M2.7",
+        ProviderKind::Opencode => "claude-opus-4-6",
+        ProviderKind::OpencodeGo => "kimi-k2.5",
+        ProviderKind::KimiCoding => "kimi-k2-thinking",
         ProviderKind::Ollama => "qwen2.5-coder:14b",
         ProviderKind::OpenAiCompatible => "default",
     }
@@ -204,10 +226,23 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
 fn needs_base_url(provider: ProviderKind) -> bool {
     matches!(
         provider,
-        ProviderKind::OpenAiCompatible
+        ProviderKind::AmazonBedrock
+            | ProviderKind::GoogleGeminiCli
+            | ProviderKind::GoogleAntigravity
+            | ProviderKind::OpenAiCompatible
+            | ProviderKind::OpenAiCodex
             | ProviderKind::AnthropicCompatible
             | ProviderKind::AzureOpenAi
             | ProviderKind::Vertex
+            | ProviderKind::VercelAiGateway
+            | ProviderKind::GitHubCopilot
+            | ProviderKind::ZAi
+            | ProviderKind::HuggingFace
+            | ProviderKind::MiniMax
+            | ProviderKind::MiniMaxCn
+            | ProviderKind::Opencode
+            | ProviderKind::OpencodeGo
+            | ProviderKind::KimiCoding
             | ProviderKind::Ollama
     )
 }
@@ -215,23 +250,49 @@ fn needs_base_url(provider: ProviderKind) -> bool {
 fn default_base_url(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Ollama => "http://localhost:11434",
+        ProviderKind::AmazonBedrock => "https://bedrock-runtime.us-east-1.amazonaws.com",
+        ProviderKind::OpenAiCodex => "https://api.openai.com",
+        ProviderKind::GoogleGeminiCli => "https://cloudcode-pa.googleapis.com",
+        ProviderKind::GoogleAntigravity => "https://daily-cloudcode-pa.sandbox.googleapis.com",
+        ProviderKind::VercelAiGateway => "https://ai-gateway.vercel.sh",
+        ProviderKind::GitHubCopilot => "https://api.individual.githubcopilot.com",
+        ProviderKind::ZAi => "https://api.z.ai/api/coding/paas/v4",
+        ProviderKind::HuggingFace => "https://router.huggingface.co",
+        ProviderKind::MiniMax => "https://api.minimax.io/anthropic",
+        ProviderKind::MiniMaxCn => "https://api.minimaxi.com/anthropic",
+        ProviderKind::Opencode => "https://opencode.ai/zen",
+        ProviderKind::OpencodeGo => "https://opencode.ai/zen/go/v1",
+        ProviderKind::KimiCoding => "https://api.kimi.com/coding",
         _ => "http://localhost:8000",
     }
 }
 
 fn env_var_for_provider(provider: ProviderKind) -> &'static str {
     match provider {
+        ProviderKind::AmazonBedrock => "AWS_BEARER_TOKEN_BEDROCK",
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
-        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiCodex => {
+            "OPENAI_API_KEY"
+        }
         ProviderKind::AzureOpenAi => "AZURE_OPENAI_API_KEY",
         ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
         ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::GoogleGeminiCli => "GOOGLE_GEMINI_CLI_TOKEN",
+        ProviderKind::GoogleAntigravity => "GOOGLE_ANTIGRAVITY_TOKEN",
         ProviderKind::Vertex => "VERTEX_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::VercelAiGateway => "AI_GATEWAY_API_KEY",
+        ProviderKind::GitHubCopilot => "COPILOT_GITHUB_TOKEN",
         ProviderKind::XAi => "XAI_API_KEY",
+        ProviderKind::ZAi => "ZAI_API_KEY",
         ProviderKind::Cerebras => "CEREBRAS_API_KEY",
         ProviderKind::Groq => "GROQ_API_KEY",
         ProviderKind::Mistral => "MISTRAL_API_KEY",
+        ProviderKind::HuggingFace => "HF_TOKEN",
+        ProviderKind::MiniMax => "MINIMAX_API_KEY",
+        ProviderKind::MiniMaxCn => "MINIMAX_CN_API_KEY",
+        ProviderKind::Opencode | ProviderKind::OpencodeGo => "OPENCODE_API_KEY",
+        ProviderKind::KimiCoding => "KIMI_API_KEY",
         ProviderKind::Ollama => "OLLAMA_API_KEY",
     }
 }

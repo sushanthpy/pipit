@@ -2,8 +2,9 @@
 set -eu
 
 REPO="sushanthpy/pipit"
-INSTALL_DIR="${PIPIT_INSTALL_DIR:-/usr/local/bin}"
 BINARY="pipit"
+CACHE_DIR="${HOME}/.pipit"
+CACHE_FILE="${CACHE_DIR}/version-check"
 
 main() {
     platform="$(uname -s)"
@@ -28,6 +29,8 @@ main() {
     else
         tag="$(get_latest_tag)"
     fi
+
+    INSTALL_DIR="$(resolve_install_dir)"
 
     url="https://github.com/${REPO}/releases/download/${tag}/pipit-${tag}-${target}.tar.gz"
 
@@ -61,8 +64,31 @@ main() {
         sudo mv "${binary_path}" "${INSTALL_DIR}/${BINARY}"
     fi
 
+    write_version_cache "${tag}"
+
     info "Installed pipit to ${INSTALL_DIR}/${BINARY}"
     "${INSTALL_DIR}/${BINARY}" --version
+
+    active_path="$(command -v "${BINARY}" 2>/dev/null || true)"
+    if [ -n "${active_path}" ] && [ "${active_path}" != "${INSTALL_DIR}/${BINARY}" ]; then
+        warn "Your shell resolves ${BINARY} to ${active_path}, not ${INSTALL_DIR}/${BINARY}."
+        warn "Either reorder PATH or rerun with PIPIT_INSTALL_DIR=$(dirname "${active_path}")"
+    fi
+}
+
+resolve_install_dir() {
+    if [ -n "${PIPIT_INSTALL_DIR:-}" ]; then
+        printf '%s\n' "${PIPIT_INSTALL_DIR}"
+        return
+    fi
+
+    existing="$(command -v "${BINARY}" 2>/dev/null || true)"
+    if [ -n "${existing}" ]; then
+        dirname "${existing}"
+        return
+    fi
+
+    printf '%s\n' "/usr/local/bin"
 }
 
 get_latest_tag() {
@@ -77,8 +103,19 @@ get_latest_tag() {
     fi
 }
 
+write_version_cache() {
+    tag="$1"
+    mkdir -p "${CACHE_DIR}" 2>/dev/null || return 0
+    now="$(date +%s 2>/dev/null || echo 0)"
+    printf '%s\n%s\n' "${now}" "${tag}" > "${CACHE_FILE}" 2>/dev/null || true
+}
+
 info() {
     printf '\033[0;32m=>\033[0m %s\n' "$1"
+}
+
+warn() {
+    printf '\033[0;33mwarning:\033[0m %s\n' "$1"
 }
 
 err() {

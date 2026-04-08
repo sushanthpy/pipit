@@ -45,15 +45,12 @@ async fn install_plugin(source: &str, project_root: &std::path::Path) -> Result<
     eprintln!("\x1b[36mSearching registry for '{}'\x1b[0m", source);
 
     let index = fetch_registry_index().await?;
-    let entry = index
-        .iter()
-        .find(|e| e.name == *source)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Plugin '{}' not found in registry. Use `pipit plugin search <query>` to browse.",
-                source
-            )
-        })?;
+    let entry = index.iter().find(|e| e.name == *source).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Plugin '{}' not found in registry. Use `pipit plugin search <query>` to browse.",
+            source
+        )
+    })?;
 
     eprintln!(
         "  Found: {} v{} — {}",
@@ -81,7 +78,8 @@ async fn install_plugin(source: &str, project_root: &std::path::Path) -> Result<
         if hasher != *expected_sha {
             return Err(anyhow::anyhow!(
                 "Checksum mismatch! Expected {} got {}. The download may be corrupted or tampered with.",
-                expected_sha, hasher
+                expected_sha,
+                hasher
             ));
         }
         eprintln!("  \x1b[32m✓\x1b[0m Checksum verified");
@@ -158,7 +156,9 @@ async fn search_registry(query: &str) -> Result<()> {
         .filter(|e| {
             e.name.to_lowercase().contains(&query_lower)
                 || e.description.to_lowercase().contains(&query_lower)
-                || e.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+                || e.tags
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_lower))
         })
         .collect();
 
@@ -200,7 +200,8 @@ struct RegistryEntry {
 
 /// Fetch the plugin registry index from the remote URL.
 async fn fetch_registry_index() -> Result<Vec<RegistryEntry>> {
-    let url = std::env::var("PIPIT_REGISTRY_URL").unwrap_or_else(|_| REGISTRY_INDEX_URL.to_string());
+    let url =
+        std::env::var("PIPIT_REGISTRY_URL").unwrap_or_else(|_| REGISTRY_INDEX_URL.to_string());
 
     let response = reqwest::get(&url).await.map_err(|e| {
         anyhow::anyhow!(
@@ -218,9 +219,10 @@ async fn fetch_registry_index() -> Result<Vec<RegistryEntry>> {
         ));
     }
 
-    let entries: Vec<RegistryEntry> = response.json().await.map_err(|e| {
-        anyhow::anyhow!("Failed to parse registry index: {}", e)
-    })?;
+    let entries: Vec<RegistryEntry> = response
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse registry index: {}", e))?;
 
     Ok(entries)
 }

@@ -150,15 +150,33 @@ impl Default for ProviderConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
+    AmazonBedrock,
     Anthropic,
     OpenAi,
+    /// OpenAI Codex-style provider selection over the standard OpenAI transport.
+    OpenAiCodex,
     DeepSeek,
     Google,
+    GoogleGeminiCli,
+    GoogleAntigravity,
     OpenRouter,
+    /// Vercel AI Gateway (OpenAI-compatible transport).
+    VercelAiGateway,
+    GitHubCopilot,
     XAi,
+    ZAi,
     Cerebras,
     Groq,
     Mistral,
+    /// Hugging Face router (OpenAI-compatible transport).
+    HuggingFace,
+    /// MiniMax global endpoint (Anthropic-compatible transport).
+    MiniMax,
+    /// MiniMax China endpoint (Anthropic-compatible transport).
+    MiniMaxCn,
+    Opencode,
+    OpencodeGo,
+    KimiCoding,
     Ollama,
     /// Azure OpenAI endpoint (requires --base-url with resource endpoint)
     AzureOpenAi,
@@ -174,22 +192,41 @@ impl FromStr for ProviderKind {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "amazon_bedrock" | "amazon-bedrock" | "bedrock" => Ok(Self::AmazonBedrock),
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "openai" | "gpt" => Ok(Self::OpenAi),
+            "openai_codex" | "openai-codex" | "cortex" | "codex" => Ok(Self::OpenAiCodex),
             "deepseek" => Ok(Self::DeepSeek),
             "google" | "gemini" => Ok(Self::Google),
+            "google_gemini_cli" | "google-gemini-cli" | "gemini_cli" | "gemini-cli" => {
+                Ok(Self::GoogleGeminiCli)
+            }
+            "google_antigravity" | "google-antigravity" | "antigravity" => {
+                Ok(Self::GoogleAntigravity)
+            }
             "vertex" | "vertex_ai" | "vertexai" | "google_vertex" => Ok(Self::Vertex),
             "azure" | "azure_openai" | "azure-openai" | "azureopenai" => Ok(Self::AzureOpenAi),
             "openrouter" | "open_router" => Ok(Self::OpenRouter),
+            "vercel_ai_gateway" | "vercel-ai-gateway" | "vercel" | "ai_gateway" => {
+                Ok(Self::VercelAiGateway)
+            }
+            "github_copilot" | "github-copilot" | "copilot" => Ok(Self::GitHubCopilot),
             "xai" | "grok" => Ok(Self::XAi),
+            "zai" => Ok(Self::ZAi),
             "cerebras" => Ok(Self::Cerebras),
             "groq" => Ok(Self::Groq),
             "mistral" => Ok(Self::Mistral),
+            "huggingface" | "hf" => Ok(Self::HuggingFace),
+            "minimax" => Ok(Self::MiniMax),
+            "minimax_cn" | "minimax-cn" => Ok(Self::MiniMaxCn),
+            "opencode" => Ok(Self::Opencode),
+            "opencode_go" | "opencode-go" => Ok(Self::OpencodeGo),
+            "kimi_coding" | "kimi-coding" => Ok(Self::KimiCoding),
             "ollama" => Ok(Self::Ollama),
             "openai_compatible" | "openai-compatible" | "custom" => Ok(Self::OpenAiCompatible),
             "anthropic_compatible" | "anthropic-compatible" => Ok(Self::AnthropicCompatible),
             _ => Err(format!(
-                "Unknown provider: {}. Supported: anthropic, openai, azure_openai, deepseek, google, vertex, openrouter, xai, cerebras, groq, mistral, ollama, openai_compatible, anthropic_compatible",
+                "Unknown provider: {}. Supported: amazon_bedrock, anthropic, openai, openai_codex, azure_openai, deepseek, google, google_gemini_cli, google_antigravity, vertex, openrouter, vercel_ai_gateway, github_copilot, xai, zai, cerebras, groq, mistral, huggingface, minimax, minimax_cn, opencode, opencode_go, kimi_coding, ollama, openai_compatible, anthropic_compatible",
                 s
             )),
         }
@@ -199,21 +236,72 @@ impl FromStr for ProviderKind {
 impl std::fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AmazonBedrock => write!(f, "amazon_bedrock"),
             Self::Anthropic => write!(f, "anthropic"),
             Self::OpenAi => write!(f, "openai"),
+            Self::OpenAiCodex => write!(f, "openai_codex"),
             Self::DeepSeek => write!(f, "deepseek"),
             Self::Google => write!(f, "google"),
+            Self::GoogleGeminiCli => write!(f, "google_gemini_cli"),
+            Self::GoogleAntigravity => write!(f, "google_antigravity"),
             Self::Vertex => write!(f, "vertex"),
             Self::AzureOpenAi => write!(f, "azure_openai"),
             Self::OpenRouter => write!(f, "openrouter"),
+            Self::VercelAiGateway => write!(f, "vercel_ai_gateway"),
+            Self::GitHubCopilot => write!(f, "github_copilot"),
             Self::XAi => write!(f, "xai"),
+            Self::ZAi => write!(f, "zai"),
             Self::Cerebras => write!(f, "cerebras"),
             Self::Groq => write!(f, "groq"),
             Self::Mistral => write!(f, "mistral"),
+            Self::HuggingFace => write!(f, "huggingface"),
+            Self::MiniMax => write!(f, "minimax"),
+            Self::MiniMaxCn => write!(f, "minimax_cn"),
+            Self::Opencode => write!(f, "opencode"),
+            Self::OpencodeGo => write!(f, "opencode_go"),
+            Self::KimiCoding => write!(f, "kimi_coding"),
             Self::Ollama => write!(f, "ollama"),
             Self::OpenAiCompatible => write!(f, "openai_compatible"),
             Self::AnthropicCompatible => write!(f, "anthropic_compatible"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderKind;
+    use std::str::FromStr;
+
+    #[test]
+    fn parses_new_provider_aliases() {
+        assert_eq!(
+            ProviderKind::from_str("openai-codex").unwrap(),
+            ProviderKind::OpenAiCodex
+        );
+        assert_eq!(
+            ProviderKind::from_str("google-gemini-cli").unwrap(),
+            ProviderKind::GoogleGeminiCli
+        );
+        assert_eq!(
+            ProviderKind::from_str("vercel-ai-gateway").unwrap(),
+            ProviderKind::VercelAiGateway
+        );
+        assert_eq!(
+            ProviderKind::from_str("huggingface").unwrap(),
+            ProviderKind::HuggingFace
+        );
+        assert_eq!(
+            ProviderKind::from_str("github-copilot").unwrap(),
+            ProviderKind::GitHubCopilot
+        );
+        assert_eq!(
+            ProviderKind::from_str("minimax-cn").unwrap(),
+            ProviderKind::MiniMaxCn
+        );
+        assert_eq!(
+            ProviderKind::from_str("opencode-go").unwrap(),
+            ProviderKind::OpencodeGo
+        );
     }
 }
 

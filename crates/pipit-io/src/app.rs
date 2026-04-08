@@ -44,7 +44,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
+    },
 };
 use std::io;
 use std::path::PathBuf;
@@ -657,7 +659,8 @@ impl TuiState {
         if !text.trim().is_empty() {
             self.ensure_turn_separator();
             for line in text.split('\n') {
-                self.content_lines.push(line.trim_end_matches('\r').to_string());
+                self.content_lines
+                    .push(line.trim_end_matches('\r').to_string());
             }
         }
         self.cached_lines_count = 0;
@@ -748,12 +751,10 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
     draw_tab_bar(frame, root[1], state);
 
     match state.active_tab {
-        TabView::Coding => {
-            match state.ui_mode {
-                UiMode::Shell => draw_shell_mode(frame, root[2], state),
-                UiMode::Task => draw_task_mode(frame, root[2], state, wc),
-            }
-        }
+        TabView::Coding => match state.ui_mode {
+            UiMode::Shell => draw_shell_mode(frame, root[2], state),
+            UiMode::Task => draw_task_mode(frame, root[2], state, wc),
+        },
         TabView::Agents => draw_agents_tab(frame, root[2], state),
         TabView::Context => draw_context_tab(frame, root[2], state),
         TabView::Help => draw_help_tab(frame, root[2], state),
@@ -884,7 +885,11 @@ fn draw_tab_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     let tabs = Tabs::new(titles)
         .select(state.active_tab.index())
-        .style(Style::default().fg(Color::DarkGray).bg(Color::Rgb(20, 20, 30)))
+        .style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .bg(Color::Rgb(20, 20, 30)),
+        )
         .highlight_style(
             Style::default()
                 .fg(Color::Cyan)
@@ -903,15 +908,21 @@ fn draw_tab_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
 fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::from(vec![
-        Span::styled("  Agents & Subagents", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Agents & Subagents",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     // Built-in agents
-    lines.push(Line::from(vec![
-        Span::styled("  Built-in Agents", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Built-in Agents",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let builtin_agents = [
@@ -926,7 +937,12 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
         lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled(format!("{} ", icon), Style::default()),
-            Span::styled(format!("{:<12}", name), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{:<12}", name),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!(" {}", desc), Style::default().fg(Color::Gray)),
         ]));
     }
@@ -934,12 +950,21 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // Active subagents (if any)
-    lines.push(Line::from(vec![
-        Span::styled("  Subagent Status", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Subagent Status",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
-    if state.is_working && state.active_tool.as_ref().map(|t| t.tool_name == "subagent").unwrap_or(false) {
+    if state.is_working
+        && state
+            .active_tool
+            .as_ref()
+            .map(|t| t.tool_name == "subagent")
+            .unwrap_or(false)
+    {
         lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled("● ", Style::default().fg(Color::Green)),
@@ -956,23 +981,31 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // Delegation info
-    lines.push(Line::from(vec![
-        Span::styled("  Delegation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Delegation",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("    "),
-        Span::styled("The LLM can delegate subtasks using the ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "The LLM can delegate subtasks using the ",
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::styled("subagent", Style::default().fg(Color::Cyan)),
         Span::styled(" tool.", Style::default().fg(Color::DarkGray)),
     ]));
     lines.push(Line::from(vec![
         Span::raw("    "),
-        Span::styled("Subagents run as bounded child processes (max 15 turns).", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Subagents run as bounded child processes (max 15 turns).",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
 
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::NONE));
+    let paragraph = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(paragraph, area);
 }
 
@@ -983,15 +1016,21 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::from(vec![
-        Span::styled("  Context & Memory", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Context & Memory",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     // Token usage
-    lines.push(Line::from(vec![
-        Span::styled("  Token Budget", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Token Budget",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let used = state.status.tokens_used;
@@ -1009,27 +1048,47 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
         Span::raw("    "),
         Span::styled("[", Style::default().fg(Color::DarkGray)),
         Span::styled("█".repeat(filled), Style::default().fg(bar_color)),
-        Span::styled("░".repeat(bar_width - filled), Style::default().fg(Color::Rgb(40, 40, 40))),
+        Span::styled(
+            "░".repeat(bar_width - filled),
+            Style::default().fg(Color::Rgb(40, 40, 40)),
+        ),
         Span::styled("]", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {}%", pct), Style::default().fg(bar_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {}%", pct),
+            Style::default().fg(bar_color).add_modifier(Modifier::BOLD),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::raw("    "),
-        Span::styled(format!("{} / {} tokens", used, limit), Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{} / {} tokens", used, limit),
+            Style::default().fg(Color::Gray),
+        ),
     ]));
     lines.push(Line::from(""));
 
     // Session info
-    lines.push(Line::from(vec![
-        Span::styled("  Session", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Session",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled("Turn:    ", Style::default().fg(Color::Gray)),
-        Span::styled(format!("{}", state.current_turn), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" / {}", state.max_turns), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{}", state.current_turn),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" / {}", state.max_turns),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::raw("    "),
@@ -1045,33 +1104,44 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
         lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled("Cost:    ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("${:.4}", state.status.cost), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("${:.4}", state.status.cost),
+                Style::default().fg(Color::Yellow),
+            ),
         ]));
     }
 
     lines.push(Line::from(""));
 
     // Memory status
-    lines.push(Line::from(vec![
-        Span::styled("  Memory", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Memory",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled("Use ", Style::default().fg(Color::DarkGray)),
         Span::styled("/memory", Style::default().fg(Color::Cyan)),
-        Span::styled(" to view/add/clear persistent memory.", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            " to view/add/clear persistent memory.",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled("Stored in ", Style::default().fg(Color::DarkGray)),
         Span::styled(".pipit/MEMORY.md", Style::default().fg(Color::White)),
         Span::styled(" and ", Style::default().fg(Color::DarkGray)),
-        Span::styled("~/.config/pipit/MEMORY.md", Style::default().fg(Color::White)),
+        Span::styled(
+            "~/.config/pipit/MEMORY.md",
+            Style::default().fg(Color::White),
+        ),
     ]));
 
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::NONE));
+    let paragraph = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(paragraph, area);
 }
 
@@ -1082,15 +1152,21 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     let mut lines: Vec<Line> = Vec::new();
 
-    lines.push(Line::from(vec![
-        Span::styled("  Pipit Help & Documentation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Pipit Help & Documentation",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     // Keyboard shortcuts
-    lines.push(Line::from(vec![
-        Span::styled("  Keyboard Shortcuts", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Keyboard Shortcuts",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let shortcuts = [
@@ -1111,7 +1187,12 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     for (key, desc) in &shortcuts {
         lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled(format!("{:<16}", key), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{:<16}", key),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(*desc, Style::default().fg(Color::Gray)),
         ]));
     }
@@ -1119,9 +1200,12 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // Core slash commands
-    lines.push(Line::from(vec![
-        Span::styled("  Core Commands", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Core Commands",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let commands = [
@@ -1150,9 +1234,12 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // Git commands
-    lines.push(Line::from(vec![
-        Span::styled("  Git Commands", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Git Commands",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let git_commands = [
@@ -1173,9 +1260,12 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // Advanced
-    lines.push(Line::from(vec![
-        Span::styled("  Advanced", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  Advanced",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let advanced = [
@@ -1201,9 +1291,12 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // CLI modes
-    lines.push(Line::from(vec![
-        Span::styled("  CLI Modes (--mode)", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  CLI Modes (--mode)",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
     lines.push(Line::from(""));
 
     let modes = [
@@ -1249,9 +1342,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
                     " ? help · @file · !shell · enter send · esc cancel · ctrl+c quit"
                 }
             }
-            UiMode::Task => {
-                " ? help · tab focus · j/k scroll · g shell · esc stop · ctrl+c quit"
-            }
+            UiMode::Task => " ? help · tab focus · j/k scroll · g shell · esc stop · ctrl+c quit",
         },
         TabView::Agents => " agents view — ctrl+1 to return to coding",
         TabView::Context => " context view — ctrl+1 to return to coding",
@@ -2799,10 +2890,22 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
             state.active_tab = TabView::Help;
             return true;
         }
-        KeyCode::F(2) => { state.active_tab = TabView::Coding; return true; }
-        KeyCode::F(3) => { state.active_tab = TabView::Agents; return true; }
-        KeyCode::F(4) => { state.active_tab = TabView::Context; return true; }
-        KeyCode::F(5) => { state.active_tab = TabView::Help; return true; }
+        KeyCode::F(2) => {
+            state.active_tab = TabView::Coding;
+            return true;
+        }
+        KeyCode::F(3) => {
+            state.active_tab = TabView::Agents;
+            return true;
+        }
+        KeyCode::F(4) => {
+            state.active_tab = TabView::Context;
+            return true;
+        }
+        KeyCode::F(5) => {
+            state.active_tab = TabView::Help;
+            return true;
+        }
         KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.cycle_tab(false);
             return true;

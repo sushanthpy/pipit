@@ -3,6 +3,7 @@ pub mod azure_openai;
 pub mod circuit_breaker;
 pub mod fallback;
 pub mod google;
+pub mod google_cli;
 pub mod openai;
 pub mod resilience;
 pub mod retry;
@@ -173,6 +174,11 @@ pub fn create_provider(
     use pipit_config::ProviderKind as PK;
 
     match kind {
+        PK::AmazonBedrock => Err(ProviderError::Other(
+            "amazon_bedrock requires AWS Bedrock runtime support, which is not implemented in this build"
+                .into(),
+        )),
+
         PK::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::new(
             model.to_string(),
             api_key.to_string(),
@@ -194,6 +200,13 @@ pub fn create_provider(
             model.to_string(),
             api_key.to_string(),
             base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::OpenAiCodex => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "openai_codex".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://api.openai.com").to_string()),
         )?)),
 
         PK::OpenAiCompatible => {
@@ -222,11 +235,36 @@ pub fn create_provider(
             Some(base_url.unwrap_or("https://openrouter.ai/api").to_string()),
         )?)),
 
+        PK::VercelAiGateway => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "vercel_ai_gateway".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://ai-gateway.vercel.sh").to_string()),
+        )?)),
+
+        PK::GitHubCopilot => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "github_copilot".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(
+                base_url
+                    .unwrap_or("https://api.individual.githubcopilot.com")
+                    .to_string(),
+            ),
+        )?)),
+
         PK::XAi => Ok(Box::new(openai::OpenAiProvider::with_id(
             "xai".to_string(),
             model.to_string(),
             api_key.to_string(),
             Some(base_url.unwrap_or("https://api.x.ai").to_string()),
+        )?)),
+
+        PK::ZAi => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "zai".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://api.z.ai/api/coding/paas/v4").to_string()),
         )?)),
 
         PK::Cerebras => Ok(Box::new(openai::OpenAiProvider::with_id(
@@ -254,6 +292,35 @@ pub fn create_provider(
             Some(base_url.unwrap_or("https://api.mistral.ai").to_string()),
         )?)),
 
+        PK::HuggingFace => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "huggingface".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://router.huggingface.co").to_string()),
+        )?)),
+
+        PK::MiniMax => Ok(Box::new(anthropic::AnthropicProvider::with_id(
+            "minimax".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(
+                base_url
+                    .unwrap_or("https://api.minimax.io/anthropic")
+                    .to_string(),
+            ),
+        )?)),
+
+        PK::MiniMaxCn => Ok(Box::new(anthropic::AnthropicProvider::with_id(
+            "minimax_cn".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(
+                base_url
+                    .unwrap_or("https://api.minimaxi.com/anthropic")
+                    .to_string(),
+            ),
+        )?)),
+
         PK::Ollama => Ok(Box::new(openai::OpenAiProvider::with_id(
             "ollama".to_string(),
             model.to_string(),
@@ -261,7 +328,42 @@ pub fn create_provider(
             Some(base_url.unwrap_or("http://localhost:11434").to_string()),
         )?)),
 
+        PK::Opencode => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "opencode".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://opencode.ai/zen").to_string()),
+        )?)),
+
+        PK::OpencodeGo => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "opencode_go".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://opencode.ai/zen/go/v1").to_string()),
+        )?)),
+
+        PK::KimiCoding => Ok(Box::new(openai::OpenAiProvider::with_id(
+            "kimi_coding".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            Some(base_url.unwrap_or("https://api.kimi.com/coding").to_string()),
+        )?)),
+
         PK::Google => Ok(Box::new(google::GoogleProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::GoogleGeminiCli => Ok(Box::new(google_cli::GoogleCliProvider::new(
+            "google_gemini_cli".to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::GoogleAntigravity => Ok(Box::new(google_cli::GoogleCliProvider::new(
+            "google_antigravity".to_string(),
             model.to_string(),
             api_key.to_string(),
             base_url.map(|s| s.to_string()),
@@ -278,5 +380,27 @@ pub fn create_provider(
             api_key.to_string(),
             base_url.map(|s| s.to_string()),
         )?)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_provider;
+    use pipit_config::ProviderKind;
+
+    #[test]
+    fn create_provider_preserves_compatible_provider_ids() {
+        let provider = create_provider(
+            ProviderKind::VercelAiGateway,
+            "anthropic/claude-opus-4-6",
+            "test-key",
+            None,
+        )
+        .unwrap();
+        assert_eq!(provider.id(), "vercel_ai_gateway");
+
+        let provider =
+            create_provider(ProviderKind::MiniMax, "MiniMax-M2.7", "test-key", None).unwrap();
+        assert_eq!(provider.id(), "minimax");
     }
 }

@@ -1279,8 +1279,7 @@ fn inline_field_list_re() -> &'static Regex {
 fn markdown_table_break_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"([^\n])\s+(\|[^\n]*\|[^\n]*\|[^\n]*)")
-            .expect("valid markdown table regex")
+        Regex::new(r"([^\n])\s+(\|[^\n]*\|[^\n]*\|[^\n]*)").expect("valid markdown table regex")
     })
 }
 
@@ -1309,7 +1308,9 @@ fn looks_like_internal_paragraph(paragraph: &str) -> bool {
         "i should ",
         "i'll ",
     ];
-    obvious_prefixes.iter().any(|prefix| lower.starts_with(prefix))
+    obvious_prefixes
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
         || lower.contains("let me provide a final summary")
 }
 

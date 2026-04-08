@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const REPO: &str = "sushanthpy/pipit";
@@ -131,6 +132,60 @@ fn format_update_message(current: &str, latest: &str) -> String {
         "Update available: v{} → {} — run: curl -fsSL https://raw.githubusercontent.com/{}/main/install.sh | sh",
         current, latest, REPO
     )
+}
+
+pub fn detect_path_version_conflict() -> Option<String> {
+    let current_binary = std::env::current_exe().ok()?;
+    let current_binary = current_binary.canonicalize().unwrap_or(current_binary);
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join("pipit");
+        if !candidate.is_file() {
+            continue;
+        }
+
+        let candidate = candidate.canonicalize().unwrap_or(candidate);
+        if candidate == current_binary {
+            continue;
+        }
+
+        let Some(candidate_version) = binary_version(&candidate) else {
+            continue;
+        };
+        if candidate_version == current_version {
+            continue;
+        }
+
+        return Some(format!(
+            "Another pipit is installed at {} (v{}), but this shell is running {} (v{}). Reinstall into the active path with: PIPIT_INSTALL_DIR={} curl -fsSL https://raw.githubusercontent.com/{}/main/install.sh | sh",
+            candidate.display(),
+            candidate_version,
+            current_binary.display(),
+            current_version,
+            current_binary.parent()?.display(),
+            REPO
+        ));
+    }
+
+    None
+}
+
+fn binary_version(path: &std::path::Path) -> Option<String> {
+    let output = Command::new(path).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_version_output(&String::from_utf8(output.stdout).ok()?)
+}
+
+fn parse_version_output(stdout: &str) -> Option<String> {
+    stdout
+        .split_whitespace()
+        .find(|part| parse_version(part).is_some())
+        .map(|part| part.trim().to_string())
 }
 
 /// Self-update: download and replace the running binary with the latest release.
@@ -309,5 +364,15 @@ mod tests {
         assert!(is_newer("0.1.0", "v1.0.0"));
         assert!(!is_newer("0.1.0", "v0.1.0"));
         assert!(!is_newer("0.2.0", "v0.1.0"));
+    }
+
+    #[test]
+    fn test_parse_version_output() {
+        assert_eq!(parse_version_output("pipit 0.2.6\n"), Some("0.2.6".into()));
+        assert_eq!(
+            parse_version_output("pipit v0.2.6\n"),
+            Some("v0.2.6".into())
+        );
+        assert_eq!(parse_version_output("no version here\n"), None);
     }
 }

@@ -140,17 +140,36 @@ pub fn detect_project_root() -> Option<PathBuf> {
 pub fn resolve_api_key(provider: ProviderKind) -> Option<String> {
     // 1. Environment variable
     let env_var = match provider {
+        ProviderKind::AmazonBedrock => "AWS_BEARER_TOKEN_BEDROCK",
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
-        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiCodex => {
+            "OPENAI_API_KEY"
+        }
         ProviderKind::AzureOpenAi => "AZURE_OPENAI_API_KEY",
         ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
         ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::GoogleGeminiCli => "GOOGLE_GEMINI_CLI_TOKEN",
+        ProviderKind::GoogleAntigravity => "GOOGLE_ANTIGRAVITY_TOKEN",
         ProviderKind::Vertex => "VERTEX_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::VercelAiGateway => "AI_GATEWAY_API_KEY",
+        ProviderKind::GitHubCopilot => {
+            return std::env::var("COPILOT_GITHUB_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("GH_TOKEN").ok())
+                .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+                .or_else(|| credentials::CredentialStore::load().resolve_token(provider));
+        }
         ProviderKind::XAi => "XAI_API_KEY",
+        ProviderKind::ZAi => "ZAI_API_KEY",
         ProviderKind::Cerebras => "CEREBRAS_API_KEY",
         ProviderKind::Groq => "GROQ_API_KEY",
         ProviderKind::Mistral => "MISTRAL_API_KEY",
+        ProviderKind::HuggingFace => "HF_TOKEN",
+        ProviderKind::MiniMax => "MINIMAX_API_KEY",
+        ProviderKind::MiniMaxCn => "MINIMAX_CN_API_KEY",
+        ProviderKind::Opencode | ProviderKind::OpencodeGo => "OPENCODE_API_KEY",
+        ProviderKind::KimiCoding => "KIMI_API_KEY",
         ProviderKind::Ollama => return Some("ollama".to_string()),
     };
     if let Ok(val) = std::env::var(env_var) {

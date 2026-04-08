@@ -71,6 +71,17 @@ impl OpenAiProvider {
         }
     }
 
+    fn apply_provider_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.provider_id.as_str() {
+            "github_copilot" => builder
+                .header("User-Agent", "GitHubCopilotChat/0.35.0")
+                .header("Editor-Version", "vscode/1.107.0")
+                .header("Editor-Plugin-Version", "copilot-chat/0.35.0")
+                .header("Copilot-Integration-Id", "vscode-chat"),
+            _ => builder,
+        }
+    }
+
     fn build_request_body(&self, request: &CompletionRequest) -> serde_json::Value {
         let mut messages = Vec::new();
 
@@ -257,12 +268,14 @@ impl LlmProvider for OpenAiProvider {
     > {
         let body = self.build_request_body(&request);
 
-        let response = self
+        let request_builder = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body)
+            .json(&body);
+        let response = self
+            .apply_provider_headers(request_builder)
             .send()
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;

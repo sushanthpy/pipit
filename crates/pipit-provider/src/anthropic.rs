@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 pub struct AnthropicProvider {
     client: Client,
+    provider_id: String,
     model: String,
     api_key: String,
     base_url: String,
@@ -25,6 +26,15 @@ impl AnthropicProvider {
         api_key: String,
         base_url: Option<String>,
     ) -> Result<Self, ProviderError> {
+        Self::with_id("anthropic".to_string(), model, api_key, base_url)
+    }
+
+    pub fn with_id(
+        provider_id: String,
+        model: String,
+        api_key: String,
+        base_url: Option<String>,
+    ) -> Result<Self, ProviderError> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
@@ -32,6 +42,7 @@ impl AnthropicProvider {
         let capabilities = Self::capabilities_for_model(&model);
         Ok(Self {
             client,
+            provider_id,
             model,
             api_key,
             capabilities,
@@ -215,7 +226,7 @@ impl AnthropicProvider {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     fn id(&self) -> &str {
-        "anthropic"
+        &self.provider_id
     }
 
     async fn complete(

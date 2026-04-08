@@ -267,17 +267,30 @@ enum AuthAction {
 
 fn env_var_for(provider: ProviderKind) -> &'static str {
     match provider {
+        ProviderKind::AmazonBedrock => "AWS_BEARER_TOKEN_BEDROCK",
         ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => "ANTHROPIC_API_KEY",
-        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => "OPENAI_API_KEY",
+        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiCodex => {
+            "OPENAI_API_KEY"
+        }
         ProviderKind::AzureOpenAi => "AZURE_OPENAI_API_KEY",
         ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
         ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::GoogleGeminiCli => "GOOGLE_GEMINI_CLI_TOKEN",
+        ProviderKind::GoogleAntigravity => "GOOGLE_ANTIGRAVITY_TOKEN",
         ProviderKind::Vertex => "VERTEX_API_KEY",
         ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::VercelAiGateway => "AI_GATEWAY_API_KEY",
+        ProviderKind::GitHubCopilot => "COPILOT_GITHUB_TOKEN",
         ProviderKind::XAi => "XAI_API_KEY",
+        ProviderKind::ZAi => "ZAI_API_KEY",
         ProviderKind::Cerebras => "CEREBRAS_API_KEY",
         ProviderKind::Groq => "GROQ_API_KEY",
         ProviderKind::Mistral => "MISTRAL_API_KEY",
+        ProviderKind::HuggingFace => "HF_TOKEN",
+        ProviderKind::MiniMax => "MINIMAX_API_KEY",
+        ProviderKind::MiniMaxCn => "MINIMAX_CN_API_KEY",
+        ProviderKind::Opencode | ProviderKind::OpencodeGo => "OPENCODE_API_KEY",
+        ProviderKind::KimiCoding => "KIMI_API_KEY",
         ProviderKind::Ollama => "OLLAMA_API_KEY",
     }
 }
@@ -307,8 +320,8 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<String, String> {
         // Find the current executable path so we spawn the same binary
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("Cannot find pipit executable: {}", e))?;
+        let exe =
+            std::env::current_exe().map_err(|e| format!("Cannot find pipit executable: {}", e))?;
 
         let mut cmd = tokio::process::Command::new(&exe);
         cmd.arg("--root")
@@ -323,7 +336,9 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
             // Suppress the subagent's own MCP init to avoid port conflicts
             .env("PIPIT_SUBAGENT", "1");
 
-        let child = cmd.spawn().map_err(|e| format!("Failed to spawn subagent: {}", e))?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn subagent: {}", e))?;
 
         // Wait for completion or cancellation
         let output = tokio::select! {
@@ -350,7 +365,10 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
                 .collect::<Vec<_>>()
                 .join("\n");
             if response.trim().is_empty() {
-                Ok(format!("Subagent completed (exit {}). Output:\n{}", output.status, stdout))
+                Ok(format!(
+                    "Subagent completed (exit {}). Output:\n{}",
+                    output.status, stdout
+                ))
             } else {
                 Ok(response)
             }
@@ -910,6 +928,10 @@ async fn main() -> Result<()> {
 
     // Create UI
     let mut ui = PipitUi::new(show_thinking, true, trace_ui, status.clone());
+
+    if let Some(msg) = update::detect_path_version_conflict() {
+        eprintln!("\x1b[33m{}\x1b[0m\n", msg);
+    }
 
     // Show update notification if available.
     // Use a short timeout so a slow/unreachable GitHub API never stalls startup.
