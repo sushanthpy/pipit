@@ -25,6 +25,10 @@ pub enum SchemaType {
     Array(Box<SchemaType>),
     Object(BTreeMap<String, SchemaType>),
     Any,
+    /// Bottom element — represents incompatible types.
+    /// A proper meet-semilattice requires ⊥ for pairs with no common subtype.
+    /// Negotiation must reject or require an explicit adapter when this appears.
+    Incompatible,
 }
 
 /// Result of schema negotiation.
@@ -90,8 +94,15 @@ impl NegotiationProtocol {
                 }
                 SchemaType::Object(merged)
             }
-            // Incompatible types → String (safest common representation)
-            _ => SchemaType::String,
+            // Incompatible pair with ⊥ → stays ⊥
+            (SchemaType::Incompatible, _) | (_, SchemaType::Incompatible) => {
+                SchemaType::Incompatible
+            }
+            // Incompatible types → ⊥ (not String).
+            // A proper meet-semilattice must represent "no common subtype" as
+            // a bottom element, not as a lossy coercion.  Negotiation will
+            // reject schemas containing Incompatible fields.
+            _ => SchemaType::Incompatible,
         }
     }
 
@@ -110,6 +121,28 @@ impl NegotiationProtocol {
         if agreed.properties.is_empty() {
             return NegotiationResult::Rejected {
                 reason: "No common properties between schemas".to_string(),
+            };
+        }
+
+        // Reject if any property resolved to ⊥ (Incompatible).
+        // This means the proposer and responder have fundamentally different
+        // type expectations for a shared property — an explicit adapter is needed.
+        let incompatible_fields: Vec<&String> = agreed
+            .properties
+            .iter()
+            .filter(|(_, ty)| matches!(ty, SchemaType::Incompatible))
+            .map(|(k, _)| k)
+            .collect();
+        if !incompatible_fields.is_empty() {
+            return NegotiationResult::Rejected {
+                reason: format!(
+                    "Incompatible types for properties: {}. An explicit adapter is required.",
+                    incompatible_fields
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             };
         }
 
@@ -147,7 +180,11 @@ mod tests {
 
         let meet = NegotiationProtocol::schema_meet(&s1, &s2);
         assert_eq!(meet.properties.len(), 2, "Only name + age in common");
-        assert_eq!(meet.properties["age"], SchemaType::Integer, "Integer ∧ Number = Integer");
+        assert_eq!(
+            meet.properties["age"],
+            SchemaType::Integer,
+            "Integer ∧ Number = Integer"
+        );
         assert_eq!(meet.required.len(), 1, "Only 'name' required in both");
         assert!(meet.required.contains("name"));
     }
@@ -174,7 +211,11 @@ mod tests {
         match NegotiationProtocol::negotiate(&proposer, &responder) {
             NegotiationResult::Agreed(schema) => {
                 assert_eq!(schema.properties.len(), 2);
-                assert_eq!(schema.properties["result"], SchemaType::String, "Any ∧ String = String");
+                assert_eq!(
+                    schema.properties["result"],
+                    SchemaType::String,
+                    "Any ∧ String = String"
+                );
             }
             NegotiationResult::Rejected { reason } => panic!("Should agree: {}", reason),
         }

@@ -88,7 +88,10 @@ impl TemporalKnowledgeGraph {
 
             for file in &commit.files_changed {
                 file_commits.entry(file.clone()).or_default().insert(idx);
-                file_history.entry(file.clone()).or_default().push(commit.clone());
+                file_history
+                    .entry(file.clone())
+                    .or_default()
+                    .push(commit.clone());
             }
 
             // Expertise: weighted authorship with recency decay
@@ -162,7 +165,11 @@ impl TemporalKnowledgeGraph {
                 total_lines_changed: 0,
             })
             .collect();
-        experts.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        experts.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         experts.truncate(top_k);
         experts
     }
@@ -191,7 +198,11 @@ impl TemporalKnowledgeGraph {
     }
 
     /// Query: recent history for files currently in context.
-    pub fn relevant_history(&self, context_files: &[String], max_entries: usize) -> Vec<CommitInfo> {
+    pub fn relevant_history(
+        &self,
+        context_files: &[String],
+        max_entries: usize,
+    ) -> Vec<CommitInfo> {
         let mut all_commits: Vec<CommitInfo> = context_files
             .iter()
             .filter_map(|f| self.file_history.get(f))
@@ -225,7 +236,9 @@ impl TemporalKnowledgeGraph {
                     commit.message,
                 );
                 let line_tokens = line.len() / 4;
-                if tokens_used + line_tokens > token_budget { break; }
+                if tokens_used + line_tokens > token_budget {
+                    break;
+                }
                 output.push_str(&line);
                 tokens_used += line_tokens;
             }
@@ -233,7 +246,9 @@ impl TemporalKnowledgeGraph {
         }
 
         // Section 2: Co-change clusters (files that change together)
-        let relevant_clusters: Vec<_> = self.change_clusters.iter()
+        let relevant_clusters: Vec<_> = self
+            .change_clusters
+            .iter()
             .filter(|c| c.files.iter().any(|f| context_files.contains(f)))
             .take(5)
             .collect();
@@ -249,7 +264,9 @@ impl TemporalKnowledgeGraph {
                         cluster.cohesion * 100.0,
                     );
                     let line_tokens = line.len() / 4;
-                    if tokens_used + line_tokens > token_budget { break; }
+                    if tokens_used + line_tokens > token_budget {
+                        break;
+                    }
                     output.push_str(&line);
                     tokens_used += line_tokens;
                 }
@@ -272,7 +289,9 @@ impl TemporalKnowledgeGraph {
                         experts[0].score * 100.0,
                     );
                     let line_tokens = line.len() / 4;
-                    if tokens_used + line_tokens > token_budget { break; }
+                    if tokens_used + line_tokens > token_budget {
+                        break;
+                    }
                     output.push_str(&line);
                     tokens_used += line_tokens;
                 }
@@ -298,7 +317,10 @@ fn parse_git_log(repo_root: &Path, max_commits: usize) -> Result<Vec<CommitInfo>
         .map_err(|e| format!("git log failed: {}", e))?;
 
     if !output.status.success() {
-        return Err(format!("git log error: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "git log error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -444,7 +466,10 @@ mod tests {
         // Manual test: two files always co-changed → Jaccard = 1.0
         let mut co_change = HashMap::new();
         co_change.insert(("a.rs".to_string(), "b.rs".to_string()), 1.0);
-        assert_eq!(co_change.get(&("a.rs".to_string(), "b.rs".to_string())), Some(&1.0));
+        assert_eq!(
+            co_change.get(&("a.rs".to_string(), "b.rs".to_string())),
+            Some(&1.0)
+        );
     }
 
     #[test]

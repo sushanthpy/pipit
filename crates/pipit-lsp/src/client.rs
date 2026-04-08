@@ -40,7 +40,8 @@ impl LspClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to start {}: {}", binary, e))?;
 
         let stdin = child.stdin.take().ok_or("No stdin")?;
@@ -57,18 +58,23 @@ impl LspClient {
 
         // Send initialize request
         let root_uri = format!("file://{}", project_root.display());
-        let _init_result = client.request("initialize", serde_json::json!({
-            "processId": std::process::id(),
-            "rootUri": root_uri,
-            "capabilities": {
-                "textDocument": {
-                    "definition": { "dynamicRegistration": false },
-                    "references": { "dynamicRegistration": false },
-                    "hover": { "dynamicRegistration": false },
-                    "publishDiagnostics": { "relatedInformation": true }
-                }
-            }
-        })).await?;
+        let _init_result = client
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "processId": std::process::id(),
+                    "rootUri": root_uri,
+                    "capabilities": {
+                        "textDocument": {
+                            "definition": { "dynamicRegistration": false },
+                            "references": { "dynamicRegistration": false },
+                            "hover": { "dynamicRegistration": false },
+                            "publishDiagnostics": { "relatedInformation": true }
+                        }
+                    }
+                }),
+            )
+            .await?;
 
         // Send initialized notification
         client.notify("initialized", serde_json::json!({})).await?;
@@ -98,8 +104,14 @@ impl LspClient {
 
         {
             let mut stdin = self.stdin.lock().await;
-            stdin.write_all(header.as_bytes()).await.map_err(|e| e.to_string())?;
-            stdin.write_all(body_str.as_bytes()).await.map_err(|e| e.to_string())?;
+            stdin
+                .write_all(header.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            stdin
+                .write_all(body_str.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
             stdin.flush().await.map_err(|e| e.to_string())?;
         }
 
@@ -108,10 +120,16 @@ impl LspClient {
         {
             let mut stdout = self.stdout.lock().await;
             // Read Content-Length header
-            stdout.read_line(&mut header_line).await.map_err(|e| e.to_string())?;
+            stdout
+                .read_line(&mut header_line)
+                .await
+                .map_err(|e| e.to_string())?;
             // Read empty line
             let mut empty = String::new();
-            stdout.read_line(&mut empty).await.map_err(|e| e.to_string())?;
+            stdout
+                .read_line(&mut empty)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // Parse content length
             let content_length: usize = header_line
@@ -126,10 +144,13 @@ impl LspClient {
 
             let mut buf = vec![0u8; content_length];
             use tokio::io::AsyncReadExt;
-            stdout.read_exact(&mut buf).await.map_err(|e| e.to_string())?;
+            stdout
+                .read_exact(&mut buf)
+                .await
+                .map_err(|e| e.to_string())?;
 
-            let response: Value = serde_json::from_slice(&buf)
-                .map_err(|e| format!("LSP parse error: {}", e))?;
+            let response: Value =
+                serde_json::from_slice(&buf).map_err(|e| format!("LSP parse error: {}", e))?;
 
             if let Some(err) = response.get("error") {
                 return Err(format!("LSP error: {}", err));
@@ -150,44 +171,80 @@ impl LspClient {
         let header = format!("Content-Length: {}\r\n\r\n", body_str.len());
 
         let mut stdin = self.stdin.lock().await;
-        stdin.write_all(header.as_bytes()).await.map_err(|e| e.to_string())?;
-        stdin.write_all(body_str.as_bytes()).await.map_err(|e| e.to_string())?;
+        stdin
+            .write_all(header.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        stdin
+            .write_all(body_str.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         stdin.flush().await.map_err(|e| e.to_string())?;
         Ok(())
     }
 
     /// Go to definition of symbol at position.
-    pub async fn goto_definition(&self, file: &Path, line: u32, col: u32) -> Result<DefinitionResult, String> {
+    pub async fn goto_definition(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<DefinitionResult, String> {
         let uri = format!("file://{}", file.display());
-        let result = self.request("textDocument/definition", serde_json::json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line, "character": col }
-        })).await?;
+        let result = self
+            .request(
+                "textDocument/definition",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": col }
+                }),
+            )
+            .await?;
 
         let locations = parse_locations(&result);
         Ok(DefinitionResult { locations })
     }
 
     /// Find all references to symbol at position.
-    pub async fn find_references(&self, file: &Path, line: u32, col: u32) -> Result<ReferencesResult, String> {
+    pub async fn find_references(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<ReferencesResult, String> {
         let uri = format!("file://{}", file.display());
-        let result = self.request("textDocument/references", serde_json::json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line, "character": col },
-            "context": { "includeDeclaration": true }
-        })).await?;
+        let result = self
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": col },
+                    "context": { "includeDeclaration": true }
+                }),
+            )
+            .await?;
 
         let locations = parse_locations(&result);
         Ok(ReferencesResult { locations })
     }
 
     /// Get hover information (type, docs) for symbol at position.
-    pub async fn hover(&self, file: &Path, line: u32, col: u32) -> Result<Option<TypeInfo>, String> {
+    pub async fn hover(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<Option<TypeInfo>, String> {
         let uri = format!("file://{}", file.display());
-        let result = self.request("textDocument/hover", serde_json::json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line, "character": col }
-        })).await?;
+        let result = self
+            .request(
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": col }
+                }),
+            )
+            .await?;
 
         if result.is_null() {
             return Ok(None);
@@ -226,14 +283,19 @@ fn parse_locations(value: &Value) -> Vec<SourceLocation> {
         return Vec::new();
     };
 
-    arr.iter().filter_map(|loc| {
-        let uri = loc.get("uri")?.as_str()?;
-        let file = uri.strip_prefix("file://")
-            .map(std::path::PathBuf::from)?;
-        let range = loc.get("range")?;
-        let start = range.get("start")?;
-        let line = start.get("line")?.as_u64()? as u32;
-        let col = start.get("character")?.as_u64()? as u32;
-        Some(SourceLocation { file, line, column: col })
-    }).collect()
+    arr.iter()
+        .filter_map(|loc| {
+            let uri = loc.get("uri")?.as_str()?;
+            let file = uri.strip_prefix("file://").map(std::path::PathBuf::from)?;
+            let range = loc.get("range")?;
+            let start = range.get("start")?;
+            let line = start.get("line")?.as_u64()? as u32;
+            let col = start.get("character")?.as_u64()? as u32;
+            Some(SourceLocation {
+                file,
+                line,
+                column: col,
+            })
+        })
+        .collect()
 }

@@ -142,15 +142,21 @@ pub trait Command: Send + Sync {
     /// Primary name (e.g., "commit").
     fn name(&self) -> &str;
     /// Aliases (e.g., ["ci"]).
-    fn aliases(&self) -> &[&str] { &[] }
+    fn aliases(&self) -> &[&str] {
+        &[]
+    }
     /// Human-readable description.
     fn description(&self) -> &str;
     /// Category for grouping.
     fn category(&self) -> CommandCategory;
     /// Argument schema for validation and help.
-    fn args_schema(&self) -> Option<ArgsSchema> { None }
+    fn args_schema(&self) -> Option<ArgsSchema> {
+        None
+    }
     /// Tab-completion candidates from partial input.
-    fn completion_candidates(&self, _partial: &str) -> Vec<CompletionItem> { vec![] }
+    fn completion_candidates(&self, _partial: &str) -> Vec<CompletionItem> {
+        vec![]
+    }
     /// Execute the command.
     async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError>;
 }
@@ -263,16 +269,30 @@ impl CommandRegistry {
         ];
         for cat in &categories {
             let cmds = self.by_category(*cat);
-            if cmds.is_empty() { continue; }
+            if cmds.is_empty() {
+                continue;
+            }
             output.push_str(&format!("  {:?}:\n", cat));
             for cmd in cmds {
                 let aliases = cmd.aliases();
                 let alias_str = if aliases.is_empty() {
                     String::new()
                 } else {
-                    format!(" ({})", aliases.iter().map(|a| format!("/{}", a)).collect::<Vec<_>>().join(", "))
+                    format!(
+                        " ({})",
+                        aliases
+                            .iter()
+                            .map(|a| format!("/{}", a))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
-                output.push_str(&format!("    /{:<20} {}{}\n", cmd.name(), cmd.description(), alias_str));
+                output.push_str(&format!(
+                    "    /{:<20} {}{}\n",
+                    cmd.name(),
+                    cmd.description(),
+                    alias_str
+                ));
             }
             output.push('\n');
         }
@@ -293,8 +313,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
     let m = a.len();
     let n = b.len();
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 0..=m { dp[i][0] = i; }
-    for j in 0..=n { dp[0][j] = j; }
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for j in 0..=n {
+        dp[0][j] = j;
+    }
     for i in 1..=m {
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
@@ -316,12 +340,24 @@ macro_rules! passthrough_command {
         pub struct $name;
         #[async_trait]
         impl Command for $name {
-            fn name(&self) -> &str { $cmd_name }
-            fn aliases(&self) -> &[&str] { $aliases }
-            fn description(&self) -> &str { $desc }
-            fn category(&self) -> CommandCategory { $cat }
+            fn name(&self) -> &str {
+                $cmd_name
+            }
+            fn aliases(&self) -> &[&str] {
+                $aliases
+            }
+            fn description(&self) -> &str {
+                $desc
+            }
+            fn category(&self) -> CommandCategory {
+                $cat
+            }
             async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
-                Ok(CommandOutput::AgentMessage(format!("/{} {}", $cmd_name, ctx.args.join(" "))))
+                Ok(CommandOutput::AgentMessage(format!(
+                    "/{} {}",
+                    $cmd_name,
+                    ctx.args.join(" ")
+                )))
             }
         }
     };
@@ -332,9 +368,15 @@ macro_rules! passthrough_command {
 pub struct CostCmd;
 #[async_trait]
 impl Command for CostCmd {
-    fn name(&self) -> &str { "cost" }
-    fn description(&self) -> &str { "Show session cost breakdown" }
-    fn category(&self) -> CommandCategory { CommandCategory::Agent }
+    fn name(&self) -> &str {
+        "cost"
+    }
+    fn description(&self) -> &str {
+        "Show session cost breakdown"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Agent
+    }
     async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
         Ok(CommandOutput::Text(format!(
             "Session Cost Summary\n\
@@ -357,21 +399,35 @@ impl Command for CostCmd {
 pub struct StatusCmd;
 #[async_trait]
 impl Command for StatusCmd {
-    fn name(&self) -> &str { "status" }
-    fn description(&self) -> &str { "Show session status" }
-    fn category(&self) -> CommandCategory { CommandCategory::Session }
+    fn name(&self) -> &str {
+        "status"
+    }
+    fn description(&self) -> &str {
+        "Show session status"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Session
+    }
     async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
-        let budget = ctx.context_budget.as_ref().map(|b| {
-            format!(
-                "\nContext Budget:\n\
+        let budget = ctx
+            .context_budget
+            .as_ref()
+            .map(|b| {
+                format!(
+                    "\nContext Budget:\n\
                  ├─ Model limit:  {}\n\
                  ├─ System:       {}\n\
                  ├─ History:      {}\n\
                  ├─ Output:       {} (reserved)\n\
                  └─ Available:    {}",
-                b.model_limit, b.system_prompt_tokens, b.history_tokens, b.output_reserve, b.available
-            )
-        }).unwrap_or_default();
+                    b.model_limit,
+                    b.system_prompt_tokens,
+                    b.history_tokens,
+                    b.output_reserve,
+                    b.available
+                )
+            })
+            .unwrap_or_default();
         Ok(CommandOutput::Text(format!(
             "Session: {}\n\
              Model: {} ({})\n\
@@ -379,7 +435,10 @@ impl Command for StatusCmd {
             ctx.session_id.as_deref().unwrap_or("unnamed"),
             ctx.model_name.as_deref().unwrap_or("unknown"),
             ctx.provider_name.as_deref().unwrap_or("unknown"),
-            ctx.turn_count, ctx.session_cost, ctx.tokens_used, ctx.tokens_limit,
+            ctx.turn_count,
+            ctx.session_cost,
+            ctx.tokens_used,
+            ctx.tokens_limit,
             budget,
         )))
     }
@@ -388,10 +447,18 @@ impl Command for StatusCmd {
 pub struct ContextCmd;
 #[async_trait]
 impl Command for ContextCmd {
-    fn name(&self) -> &str { "context" }
-    fn aliases(&self) -> &[&str] { &["ctx"] }
-    fn description(&self) -> &str { "Show context window budget" }
-    fn category(&self) -> CommandCategory { CommandCategory::Navigation }
+    fn name(&self) -> &str {
+        "context"
+    }
+    fn aliases(&self) -> &[&str] {
+        &["ctx"]
+    }
+    fn description(&self) -> &str {
+        "Show context window budget"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Navigation
+    }
     async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
         match ctx.context_budget {
             Some(ref budget) => {
@@ -415,42 +482,71 @@ impl Command for ContextCmd {
 pub struct DoctorCmd;
 #[async_trait]
 impl Command for DoctorCmd {
-    fn name(&self) -> &str { "doctor" }
-    fn description(&self) -> &str { "System diagnostics" }
-    fn category(&self) -> CommandCategory { CommandCategory::Help }
+    fn name(&self) -> &str {
+        "doctor"
+    }
+    fn description(&self) -> &str {
+        "System diagnostics"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Help
+    }
     async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
         let checks = crate::dx_surface::run_diagnostics(&ctx.project_root);
-        Ok(CommandOutput::Text(crate::dx_surface::format_diagnostics(&checks)))
+        Ok(CommandOutput::Text(crate::dx_surface::format_diagnostics(
+            &checks,
+        )))
     }
 }
 
 pub struct HelpCmd;
 #[async_trait]
 impl Command for HelpCmd {
-    fn name(&self) -> &str { "help" }
-    fn aliases(&self) -> &[&str] { &["h", "?"] }
-    fn description(&self) -> &str { "Show help" }
-    fn category(&self) -> CommandCategory { CommandCategory::Help }
+    fn name(&self) -> &str {
+        "help"
+    }
+    fn aliases(&self) -> &[&str] {
+        &["h", "?"]
+    }
+    fn description(&self) -> &str {
+        "Show help"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Help
+    }
     async fn execute(&self, _ctx: CommandContext) -> Result<CommandOutput, CommandError> {
         // Help text is generated by the registry; the caller renders it.
-        Ok(CommandOutput::Text("Use /help to see all commands. The registry generates help text.".into()))
+        Ok(CommandOutput::Text(
+            "Use /help to see all commands. The registry generates help text.".into(),
+        ))
     }
 }
 
 pub struct PlanCmd;
 #[async_trait]
 impl Command for PlanCmd {
-    fn name(&self) -> &str { "plan" }
-    fn description(&self) -> &str { "Show current plan" }
-    fn category(&self) -> CommandCategory { CommandCategory::Agent }
+    fn name(&self) -> &str {
+        "plan"
+    }
+    fn description(&self) -> &str {
+        "Show current plan"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Agent
+    }
     async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
         match ctx.plan_summary {
             Some(ref plan) => Ok(CommandOutput::Text(format!("Current Plan:\n{}", plan))),
             None => {
                 if ctx.args.is_empty() {
-                    Ok(CommandOutput::Text("No plan active. Use /plan <goal> to create one.".into()))
+                    Ok(CommandOutput::Text(
+                        "No plan active. Use /plan <goal> to create one.".into(),
+                    ))
                 } else {
-                    Ok(CommandOutput::AgentMessage(format!("/plan {}", ctx.args.join(" "))))
+                    Ok(CommandOutput::AgentMessage(format!(
+                        "/plan {}",
+                        ctx.args.join(" ")
+                    )))
                 }
             }
         }
@@ -460,71 +556,298 @@ impl Command for PlanCmd {
 pub struct VersionCmd;
 #[async_trait]
 impl Command for VersionCmd {
-    fn name(&self) -> &str { "version" }
-    fn aliases(&self) -> &[&str] { &["v"] }
-    fn description(&self) -> &str { "Show version" }
-    fn category(&self) -> CommandCategory { CommandCategory::Help }
+    fn name(&self) -> &str {
+        "version"
+    }
+    fn aliases(&self) -> &[&str] {
+        &["v"]
+    }
+    fn description(&self) -> &str {
+        "Show version"
+    }
+    fn category(&self) -> CommandCategory {
+        CommandCategory::Help
+    }
     async fn execute(&self, _ctx: CommandContext) -> Result<CommandOutput, CommandError> {
-        Ok(CommandOutput::Text(format!("pipit v{}", env!("CARGO_PKG_VERSION"))))
+        Ok(CommandOutput::Text(format!(
+            "pipit v{}",
+            env!("CARGO_PKG_VERSION")
+        )))
     }
 }
 
 // ── Passthrough commands (sent to LLM) ──
 
 // Git/VCS
-passthrough_command!(CommitCmd, "commit", "Stage and commit changes", CommandCategory::Git, &["ci"]);
-passthrough_command!(PushCmd, "push", "Push commits to remote", CommandCategory::Git, &[]);
-passthrough_command!(PrCmd, "pr", "Create or manage pull requests", CommandCategory::Git, &[]);
-passthrough_command!(DiffCmd, "diff", "Show changes in working tree", CommandCategory::Git, &[]);
-passthrough_command!(BranchCmd, "branch", "Create or switch branches", CommandCategory::Git, &["br"]);
-passthrough_command!(StashCmd, "stash", "Stash working changes", CommandCategory::Git, &[]);
-passthrough_command!(BlameCmd, "blame", "Show file annotation", CommandCategory::Git, &[]);
+passthrough_command!(
+    CommitCmd,
+    "commit",
+    "Stage and commit changes",
+    CommandCategory::Git,
+    &["ci"]
+);
+passthrough_command!(
+    PushCmd,
+    "push",
+    "Push commits to remote",
+    CommandCategory::Git,
+    &[]
+);
+passthrough_command!(
+    PrCmd,
+    "pr",
+    "Create or manage pull requests",
+    CommandCategory::Git,
+    &[]
+);
+passthrough_command!(
+    DiffCmd,
+    "diff",
+    "Show changes in working tree",
+    CommandCategory::Git,
+    &[]
+);
+passthrough_command!(
+    BranchCmd,
+    "branch",
+    "Create or switch branches",
+    CommandCategory::Git,
+    &["br"]
+);
+passthrough_command!(
+    StashCmd,
+    "stash",
+    "Stash working changes",
+    CommandCategory::Git,
+    &[]
+);
+passthrough_command!(
+    BlameCmd,
+    "blame",
+    "Show file annotation",
+    CommandCategory::Git,
+    &[]
+);
 
 // Review
-passthrough_command!(ReviewCmd, "review", "Review code changes", CommandCategory::Review, &[]);
-passthrough_command!(SecurityReviewCmd, "security-review", "Security audit", CommandCategory::Review, &["sec"]);
+passthrough_command!(
+    ReviewCmd,
+    "review",
+    "Review code changes",
+    CommandCategory::Review,
+    &[]
+);
+passthrough_command!(
+    SecurityReviewCmd,
+    "security-review",
+    "Security audit",
+    CommandCategory::Review,
+    &["sec"]
+);
 passthrough_command!(LintCmd, "lint", "Run linter", CommandCategory::Review, &[]);
-passthrough_command!(TestCmd, "test", "Run tests", CommandCategory::Review, &["t"]);
+passthrough_command!(
+    TestCmd,
+    "test",
+    "Run tests",
+    CommandCategory::Review,
+    &["t"]
+);
 
 // Navigation
-passthrough_command!(FilesCmd, "files", "List project files", CommandCategory::Navigation, &["ls"]);
-passthrough_command!(SearchCmd, "search", "Search codebase", CommandCategory::Navigation, &["s"]);
-passthrough_command!(TreeCmd, "tree", "Show directory tree", CommandCategory::Navigation, &[]);
+passthrough_command!(
+    FilesCmd,
+    "files",
+    "List project files",
+    CommandCategory::Navigation,
+    &["ls"]
+);
+passthrough_command!(
+    SearchCmd,
+    "search",
+    "Search codebase",
+    CommandCategory::Navigation,
+    &["s"]
+);
+passthrough_command!(
+    TreeCmd,
+    "tree",
+    "Show directory tree",
+    CommandCategory::Navigation,
+    &[]
+);
 
 // Session
-passthrough_command!(CompactCmd, "compact", "Compress context", CommandCategory::Session, &[]);
-passthrough_command!(ClearCmd, "clear", "Clear conversation", CommandCategory::Session, &[]);
-passthrough_command!(ResumeCmd, "resume", "Resume session", CommandCategory::Session, &[]);
-passthrough_command!(ExportCmd, "export", "Export conversation", CommandCategory::Session, &[]);
-passthrough_command!(SaveCmd, "save", "Save session", CommandCategory::Session, &[]);
+passthrough_command!(
+    CompactCmd,
+    "compact",
+    "Compress context",
+    CommandCategory::Session,
+    &[]
+);
+passthrough_command!(
+    ClearCmd,
+    "clear",
+    "Clear conversation",
+    CommandCategory::Session,
+    &[]
+);
+passthrough_command!(
+    ResumeCmd,
+    "resume",
+    "Resume session",
+    CommandCategory::Session,
+    &[]
+);
+passthrough_command!(
+    ExportCmd,
+    "export",
+    "Export conversation",
+    CommandCategory::Session,
+    &[]
+);
+passthrough_command!(
+    SaveCmd,
+    "save",
+    "Save session",
+    CommandCategory::Session,
+    &[]
+);
 
 // Config
-passthrough_command!(ConfigCmd, "config", "Edit configuration", CommandCategory::Config, &[]);
-passthrough_command!(ModelCmd, "model", "Switch model", CommandCategory::Config, &[]);
-passthrough_command!(ProviderCmd, "provider", "Switch provider", CommandCategory::Config, &[]);
-passthrough_command!(ApprovalCmd, "approval", "Change approval mode", CommandCategory::Config, &["permissions"]);
+passthrough_command!(
+    ConfigCmd,
+    "config",
+    "Edit configuration",
+    CommandCategory::Config,
+    &[]
+);
+passthrough_command!(
+    ModelCmd,
+    "model",
+    "Switch model",
+    CommandCategory::Config,
+    &[]
+);
+passthrough_command!(
+    ProviderCmd,
+    "provider",
+    "Switch provider",
+    CommandCategory::Config,
+    &[]
+);
+passthrough_command!(
+    ApprovalCmd,
+    "approval",
+    "Change approval mode",
+    CommandCategory::Config,
+    &["permissions"]
+);
 
 // Agent
-passthrough_command!(VerifyCmd, "verify", "Run verification", CommandCategory::Agent, &[]);
-passthrough_command!(DelegateCmd, "delegate", "Delegate subtask", CommandCategory::Agent, &[]);
-passthrough_command!(SkillsCmd, "skills", "List skills", CommandCategory::Agent, &[]);
-passthrough_command!(UndoCmd, "undo", "Undo last edit", CommandCategory::Agent, &[]);
+passthrough_command!(
+    VerifyCmd,
+    "verify",
+    "Run verification",
+    CommandCategory::Agent,
+    &[]
+);
+passthrough_command!(
+    DelegateCmd,
+    "delegate",
+    "Delegate subtask",
+    CommandCategory::Agent,
+    &[]
+);
+passthrough_command!(
+    SkillsCmd,
+    "skills",
+    "List skills",
+    CommandCategory::Agent,
+    &[]
+);
+passthrough_command!(
+    UndoCmd,
+    "undo",
+    "Undo last edit",
+    CommandCategory::Agent,
+    &[]
+);
 
 // Integration
-passthrough_command!(GithubCmd, "github", "GitHub operations", CommandCategory::Integration, &["gh"]);
-passthrough_command!(SlackCmd, "slack", "Slack integration", CommandCategory::Integration, &[]);
-passthrough_command!(McpCmd, "mcp", "MCP server management", CommandCategory::Integration, &[]);
-passthrough_command!(BridgeCmd, "bridge", "IDE bridge", CommandCategory::Integration, &[]);
-passthrough_command!(BrowseCmd, "browse", "Browser integration", CommandCategory::Integration, &[]);
+passthrough_command!(
+    GithubCmd,
+    "github",
+    "GitHub operations",
+    CommandCategory::Integration,
+    &["gh"]
+);
+passthrough_command!(
+    SlackCmd,
+    "slack",
+    "Slack integration",
+    CommandCategory::Integration,
+    &[]
+);
+passthrough_command!(
+    McpCmd,
+    "mcp",
+    "MCP server management",
+    CommandCategory::Integration,
+    &[]
+);
+passthrough_command!(
+    BridgeCmd,
+    "bridge",
+    "IDE bridge",
+    CommandCategory::Integration,
+    &[]
+);
+passthrough_command!(
+    BrowseCmd,
+    "browse",
+    "Browser integration",
+    CommandCategory::Integration,
+    &[]
+);
 
 // Help (DoctorCmd, HelpCmd, VersionCmd are real impls above)
-passthrough_command!(FeedbackCmd, "feedback", "Send feedback", CommandCategory::Help, &[]);
-passthrough_command!(MemoryCmd, "memory", "Manage memory", CommandCategory::Help, &[]);
+passthrough_command!(
+    FeedbackCmd,
+    "feedback",
+    "Send feedback",
+    CommandCategory::Help,
+    &[]
+);
+passthrough_command!(
+    MemoryCmd,
+    "memory",
+    "Manage memory",
+    CommandCategory::Help,
+    &[]
+);
 
 // DevOps
-passthrough_command!(BenchCmd, "bench", "Run benchmarks", CommandCategory::DevOps, &[]);
-passthrough_command!(TasksCmd, "tasks", "Task management", CommandCategory::DevOps, &[]);
-passthrough_command!(MonitorCmd, "monitor", "System monitor", CommandCategory::DevOps, &[]);
+passthrough_command!(
+    BenchCmd,
+    "bench",
+    "Run benchmarks",
+    CommandCategory::DevOps,
+    &[]
+);
+passthrough_command!(
+    TasksCmd,
+    "tasks",
+    "Task management",
+    CommandCategory::DevOps,
+    &[]
+);
+passthrough_command!(
+    MonitorCmd,
+    "monitor",
+    "System monitor",
+    CommandCategory::DevOps,
+    &[]
+);
 
 /// Create a registry with all built-in commands.
 pub fn builtin_registry() -> CommandRegistry {
@@ -603,7 +926,13 @@ mod tests {
         let reg = builtin_registry();
         let matches = reg.prefix_matches("co");
         let names: Vec<&str> = matches.iter().map(|c| c.name()).collect();
-        assert!(names.contains(&"commit") || names.contains(&"compact") || names.contains(&"config") || names.contains(&"cost") || names.contains(&"context"));
+        assert!(
+            names.contains(&"commit")
+                || names.contains(&"compact")
+                || names.contains(&"config")
+                || names.contains(&"cost")
+                || names.contains(&"context")
+        );
     }
 
     #[test]
@@ -618,7 +947,11 @@ mod tests {
     fn completions() {
         let reg = builtin_registry();
         let items = reg.completions("st");
-        assert!(items.iter().any(|i| i.text == "/status" || i.text == "/stash"));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.text == "/status" || i.text == "/stash")
+        );
     }
 
     #[test]

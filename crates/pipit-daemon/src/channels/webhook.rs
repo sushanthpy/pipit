@@ -36,16 +36,13 @@ impl WebhookChannel {
         project_names: HashSet<String>,
         cancel: CancellationToken,
     ) -> Self {
-        let default_project = config
-            .default_project
-            .clone()
-            .unwrap_or_else(|| {
-                project_names
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_else(|| "default".to_string())
-            });
+        let default_project = config.default_project.clone().unwrap_or_else(|| {
+            project_names
+                .iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "default".to_string())
+        });
 
         Self {
             config,

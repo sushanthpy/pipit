@@ -106,13 +106,23 @@ impl FeatureFlagStore {
         let mut defaults = FlagSet::new();
         // Register known feature flags with defaults
         defaults.set("streaming_tool_executor", FlagValue::Bool(false));
-        defaults.set("tiered_compaction", FlagValue::Bool(false));
+        defaults.set("tiered_compaction", FlagValue::Bool(true));
         defaults.set("cache_breakpoints", FlagValue::Bool(false));
         defaults.set("model_fallback", FlagValue::Bool(true));
         defaults.set("file_history", FlagValue::Bool(true));
         defaults.set("vim_mode", FlagValue::Bool(false));
         defaults.set("tool_summaries", FlagValue::Bool(false));
         defaults.set("voice_mode", FlagValue::Bool(false));
+        defaults.set("typed_hooks", FlagValue::Bool(true));
+        defaults.set("session_memory_sink", FlagValue::Bool(true));
+        defaults.set("lsp_real_client", FlagValue::Bool(true));
+        defaults.set("mcp_sse_transport", FlagValue::Bool(true));
+        defaults.set("mcp_streamable_http", FlagValue::Bool(true));
+        defaults.set("mcp_oauth", FlagValue::Bool(true));
+        defaults.set("mcp_elicitation", FlagValue::Bool(true));
+        defaults.set("mcp_resource_subscription", FlagValue::Bool(true));
+        defaults.set("subagent_persistence", FlagValue::Bool(true));
+        defaults.set("a2a_protocol", FlagValue::Bool(false));
 
         Self {
             current: std::sync::RwLock::new(Arc::new(defaults)),
@@ -147,10 +157,7 @@ impl FeatureFlagStore {
 
     /// Check if a feature is enabled (convenience method).
     pub fn is_enabled(&self, name: &str) -> bool {
-        self.current
-            .read()
-            .unwrap()
-            .is_enabled(name)
+        self.current.read().unwrap().is_enabled(name)
     }
 
     /// Update flags atomically (RCU write).
@@ -181,8 +188,7 @@ impl FeatureFlagStore {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create dir: {}", e))?;
             }
-            std::fs::write(path, json)
-                .map_err(|e| format!("Failed to write: {}", e))?;
+            std::fs::write(path, json).map_err(|e| format!("Failed to write: {}", e))?;
         }
         Ok(())
     }

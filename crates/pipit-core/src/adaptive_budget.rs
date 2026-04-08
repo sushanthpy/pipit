@@ -21,10 +21,7 @@ pub enum TurnBudgetDecision {
     /// Approaching limit — warn the model to wrap up within N turns.
     WindDown { turns_remaining: u32 },
     /// Grant extension — task is making progress and appears incomplete.
-    Extend {
-        extra_turns: u32,
-        reason: String,
-    },
+    Extend { extra_turns: u32, reason: String },
     /// Stop — either completed or no progress.
     Stop { reason: String },
 }
@@ -74,15 +71,15 @@ pub struct AdaptiveTurnBudget {
 
 impl AdaptiveTurnBudget {
     pub fn new(base_limit: u32) -> Self {
-        // Hard ceiling: 5x the base limit, capped at 200
-        let hard_ceiling = (base_limit * 5).min(200);
+        // Hard ceiling: 10x the base limit, capped at 500
+        let hard_ceiling = (base_limit * 10).min(500);
 
         Self {
             base_limit,
             hard_ceiling,
             approved_budget: base_limit,
             extensions_granted: 0,
-            max_auto_extensions: 3,
+            max_auto_extensions: 5,
             turn_history: Vec::new(),
             winddown_warned: false,
         }
@@ -110,7 +107,9 @@ impl AdaptiveTurnBudget {
         {
             self.winddown_warned = true;
             let remaining = self.approved_budget.saturating_sub(current_turn);
-            return TurnBudgetDecision::WindDown { turns_remaining: remaining };
+            return TurnBudgetDecision::WindDown {
+                turns_remaining: remaining,
+            };
         }
 
         // At or past budget — decide whether to extend
@@ -123,7 +122,11 @@ impl AdaptiveTurnBudget {
     }
 
     /// Decide whether to grant a budget extension.
-    fn decide_extension(&mut self, current_turn: u32, signals: &AggregateSignals) -> TurnBudgetDecision {
+    fn decide_extension(
+        &mut self,
+        current_turn: u32,
+        signals: &AggregateSignals,
+    ) -> TurnBudgetDecision {
         // Hard ceiling — never exceed
         if current_turn >= self.hard_ceiling {
             return TurnBudgetDecision::Stop {
@@ -135,20 +138,55 @@ impl AdaptiveTurnBudget {
             };
         }
 
-        // No progress in last 5 turns — stop (model is stuck)
-        if signals.idle_streak >= 5 {
+        // If the last turn had active tool calls, ALWAYS extend.
+        // Never cut off a model while it is actively working.
+        // Stopping mid-progress is the #1 cause of "half-baked" task outcomes.
+        if signals.last_turn_tool_calls > 0 {
+            // Detect sustained creation pattern: high mutation rate with no errors.
+            // When the model is consistently creating files (greenfield), grant
+            // larger extensions and allow more of them. This closes the throughput
+            // gap with agents that have no turn limit.
+            let is_creation_pattern = signals.mutation_velocity > 0.6 && signals.idle_streak == 0;
+            let extension = if is_creation_pattern { 15u32 } else { 10u32 };
+            let max_extensions = if is_creation_pattern {
+                self.max_auto_extensions + 8 // allow up to 13 extensions for greenfield
+            } else {
+                self.max_auto_extensions + 3
+            };
+
+            if self.extensions_granted < max_extensions {
+                self.extensions_granted += 1;
+                self.approved_budget = current_turn + extension;
+                self.winddown_warned = false;
+                return TurnBudgetDecision::Extend {
+                    extra_turns: extension,
+                    reason: format!(
+                        "Model actively working ({} tool calls last turn). Extension {}/{}.",
+                        signals.last_turn_tool_calls, self.extensions_granted, max_extensions,
+                    ),
+                };
+            }
+        }
+
+        // No progress in last 10 turns — stop (model is stuck)
+        // Only consider turns with zero tool calls as truly idle.
+        // Turns that invoke tools (reads, commands, analysis) are active.
+        if signals.idle_streak >= 10 {
             return TurnBudgetDecision::Stop {
                 reason: format!(
-                    "No file mutations in {} consecutive turns. Model appears stuck.",
+                    "No file mutations or tool activity in {} consecutive turns. Model appears stuck.",
                     signals.idle_streak
                 ),
             };
         }
 
-        // Model explicitly signaled completion
-        if signals.last_turn_done_signal {
+        // Model explicitly signaled completion AND had an extended idle spell.
+        // Require idle_streak >= 3 (not 1) to avoid premature stops when the model
+        // says "done" as a conversational filler mid-task.  This was the primary
+        // cause of pipit stopping tasks halfway.
+        if signals.last_turn_done_signal && signals.idle_streak >= 3 {
             return TurnBudgetDecision::Stop {
-                reason: "Model indicated task completion.".into(),
+                reason: "Model indicated task completion with no pending tool calls.".into(),
             };
         }
 
@@ -159,8 +197,9 @@ impl AdaptiveTurnBudget {
             };
         }
 
-        // Active progress — calculate extension size based on velocity
-        let velocity = signals.mutation_velocity;
+        // Active progress — calculate extension size based on activity velocity
+        // (includes both mutations and tool calls, not just mutations)
+        let velocity = signals.activity_velocity;
         let estimated_remaining = self.estimate_remaining_turns(signals);
 
         if velocity > 0.0 && estimated_remaining > 0 {
@@ -191,26 +230,40 @@ impl AdaptiveTurnBudget {
             return TurnBudgetDecision::Extend {
                 extra_turns: 5,
                 reason: format!(
-                    "Final extension: still making progress ({:.1} mutations/turn) \
+                    "Final extension: still making progress ({:.1} activity/turn) \
                      but auto-extension budget exhausted. Wrapping up.",
                     velocity,
                 ),
             };
         }
 
-        // No progress and no extensions — stop
+        // If there's any tool activity at all (even low), extend rather than stop.
+        // Stopping while the model is doing ANY work is worse than granting a few
+        // extra turns.
+        if velocity > 0.0 {
+            self.approved_budget = current_turn + 3;
+            return TurnBudgetDecision::Extend {
+                extra_turns: 3,
+                reason: format!(
+                    "Low but non-zero activity ({:.1}/turn). Granting small extension.",
+                    velocity,
+                ),
+            };
+        }
+
+        // Truly zero activity and no extensions — stop
         TurnBudgetDecision::Stop {
             reason: format!(
                 "Turn limit reached ({} turns, {} extensions). \
-                 Velocity: {:.1} mutations/turn.",
-                current_turn, self.extensions_granted, velocity,
+                 Activity: {:.1}/turn, Mutations: {:.1}/turn.",
+                current_turn, self.extensions_granted, velocity, signals.mutation_velocity,
             ),
         }
     }
 
     /// Estimate how many more turns are needed based on task trajectory.
     fn estimate_remaining_turns(&self, signals: &AggregateSignals) -> u32 {
-        if signals.mutation_velocity <= 0.0 {
+        if signals.activity_velocity <= 0.0 {
             return 0;
         }
 
@@ -218,7 +271,7 @@ impl AdaptiveTurnBudget {
         // estimate remaining turns proportional to recent velocity.
         // Assume tasks that create many files need proportionally more turns.
         let files_so_far = signals.total_unique_files;
-        let recent_rate = signals.mutation_velocity;
+        let recent_rate = signals.activity_velocity;
 
         if recent_rate > 0.5 {
             // High velocity — probably still in the middle of creation
@@ -246,23 +299,52 @@ impl AdaptiveTurnBudget {
             mutations_in_window as f64 / recent.len() as f64
         };
 
-        let idle_streak = self.turn_history.iter().rev()
-            .take_while(|s| s.files_mutated == 0)
+        // Activity velocity: counts BOTH mutations and tool calls.
+        // A turn with 5 tool calls (reads, tests, analysis) but 0 file
+        // mutations is still active progress — not idle.
+        let activity_in_window: u32 = recent.iter().map(|s| s.files_mutated + s.tool_calls).sum();
+        let activity_velocity = if recent.is_empty() {
+            0.0
+        } else {
+            activity_in_window as f64 / recent.len() as f64
+        };
+
+        // Idle streak: count consecutive turns at the end with no tool calls
+        // AND no file mutations. Turns that read files, run commands, or analyze
+        // output are active even without mutations.
+        let idle_streak = self
+            .turn_history
+            .iter()
+            .rev()
+            .take_while(|s| s.files_mutated == 0 && s.tool_calls == 0)
             .count() as u32;
 
         let last_turn = self.turn_history.last();
         let last_turn_done_signal = last_turn.map(|s| s.model_signaled_done).unwrap_or(false);
         let last_verification_passed = last_turn.map(|s| s.verification_passed).unwrap_or(false);
+        let last_turn_tool_calls = last_turn.map(|s| s.tool_calls).unwrap_or(0);
 
         let total_unique_files: u32 = last_turn.map(|s| s.unique_files_modified).unwrap_or(0);
 
         AggregateSignals {
             mutation_velocity,
+            activity_velocity,
             idle_streak,
             last_turn_done_signal,
             last_verification_passed,
+            last_turn_tool_calls,
             total_unique_files,
         }
+    }
+
+    /// Check whether any of the last N turns had tool activity.
+    /// Used by the agent loop to decide whether to auto-continue on EndTurn.
+    pub fn had_recent_tool_activity(&self, window: usize) -> bool {
+        self.turn_history
+            .iter()
+            .rev()
+            .take(window)
+            .any(|s| s.tool_calls > 0 || s.files_mutated > 0)
     }
 
     /// Build the system message for the wind-down warning.
@@ -303,12 +385,16 @@ impl AdaptiveTurnBudget {
 struct AggregateSignals {
     /// Average file mutations per turn in the recent window.
     mutation_velocity: f64,
+    /// Average activity (mutations + tool calls) per turn in recent window.
+    activity_velocity: f64,
     /// Consecutive turns with zero mutations at the end.
     idle_streak: u32,
     /// Whether the last turn's model response signaled "done".
     last_turn_done_signal: bool,
     /// Whether the last turn's verification passed.
     last_verification_passed: bool,
+    /// Tool calls in the last turn (0 = no tools used).
+    last_turn_tool_calls: u32,
     /// Total unique files modified in the session.
     total_unique_files: u32,
 }
@@ -332,7 +418,9 @@ pub fn detect_completion_signal(response_text: &str) -> bool {
         "i have completed",
         "the work is done",
     ];
-    completion_phrases.iter().any(|phrase| lower.contains(phrase))
+    completion_phrases
+        .iter()
+        .any(|phrase| lower.contains(phrase))
 }
 
 #[cfg(test)]
@@ -344,7 +432,7 @@ mod tests {
         let budget = AdaptiveTurnBudget::new(10);
         assert_eq!(budget.base_limit, 10);
         assert_eq!(budget.approved_budget, 10);
-        assert_eq!(budget.hard_ceiling, 50);
+        assert_eq!(budget.hard_ceiling, 100);
         assert_eq!(budget.extensions_granted, 0);
     }
 
@@ -359,7 +447,10 @@ mod tests {
         let mut budget = AdaptiveTurnBudget::new(20);
         // Add some history
         for _ in 0..15 {
-            budget.record_turn(TurnSignals { files_mutated: 1, ..Default::default() });
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,
+                ..Default::default()
+            });
         }
         let decision = budget.evaluate(16);
         assert!(matches!(decision, TurnBudgetDecision::WindDown { .. }));
@@ -383,31 +474,39 @@ mod tests {
     #[test]
     fn stop_when_idle() {
         let mut budget = AdaptiveTurnBudget::new(10);
-        // Record 10 turns with last 5 idle
-        for i in 0..10 {
+        // Record 15 turns with last 10 truly idle (zero tool calls AND zero mutations)
+        for i in 0..15 {
             budget.record_turn(TurnSignals {
                 files_mutated: if i < 5 { 1 } else { 0 },
+                tool_calls: if i < 5 { 1 } else { 0 },
                 ..Default::default()
             });
         }
-        let decision = budget.evaluate(10);
+        let decision = budget.evaluate(15);
         assert!(matches!(decision, TurnBudgetDecision::Stop { .. }));
     }
 
     #[test]
     fn stop_at_hard_ceiling() {
         let mut budget = AdaptiveTurnBudget::new(10);
-        // Simulate running to the hard ceiling (50 turns for base_limit=10)
-        for _ in 0..50 {
-            budget.record_turn(TurnSignals { files_mutated: 1, ..Default::default() });
+        // Hard ceiling is now 100 (10 * 10, capped at 500)
+        for _ in 0..100 {
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,
+                ..Default::default()
+            });
         }
         // Keep extending until we can't
-        for t in 10..60 {
+        for t in 10..110 {
             let d = budget.evaluate(t);
-            if t >= 50 {
+            if t >= 100 {
                 // At or past hard ceiling — must stop
-                assert!(matches!(d, TurnBudgetDecision::Stop { .. }),
-                    "Expected Stop at turn {}, got {:?}", t, d);
+                assert!(
+                    matches!(d, TurnBudgetDecision::Stop { .. }),
+                    "Expected Stop at turn {}, got {:?}",
+                    t,
+                    d
+                );
                 break;
             }
         }
@@ -415,9 +514,15 @@ mod tests {
 
     #[test]
     fn detect_completion_phrases() {
-        assert!(detect_completion_signal("The task is complete. All files have been created."));
-        assert!(detect_completion_signal("I have completed the implementation."));
-        assert!(!detect_completion_signal("I need to continue working on the frontend."));
+        assert!(detect_completion_signal(
+            "The task is complete. All files have been created."
+        ));
+        assert!(detect_completion_signal(
+            "I have completed the implementation."
+        ));
+        assert!(!detect_completion_signal(
+            "I need to continue working on the frontend."
+        ));
         assert!(!detect_completion_signal("Let me read the file first."));
     }
 
@@ -439,7 +544,10 @@ mod tests {
 
         // Simulate more turns
         for _ in 0..10 {
-            budget.record_turn(TurnSignals { files_mutated: 1, ..Default::default() });
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,
+                ..Default::default()
+            });
         }
 
         // Second extension
@@ -448,17 +556,26 @@ mod tests {
 
         // Third extension
         for _ in 0..5 {
-            budget.record_turn(TurnSignals { files_mutated: 1, ..Default::default() });
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,
+                ..Default::default()
+            });
         }
         let d3 = budget.evaluate(budget.approved_budget);
         assert!(matches!(d3, TurnBudgetDecision::Extend { .. }));
 
         // Fourth should still extend (final extension)
         for _ in 0..5 {
-            budget.record_turn(TurnSignals { files_mutated: 1, ..Default::default() });
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,
+                ..Default::default()
+            });
         }
         let d4 = budget.evaluate(budget.approved_budget);
         // Should be final extension or stop
-        assert!(matches!(d4, TurnBudgetDecision::Extend { .. } | TurnBudgetDecision::Stop { .. }));
+        assert!(matches!(
+            d4,
+            TurnBudgetDecision::Extend { .. } | TurnBudgetDecision::Stop { .. }
+        ));
     }
 }

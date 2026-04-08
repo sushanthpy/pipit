@@ -80,9 +80,12 @@ impl ArchGenome {
     pub fn monolith(name: &str) -> Self {
         Self {
             services: vec![Service {
-                id: 0, name: name.to_string(),
+                id: 0,
+                name: name.to_string(),
                 service_type: ServiceType::Stateful,
-                cost_estimate: 50.0, latency_estimate: 5.0, reliability: 0.99,
+                cost_estimate: 50.0,
+                latency_estimate: 5.0,
+                reliability: 0.99,
             }],
             channels: vec![],
             metadata: GenomeMetadata::default(),
@@ -102,7 +105,9 @@ impl ArchGenome {
     }
 
     pub fn split_service(&mut self, rng: &mut impl Rng) {
-        if self.services.is_empty() { return; }
+        if self.services.is_empty() {
+            return;
+        }
         let idx = rng.gen_range(0..self.services.len());
         let original = &self.services[idx];
         let new_id = self.services.len();
@@ -129,14 +134,17 @@ impl ArchGenome {
 
         // Add communication channel between split services
         self.channels.push(Channel {
-            from: idx, to: new_id,
+            from: idx,
+            to: new_id,
             channel_type: ChannelType::SyncRpc,
             reliability: 0.999,
         });
     }
 
     fn merge_services(&mut self, rng: &mut impl Rng) {
-        if self.services.len() < 2 { return; }
+        if self.services.len() < 2 {
+            return;
+        }
         let a = rng.gen_range(0..self.services.len());
         let b = (a + 1) % self.services.len();
         let merged_name = format!("{}-{}", self.services[a].name, self.services[b].name);
@@ -145,38 +153,58 @@ impl ArchGenome {
         self.services[a].cost_estimate = merged_cost;
         let remove_id = self.services[b].id;
         self.services.remove(b);
-        self.channels.retain(|c| c.from != remove_id && c.to != remove_id);
+        self.channels
+            .retain(|c| c.from != remove_id && c.to != remove_id);
     }
 
     fn retype_service(&mut self, rng: &mut impl Rng) {
-        if self.services.is_empty() { return; }
+        if self.services.is_empty() {
+            return;
+        }
         let idx = rng.gen_range(0..self.services.len());
-        let types = [ServiceType::Stateless, ServiceType::Stateful, ServiceType::Database,
-                     ServiceType::Cache, ServiceType::Queue, ServiceType::Gateway];
+        let types = [
+            ServiceType::Stateless,
+            ServiceType::Stateful,
+            ServiceType::Database,
+            ServiceType::Cache,
+            ServiceType::Queue,
+            ServiceType::Gateway,
+        ];
         self.services[idx].service_type = types[rng.gen_range(0..types.len())];
     }
 
     fn retype_channel(&mut self, rng: &mut impl Rng) {
-        if self.channels.is_empty() { return; }
+        if self.channels.is_empty() {
+            return;
+        }
         let idx = rng.gen_range(0..self.channels.len());
-        let types = [ChannelType::SyncRpc, ChannelType::AsyncMessage,
-                     ChannelType::EventStream, ChannelType::SharedDb];
+        let types = [
+            ChannelType::SyncRpc,
+            ChannelType::AsyncMessage,
+            ChannelType::EventStream,
+            ChannelType::SharedDb,
+        ];
         self.channels[idx].channel_type = types[rng.gen_range(0..types.len())];
     }
 
     fn add_channel(&mut self, rng: &mut impl Rng) {
-        if self.services.len() < 2 { return; }
+        if self.services.len() < 2 {
+            return;
+        }
         let from = rng.gen_range(0..self.services.len());
         let to = (from + rng.gen_range(1..self.services.len())) % self.services.len();
         self.channels.push(Channel {
-            from, to,
+            from,
+            to,
             channel_type: ChannelType::AsyncMessage,
             reliability: 0.999,
         });
     }
 
     fn remove_channel(&mut self, rng: &mut impl Rng) {
-        if self.channels.is_empty() { return; }
+        if self.channels.is_empty() {
+            return;
+        }
         let idx = rng.gen_range(0..self.channels.len());
         self.channels.remove(idx);
     }
@@ -184,7 +212,9 @@ impl ArchGenome {
     /// Crossover: vertex set from self, edge topology from other.
     pub fn crossover(&self, other: &Self, rng: &mut impl Rng) -> Self {
         let mut child = self.clone();
-        child.channels = other.channels.iter()
+        child.channels = other
+            .channels
+            .iter()
             .filter(|c| c.from < child.services.len() && c.to < child.services.len())
             .cloned()
             .collect();
@@ -227,6 +257,10 @@ mod tests {
 
         let service_counts: Vec<usize> = genomes.iter().map(|g| g.services.len()).collect();
         let unique_counts: std::collections::HashSet<_> = service_counts.iter().collect();
-        assert!(unique_counts.len() > 1, "Evolution should produce variety: {:?}", service_counts);
+        assert!(
+            unique_counts.len() > 1,
+            "Evolution should produce variety: {:?}",
+            service_counts
+        );
     }
 }

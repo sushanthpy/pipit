@@ -1,4 +1,3 @@
-
 //! Denial Tracker — Exponential backoff for repeated permission denials.
 //!
 //! When a user denies a tool call, we record the denial and apply exponential
@@ -84,9 +83,9 @@ impl DenialTracker {
                     explanation: format!(
                         "Tool '{}' denied (backoff: {} more turns). Previously denied {} time(s).",
                         descriptor.tool_name,
-                        record.backoff_turns.saturating_sub(
-                            (turn - record.last_denial_turn) as u32
-                        ),
+                        record
+                            .backoff_turns
+                            .saturating_sub((turn - record.last_denial_turn) as u32),
                         record.count,
                     ),
                 });
@@ -129,7 +128,11 @@ fn denial_key(descriptor: &ToolCallDescriptor) -> String {
         hasher.update(cmd.as_bytes());
     }
     hasher.update(b":");
-    let mut paths: Vec<String> = descriptor.paths.iter().map(|p| p.display().to_string()).collect();
+    let mut paths: Vec<String> = descriptor
+        .paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
     paths.sort();
     for p in &paths {
         hasher.update(p.as_bytes());
@@ -212,4 +215,3 @@ mod tests {
         assert!(tracker.check(&desc).is_none());
     }
 }
-

@@ -23,7 +23,11 @@ pub struct MarkdownView<'a> {
 
 impl<'a> MarkdownView<'a> {
     pub fn new(content: &'a str) -> Self {
-        Self { content, block: None, style: Style::default() }
+        Self {
+            content,
+            block: None,
+            style: Style::default(),
+        }
     }
 
     pub fn block(mut self, block: Block<'a>) -> Self {
@@ -75,23 +79,34 @@ impl<'a> MarkdownView<'a> {
             if trimmed.starts_with("### ") {
                 lines.push(Line::from(Span::styled(
                     trimmed[4..].to_string(),
-                    Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
                 )));
             } else if trimmed.starts_with("## ") {
                 lines.push(Line::from(Span::styled(
                     trimmed[3..].to_string(),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 )));
             } else if trimmed.starts_with("# ") {
                 lines.push(Line::from(Span::styled(
                     trimmed[2..].to_string(),
-                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 )));
             } else if trimmed.starts_with("> ") {
                 // Blockquote
                 lines.push(Line::from(vec![
                     Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(trimmed[2..].to_string(), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                    Span::styled(
+                        trimmed[2..].to_string(),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
                 ]));
             } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
                 // Bullet list
@@ -158,7 +173,9 @@ fn style_inline_markdown(raw: &str) -> Line<'static> {
                 }
                 spans.push(Span::styled(
                     raw[code_start..code_end].to_string(),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ));
                 plain_start = code_end + 1;
             }
@@ -273,7 +290,11 @@ impl Widget for &CodeBlock<'_> {
         for (i, code_line) in self.code.lines().enumerate() {
             let line_num = self.line_offset + i + 1;
             let is_highlighted = self.highlight_lines.contains(&line_num);
-            let bg = if is_highlighted { Color::DarkGray } else { Color::Reset };
+            let bg = if is_highlighted {
+                Color::DarkGray
+            } else {
+                Color::Reset
+            };
 
             let mut spans = Vec::new();
             if self.show_line_numbers {
@@ -316,7 +337,11 @@ pub struct DiffView<'a> {
 
 impl<'a> DiffView<'a> {
     pub fn new(old_text: &'a str, new_text: &'a str) -> Self {
-        Self { old_text, new_text, file_path: None }
+        Self {
+            old_text,
+            new_text,
+            file_path: None,
+        }
     }
 
     pub fn file_path(mut self, path: &'a str) -> Self {
@@ -335,7 +360,9 @@ impl Widget for &DiffView<'_> {
         if let Some(path) = self.file_path {
             lines.push(Line::from(Span::styled(
                 format!("─── {} ───", path),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             )));
         }
 
@@ -347,7 +374,10 @@ impl Widget for &DiffView<'_> {
             };
             let text = change.to_string_lossy();
             lines.push(Line::from(vec![
-                Span::styled(sign.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    sign.to_string(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     text.trim_end_matches('\n').to_string(),
                     Style::default().fg(color),
@@ -378,7 +408,10 @@ pub struct TextWrap<'a> {
 
 impl<'a> TextWrap<'a> {
     pub fn new(text: &'a str) -> Self {
-        Self { text, style: Style::default() }
+        Self {
+            text,
+            style: Style::default(),
+        }
     }
 
     pub fn style(mut self, style: Style) -> Self {
@@ -407,7 +440,10 @@ pub struct BigTextView<'a> {
 
 impl<'a> BigTextView<'a> {
     pub fn new(text: &'a str) -> Self {
-        Self { text, style: Style::default().fg(Color::Cyan) }
+        Self {
+            text,
+            style: Style::default().fg(Color::Cyan),
+        }
     }
 }
 
@@ -446,7 +482,9 @@ impl<'a> AnsiText<'a> {
 impl Widget for &AnsiText<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use ansi_to_tui::IntoText;
-        let text = self.raw.into_text()
+        let text = self
+            .raw
+            .into_text()
             .unwrap_or_else(|_| Text::raw(String::from_utf8_lossy(self.raw).to_string()));
         let mut paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
         if let Some(ref block) = self.block {
@@ -467,7 +505,10 @@ pub struct JsonTreeView<'a> {
 
 impl<'a> JsonTreeView<'a> {
     pub fn new(json: &'a serde_json::Value) -> Self {
-        Self { json, title: "json" }
+        Self {
+            json,
+            title: "json",
+        }
     }
 
     pub fn title(mut self, title: &'a str) -> Self {
@@ -492,7 +533,10 @@ impl<'a> JsonTreeView<'a> {
                         _ => {
                             lines.push(Line::from(vec![
                                 Span::raw(pad.clone()),
-                                Span::styled(format!("{}: ", key), Style::default().fg(Color::Cyan)),
+                                Span::styled(
+                                    format!("{}: ", key),
+                                    Style::default().fg(Color::Cyan),
+                                ),
                                 Span::styled(
                                     format!("{}", val),
                                     Style::default().fg(Color::Yellow),
@@ -553,7 +597,11 @@ pub struct ErrorDisplay<'a> {
 
 impl<'a> ErrorDisplay<'a> {
     pub fn new(title: &'a str, message: &'a str) -> Self {
-        Self { title, message, suggestion: None }
+        Self {
+            title,
+            message,
+            suggestion: None,
+        }
     }
 
     pub fn suggestion(mut self, suggestion: &'a str) -> Self {
@@ -578,7 +626,12 @@ impl Widget for &ErrorDisplay<'_> {
         if let Some(suggestion) = self.suggestion {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("hint: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "hint: ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(suggestion.to_string(), Style::default().fg(Color::Yellow)),
             ]));
         }
@@ -586,7 +639,10 @@ impl Widget for &ErrorDisplay<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Red))
-            .title(Span::styled(" error ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+            .title(Span::styled(
+                " error ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
 
         Paragraph::new(lines)
             .block(block)
@@ -611,16 +667,31 @@ impl<'a> HelpText<'a> {
 
 impl Widget for &HelpText<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let rows: Vec<ratatui::widgets::Row> = self.bindings.iter().map(|(key, desc)| {
-            ratatui::widgets::Row::new(vec![
-                ratatui::widgets::Cell::from(Span::styled(key.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                ratatui::widgets::Cell::from(Span::styled(desc.to_string(), Style::default().fg(Color::White))),
-            ])
-        }).collect();
+        let rows: Vec<ratatui::widgets::Row> = self
+            .bindings
+            .iter()
+            .map(|(key, desc)| {
+                ratatui::widgets::Row::new(vec![
+                    ratatui::widgets::Cell::from(Span::styled(
+                        key.to_string(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    ratatui::widgets::Cell::from(Span::styled(
+                        desc.to_string(),
+                        Style::default().fg(Color::White),
+                    )),
+                ])
+            })
+            .collect();
 
         let widths = [Constraint::Length(16), Constraint::Min(20)];
-        let table = ratatui::widgets::Table::new(rows, widths)
-            .block(Block::default().borders(Borders::ALL).title(" keybindings "));
+        let table = ratatui::widgets::Table::new(rows, widths).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" keybindings "),
+        );
 
         ratatui::widgets::Widget::render(table, area, buf);
     }
@@ -638,7 +709,11 @@ pub struct ThinkingBlock<'a> {
 
 impl<'a> ThinkingBlock<'a> {
     pub fn new(content: &'a str, frame: u64) -> Self {
-        Self { content, collapsed: false, frame }
+        Self {
+            content,
+            collapsed: false,
+            frame,
+        }
     }
 
     pub fn collapsed(mut self, collapsed: bool) -> Self {
@@ -655,22 +730,32 @@ impl Widget for &ThinkingBlock<'_> {
         if self.collapsed {
             let line = Line::from(vec![
                 Span::styled("▸ ", Style::default().fg(Color::Magenta)),
-                Span::styled("reasoning", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                Span::styled(
+                    "reasoning",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
                 Span::styled(format!(" {}", dots), Style::default().fg(Color::Magenta)),
             ]);
             Paragraph::new(vec![line]).render(area, buf);
         } else {
-            let mut lines: Vec<Line> = vec![
-                Line::from(vec![
-                    Span::styled("▾ ", Style::default().fg(Color::Magenta)),
-                    Span::styled("reasoning", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
-                    Span::styled(format!(" {}", dots), Style::default().fg(Color::Magenta)),
-                ]),
-            ];
+            let mut lines: Vec<Line> = vec![Line::from(vec![
+                Span::styled("▾ ", Style::default().fg(Color::Magenta)),
+                Span::styled(
+                    "reasoning",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Span::styled(format!(" {}", dots), Style::default().fg(Color::Magenta)),
+            ])];
             for text_line in self.content.lines() {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", text_line),
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
                 )));
             }
             Paragraph::new(lines).render(area, buf);
@@ -690,7 +775,11 @@ pub struct Citation<'a> {
 
 impl<'a> Citation<'a> {
     pub fn new(file: &'a str) -> Self {
-        Self { file, line: None, snippet: None }
+        Self {
+            file,
+            line: None,
+            snippet: None,
+        }
     }
 
     pub fn line(mut self, line: usize) -> Self {
@@ -714,7 +803,12 @@ impl Widget for &Citation<'_> {
 
         let mut spans = vec![
             Span::styled("⟫ ", Style::default().fg(Color::DarkGray)),
-            Span::styled(location, Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)),
+            Span::styled(
+                location,
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
         ];
 
         if let Some(snippet) = self.snippet {

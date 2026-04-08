@@ -16,13 +16,13 @@
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolError, ToolResult, ToolDisplay};
+use crate::{Tool, ToolContext, ToolDisplay, ToolError, ToolResult};
 
 // ═══════════════════════════════════════════════════════════════
 //  PURITY (re-exported from tool_semantics_bridge for convenience)
@@ -126,9 +126,7 @@ pub struct ToolExample {
 #[derive(Debug, Clone, Serialize)]
 pub enum ToolEvent {
     /// Tool execution has started.
-    Started {
-        tool_name: String,
-    },
+    Started { tool_name: String },
     /// Progress update (percentage + message).
     Progress {
         stage: String,
@@ -136,24 +134,13 @@ pub enum ToolEvent {
         message: String,
     },
     /// Streaming output chunk (stdout, stderr, or data).
-    OutputChunk {
-        stream: OutputStream,
-        data: String,
-    },
+    OutputChunk { stream: OutputStream, data: String },
     /// Artifact produced during execution.
-    Artifact {
-        kind: ArtifactKind,
-        data: Value,
-    },
+    Artifact { kind: ArtifactKind, data: Value },
     /// Tool execution completed successfully.
-    Completed {
-        content: String,
-        mutated: bool,
-    },
+    Completed { content: String, mutated: bool },
     /// Tool execution failed.
-    Failed {
-        error: String,
-    },
+    Failed { error: String },
 }
 
 /// Which output stream a chunk belongs to.
@@ -170,9 +157,16 @@ pub enum ArtifactKind {
     /// A file was read (evidence for ProofState).
     FileRead { path: String },
     /// A file was modified (evidence for ProofState).
-    FileModified { path: String, before_hash: Option<String>, after_hash: Option<String> },
+    FileModified {
+        path: String,
+        before_hash: Option<String>,
+        after_hash: Option<String>,
+    },
     /// A command was executed.
-    CommandExecution { command: String, exit_code: Option<i32> },
+    CommandExecution {
+        command: String,
+        exit_code: Option<i32>,
+    },
     /// A diff was produced.
     Diff { path: String, hunks: u32 },
     /// A search result.
@@ -322,7 +316,11 @@ impl<T: TypedTool> TypedToolAdapter<T> {
     pub fn new(inner: T) -> Self {
         let schema = Self::generate_schema();
         let card = T::describe();
-        Self { inner, schema, card }
+        Self {
+            inner,
+            schema,
+            card,
+        }
     }
 
     fn generate_schema() -> Value {
@@ -374,11 +372,9 @@ impl<T: TypedTool> Tool for TypedToolAdapter<T> {
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
         // Deserialize JSON args into the typed input struct
-        let input: T::Input = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArgs(format!(
-                "Invalid arguments for {}: {}",
-                T::NAME, e
-            )))?;
+        let input: T::Input = serde_json::from_value(args).map_err(|e| {
+            ToolError::InvalidArgs(format!("Invalid arguments for {}: {}", T::NAME, e))
+        })?;
 
         // Execute with typed input
         let result = self.inner.execute(input, ctx, cancel).await?;
@@ -430,38 +426,45 @@ impl ToolSearchIndex {
             return self.cards.iter().take(limit).collect();
         }
 
-        let mut scored: Vec<(usize, f32)> = self.cards.iter().enumerate().map(|(i, card)| {
-            let text = format!(
-                "{} {} {} {}",
-                card.name,
-                card.summary,
-                card.when_to_use,
-                card.tags.join(" ")
-            ).to_lowercase();
+        let mut scored: Vec<(usize, f32)> = self
+            .cards
+            .iter()
+            .enumerate()
+            .map(|(i, card)| {
+                let text = format!(
+                    "{} {} {} {}",
+                    card.name,
+                    card.summary,
+                    card.when_to_use,
+                    card.tags.join(" ")
+                )
+                .to_lowercase();
 
-            let mut score = 0.0f32;
-            for term in &query_terms {
-                if card.name.to_lowercase().contains(term) {
-                    score += 10.0; // Name match is very high signal
+                let mut score = 0.0f32;
+                for term in &query_terms {
+                    if card.name.to_lowercase().contains(term) {
+                        score += 10.0; // Name match is very high signal
+                    }
+                    if card.tags.iter().any(|t| t.to_lowercase().contains(term)) {
+                        score += 5.0; // Tag match
+                    }
+                    if card.summary.to_lowercase().contains(term) {
+                        score += 3.0; // Summary match
+                    }
+                    if card.when_to_use.to_lowercase().contains(term) {
+                        score += 2.0; // Usage guidance match
+                    }
+                    // Term frequency
+                    let tf = text.matches(term).count() as f32;
+                    score += tf.min(5.0); // Cap TF contribution
                 }
-                if card.tags.iter().any(|t| t.to_lowercase().contains(term)) {
-                    score += 5.0; // Tag match
-                }
-                if card.summary.to_lowercase().contains(term) {
-                    score += 3.0; // Summary match
-                }
-                if card.when_to_use.to_lowercase().contains(term) {
-                    score += 2.0; // Usage guidance match
-                }
-                // Term frequency
-                let tf = text.matches(term).count() as f32;
-                score += tf.min(5.0); // Cap TF contribution
-            }
-            (i, score)
-        }).collect();
+                (i, score)
+            })
+            .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.iter()
+        scored
+            .iter()
             .filter(|(_, s)| *s > 0.0)
             .take(limit)
             .map(|(i, _)| &self.cards[*i])

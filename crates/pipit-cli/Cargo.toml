@@ -22,7 +22,7 @@ pipit-mcp = { path = "../pipit-mcp" }
 pipit-bench = { path = "../pipit-bench" }
 pipit-browser = { path = "../pipit-browser" }
 pipit-deps = { path = "../pipit-deps" }
-pipit-voice = { path = "../pipit-voice" }
+pipit-voice = { path = "../pipit-voice", optional = true }
 pipit-mesh = { path = "../pipit-mesh" }
 clap = { workspace = true }
 clap_complete = "4"
@@ -39,6 +39,8 @@ reqwest = { workspace = true }
 dirs = "5"
 tempfile = { workspace = true }
 chrono = { workspace = true }
+async-trait = { workspace = true }
+regex = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

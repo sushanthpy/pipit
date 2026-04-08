@@ -51,10 +51,13 @@ impl SemVer {
         Some(Self {
             major: parts.first()?.parse().ok()?,
             minor: parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
-            patch: parts.get(2).and_then(|s| {
-                // Handle "1.2.3-beta" → strip suffix
-                s.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
-            }).unwrap_or(0),
+            patch: parts
+                .get(2)
+                .and_then(|s| {
+                    // Handle "1.2.3-beta" → strip suffix
+                    s.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+                })
+                .unwrap_or(0),
         })
     }
 
@@ -109,7 +112,8 @@ fn analyze_cargo_toml(path: &Path) -> Result<DependencyHealthReport, String> {
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("[dependencies]") || trimmed.starts_with("[workspace.dependencies]") {
+        if trimmed.starts_with("[dependencies]") || trimmed.starts_with("[workspace.dependencies]")
+        {
             in_deps = true;
             is_dev = false;
             continue;
@@ -143,7 +147,11 @@ fn analyze_cargo_toml(path: &Path) -> Result<DependencyHealthReport, String> {
         }
     }
 
-    let overall_health = if deps.is_empty() { 1.0 } else { 1.0 - deps.iter().map(|d| d.staleness_score).sum::<f64>() / deps.len() as f64 };
+    let overall_health = if deps.is_empty() {
+        1.0
+    } else {
+        1.0 - deps.iter().map(|d| d.staleness_score).sum::<f64>() / deps.len() as f64
+    };
 
     Ok(DependencyHealthReport {
         manifest_path: path.to_path_buf(),
@@ -201,8 +209,13 @@ fn analyze_pyproject_toml(path: &Path) -> Result<DependencyHealthReport, String>
             let dep = trimmed.trim_matches(&['"', '\'', ',', ' '] as &[char]);
             if !dep.is_empty() {
                 // Parse "package>=1.0" style
-                let (name, ver) = if let Some(idx) = dep.find(|c: char| c == '>' || c == '<' || c == '=' || c == '~') {
-                    (&dep[..idx], dep[idx..].trim_start_matches(|c: char| !c.is_ascii_digit()))
+                let (name, ver) = if let Some(idx) =
+                    dep.find(|c: char| c == '>' || c == '<' || c == '=' || c == '~')
+                {
+                    (
+                        &dep[..idx],
+                        dep[idx..].trim_start_matches(|c: char| !c.is_ascii_digit()),
+                    )
                 } else {
                     (dep, "*")
                 };

@@ -37,7 +37,8 @@ pub struct DedupResult {
 /// never modified.
 pub fn dedup_tool_results(messages: &mut Vec<Message>) -> DedupResult {
     let mut seen: HashSet<u64> = HashSet::new();
-    let mut first_occurrence: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    let mut first_occurrence: std::collections::HashMap<u64, String> =
+        std::collections::HashMap::new();
     let mut result = DedupResult::default();
 
     for msg in messages.iter_mut() {
@@ -49,7 +50,12 @@ pub fn dedup_tool_results(messages: &mut Vec<Message>) -> DedupResult {
 
         // Check for tool_result content blocks
         for block in &mut msg.content {
-            if let pipit_provider::ContentBlock::ToolResult { call_id, content, is_error } = block {
+            if let pipit_provider::ContentBlock::ToolResult {
+                call_id,
+                content,
+                is_error,
+            } = block
+            {
                 if *is_error {
                     continue;
                 }
@@ -58,10 +64,8 @@ pub fn dedup_tool_results(messages: &mut Vec<Message>) -> DedupResult {
 
                 if let Some(original_id) = first_occurrence.get(&hash) {
                     let original_len = content.len();
-                    let pointer = format!(
-                        "[duplicate result — identical to call_id={}]",
-                        original_id
-                    );
+                    let pointer =
+                        format!("[duplicate result — identical to call_id={}]", original_id);
                     let freed = original_len.saturating_sub(pointer.len());
                     *content = pointer;
                     result.duplicates_removed += 1;
@@ -94,7 +98,9 @@ mod tests {
 
     fn tool_result_msg(tool_id: &str, content: &str) -> Message {
         Message {
-            role: Role::ToolResult { call_id: tool_id.to_string() },
+            role: Role::ToolResult {
+                call_id: tool_id.to_string(),
+            },
             content: vec![ContentBlock::ToolResult {
                 call_id: tool_id.to_string(),
                 content: content.to_string(),
@@ -136,7 +142,9 @@ mod tests {
     fn error_results_not_deduped() {
         let mut msgs = vec![
             Message {
-                role: Role::ToolResult { call_id: "c1".to_string() },
+                role: Role::ToolResult {
+                    call_id: "c1".to_string(),
+                },
                 content: vec![ContentBlock::ToolResult {
                     call_id: "c1".to_string(),
                     content: "error: file not found".to_string(),
@@ -145,7 +153,9 @@ mod tests {
                 metadata: Default::default(),
             },
             Message {
-                role: Role::ToolResult { call_id: "c2".to_string() },
+                role: Role::ToolResult {
+                    call_id: "c2".to_string(),
+                },
                 content: vec![ContentBlock::ToolResult {
                     call_id: "c2".to_string(),
                     content: "error: file not found".to_string(),

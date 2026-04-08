@@ -55,8 +55,13 @@ impl PopulationRunner {
             .map_err(|e| format!("Failed to create worktree base: {}", e))?;
 
         let mut variants = Vec::new();
-        let strategies = ["MinimalPatch", "RootCauseRepair", "CharacterizationFirst",
-                          "ArchitecturalRepair", "DiagnosticFirst"];
+        let strategies = [
+            "MinimalPatch",
+            "RootCauseRepair",
+            "CharacterizationFirst",
+            "ArchitecturalRepair",
+            "DiagnosticFirst",
+        ];
 
         for i in 0..self.population_size {
             let strategy = strategies[i % strategies.len()];
@@ -89,7 +94,10 @@ impl PopulationRunner {
                 .map_err(|e| format!("git worktree add failed: {}", e))?;
 
             if !output.status.success() {
-                return Err(format!("git worktree failed: {}", String::from_utf8_lossy(&output.stderr)));
+                return Err(format!(
+                    "git worktree failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
             }
 
             variants.push(Variant {
@@ -108,14 +116,18 @@ impl PopulationRunner {
     pub fn run_tests(&self, variant: &Variant, test_command: &str) -> VariantResult {
         let worktree = match &variant.worktree_path {
             Some(p) => p,
-            None => return VariantResult {
-                variant_id: variant.id,
-                strategy: variant.strategy.clone(),
-                success: false, test_passed: false,
-                diff_lines: 0, elapsed_ms: 0,
-                error: Some("No worktree path".into()),
-                diff_content: String::new(),
-            },
+            None => {
+                return VariantResult {
+                    variant_id: variant.id,
+                    strategy: variant.strategy.clone(),
+                    success: false,
+                    test_passed: false,
+                    diff_lines: 0,
+                    elapsed_ms: 0,
+                    error: Some("No worktree path".into()),
+                    diff_content: String::new(),
+                };
+            }
         };
 
         let start = std::time::Instant::now();
@@ -155,8 +167,15 @@ impl PopulationRunner {
             test_passed,
             diff_lines,
             elapsed_ms: elapsed,
-            error: if test_passed { None } else {
-                test_result.ok().map(|o| String::from_utf8_lossy(&o.stderr).chars().take(500).collect())
+            error: if test_passed {
+                None
+            } else {
+                test_result.ok().map(|o| {
+                    String::from_utf8_lossy(&o.stderr)
+                        .chars()
+                        .take(500)
+                        .collect()
+                })
             },
             diff_content,
         }
@@ -212,14 +231,18 @@ impl PopulationRunner {
     ) -> VariantResult {
         let worktree = match &variant.worktree_path {
             Some(p) => p,
-            None => return VariantResult {
-                variant_id: variant.id,
-                strategy: variant.strategy.clone(),
-                success: false, test_passed: false,
-                diff_lines: 0, elapsed_ms: 0,
-                error: Some("No worktree path".into()),
-                diff_content: String::new(),
-            },
+            None => {
+                return VariantResult {
+                    variant_id: variant.id,
+                    strategy: variant.strategy.clone(),
+                    success: false,
+                    test_passed: false,
+                    diff_lines: 0,
+                    elapsed_ms: 0,
+                    error: Some("No worktree path".into()),
+                    diff_content: String::new(),
+                };
+            }
         };
 
         let start = std::time::Instant::now();
@@ -227,12 +250,18 @@ impl PopulationRunner {
         // Build pipit command
         let mut cmd = Command::new(pipit_binary);
         cmd.arg(prompt)
-            .arg("--provider").arg(provider)
-            .arg("--model").arg(model)
-            .arg("--api-key").arg(api_key)
-            .arg("--approval").arg("full_auto")
-            .arg("--max-turns").arg(max_turns.to_string())
-            .arg("--root").arg(worktree)
+            .arg("--provider")
+            .arg(provider)
+            .arg("--model")
+            .arg(model)
+            .arg("--api-key")
+            .arg(api_key)
+            .arg("--approval")
+            .arg("full_auto")
+            .arg("--max-turns")
+            .arg(max_turns.to_string())
+            .arg("--root")
+            .arg(worktree)
             .current_dir(worktree);
 
         if let Some(url) = base_url {

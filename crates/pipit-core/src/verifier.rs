@@ -1,4 +1,4 @@
-use crate::planner::{VerifyStrategy, VerificationSource};
+use crate::planner::{VerificationSource, VerifyStrategy};
 use crate::proof::{Assumption, ConfidenceReport, EvidenceArtifact, RealizedEdit};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -108,12 +108,11 @@ impl Verifier {
                         kind: crate::proof::VerificationKind::Test,
                         success: true,
                         ..
+                    } | EvidenceArtifact::CommandResult {
+                        kind: crate::proof::VerificationKind::Build,
+                        success: true,
+                        ..
                     }
-                        | EvidenceArtifact::CommandResult {
-                            kind: crate::proof::VerificationKind::Build,
-                            success: true,
-                            ..
-                        }
                 )
             })
             .count() as f32;
@@ -186,7 +185,10 @@ impl Verifier {
         evidence: &[EvidenceArtifact],
     ) -> Vec<Assumption> {
         let has_runtime_evidence = evidence.iter().any(|artifact| {
-            matches!(artifact, EvidenceArtifact::CommandResult { success: true, .. })
+            matches!(
+                artifact,
+                EvidenceArtifact::CommandResult { success: true, .. }
+            )
         });
 
         assumptions

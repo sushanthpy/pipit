@@ -74,21 +74,37 @@ impl TaintAnalysis {
         // Build simplified data flow paths
         let paths = compute_paths(&sources, &sinks, source);
 
-        Self { sources, sinks, paths }
+        Self {
+            sources,
+            sinks,
+            paths,
+        }
     }
 
     /// Get all storage sinks (need deletion handlers for compliance).
     pub fn storage_sinks(&self) -> Vec<&TaintSink> {
-        self.sinks.iter().filter(|s| matches!(s.kind,
-            SinkKind::DatabaseWrite | SinkKind::FileWrite | SinkKind::CacheStore
-        )).collect()
+        self.sinks
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.kind,
+                    SinkKind::DatabaseWrite | SinkKind::FileWrite | SinkKind::CacheStore
+                )
+            })
+            .collect()
     }
 
     /// Get all output sinks (need audit logging for compliance).
     pub fn output_sinks(&self) -> Vec<&TaintSink> {
-        self.sinks.iter().filter(|s| matches!(s.kind,
-            SinkKind::LogOutput | SinkKind::HttpResponse | SinkKind::EmailSend
-        )).collect()
+        self.sinks
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.kind,
+                    SinkKind::LogOutput | SinkKind::HttpResponse | SinkKind::EmailSend
+                )
+            })
+            .collect()
     }
 }
 
@@ -100,7 +116,9 @@ fn detect_sources(file: &str, code: &str) -> Vec<TaintSource> {
         let t = line.trim();
 
         // Skip comments and string-only lines
-        if is_comment_or_string_line(t) { continue; }
+        if is_comment_or_string_line(t) {
+            continue;
+        }
 
         for (pattern, kind) in &[
             ("request.form", SourceKind::HttpRequest),
@@ -140,7 +158,9 @@ fn detect_sinks(file: &str, code: &str) -> Vec<TaintSink> {
         let t = line.trim();
 
         // Skip comments and string-only lines
-        if is_comment_or_string_line(t) { continue; }
+        if is_comment_or_string_line(t) {
+            continue;
+        }
 
         for (pattern, kind) in &[
             ("cursor.execute", SinkKind::DatabaseWrite),
@@ -216,7 +236,9 @@ fn is_comment_or_string_line(line: &str) -> bool {
 /// Handles single-quoted, double-quoted, and backtick strings.
 fn contains_outside_strings(line: &str, pattern: &str) -> bool {
     // Find the pattern's position
-    let Some(pos) = line.find(pattern) else { return false };
+    let Some(pos) = line.find(pattern) else {
+        return false;
+    };
 
     // Count unescaped quotes before the position to determine if we're inside a string
     let prefix = &line[..pos];
@@ -241,8 +263,14 @@ cursor.execute(f"INSERT INTO users VALUES ('{name}')")
 print(f"User created: {name}")
 "#;
         let analysis = TaintAnalysis::analyze("app.py", code);
-        assert!(!analysis.sources.is_empty(), "Should detect request.json source");
-        assert!(!analysis.sinks.is_empty(), "Should detect SQL + print sinks");
+        assert!(
+            !analysis.sources.is_empty(),
+            "Should detect request.json source"
+        );
+        assert!(
+            !analysis.sinks.is_empty(),
+            "Should detect SQL + print sinks"
+        );
         assert!(!analysis.paths.is_empty(), "Should find source→sink paths");
     }
 
@@ -255,7 +283,10 @@ logger.info(f"Stored email: {data}")
 cache.set("last_email", data)
 "#;
         let analysis = TaintAnalysis::analyze("app.py", code);
-        assert!(analysis.storage_sinks().len() >= 2, "db + cache are storage sinks");
+        assert!(
+            analysis.storage_sinks().len() >= 2,
+            "db + cache are storage sinks"
+        );
         assert!(analysis.output_sinks().len() >= 1, "logger is output sink");
     }
 }

@@ -1,5 +1,5 @@
-use crate::{Tool, ToolContext, ToolError, ToolResult};
 use crate::builtins::read_file::FILE_STATE_CACHE;
+use crate::{Tool, ToolContext, ToolError, ToolResult};
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;
@@ -79,19 +79,23 @@ impl Tool for WriteFileTool {
 
         // Stale-write detection: if we previously read this file, verify
         // it hasn't been modified by another tool call since then
-        if abs_path.exists() {
-            if let Ok(current_on_disk) = tokio::fs::read_to_string(&abs_path).await {
-                if let Err(stale_msg) = FILE_STATE_CACHE.check_stale(&abs_path, &current_on_disk) {
-                    return Err(ToolError::ExecutionFailed(stale_msg));
-                }
+        let file_existed = abs_path.exists();
+        let original_content = if file_existed {
+            tokio::fs::read_to_string(&abs_path).await.ok()
+        } else {
+            None
+        };
+        if let Some(ref existing) = original_content {
+            if let Err(stale_msg) = FILE_STATE_CACHE.check_stale(&abs_path, existing) {
+                return Err(ToolError::ExecutionFailed(stale_msg));
             }
         }
 
         // Create parent directories
         if let Some(parent) = abs_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed(format!("Cannot create directories: {}", e)))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                ToolError::ExecutionFailed(format!("Cannot create directories: {}", e))
+            })?;
         }
 
         // Atomic write via tempfile + rename
@@ -109,7 +113,8 @@ impl Tool for WriteFileTool {
         // Preserve permissions if file exists
         if abs_path.exists() {
             if let Ok(metadata) = tokio::fs::metadata(&abs_path).await {
-                if let Err(e) = tokio::fs::set_permissions(tmp.path(), metadata.permissions()).await {
+                if let Err(e) = tokio::fs::set_permissions(tmp.path(), metadata.permissions()).await
+                {
                     tracing::warn!("Failed to preserve permissions for {}: {}", path_str, e);
                 }
             }
@@ -119,10 +124,45 @@ impl Tool for WriteFileTool {
             .map_err(|e| ToolError::ExecutionFailed(format!("Cannot persist file: {}", e)))?;
 
         let line_count = content.lines().count();
-        Ok(ToolResult::mutating(format!(
-            "Successfully wrote {} lines to {}",
-            line_count, path_str
-        )))
+        let op_type = if file_existed { "Updated" } else { "Created" };
+
+        // Build a rich result message that shows what happened:
+        // - Whether the file was created (new) or updated (existing)
+        // - Line count
+        // - For updates: a brief diff summary (lines added/removed)
+        let result_msg = if file_existed {
+            let old_line_count = original_content
+                .as_ref()
+                .map(|c| c.lines().count())
+                .unwrap_or(0);
+            let added = line_count.saturating_sub(old_line_count);
+            let removed = old_line_count.saturating_sub(line_count);
+            if added > 0 && removed > 0 {
+                format!(
+                    "{} {} ({} lines, +{} -{} vs previous)",
+                    op_type, path_str, line_count, added, removed
+                )
+            } else if added > 0 {
+                format!(
+                    "{} {} ({} lines, +{} new lines)",
+                    op_type, path_str, line_count, added
+                )
+            } else if removed > 0 {
+                format!(
+                    "{} {} ({} lines, -{} lines removed)",
+                    op_type, path_str, line_count, removed
+                )
+            } else {
+                format!(
+                    "{} {} ({} lines, content replaced)",
+                    op_type, path_str, line_count
+                )
+            }
+        } else {
+            format!("{} {} ({} lines)", op_type, path_str, line_count)
+        };
+
+        Ok(ToolResult::mutating(result_msg))
     }
 }
 

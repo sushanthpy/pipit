@@ -46,8 +46,11 @@ impl Default for FederationPolicy {
             enabled: false,
             allowed_projects: Vec::new(),
             blocked_terms: vec![
-                "password".to_string(), "secret".to_string(), "token".to_string(),
-                "api_key".to_string(), "private_key".to_string(),
+                "password".to_string(),
+                "secret".to_string(),
+                "token".to_string(),
+                "api_key".to_string(),
+                "private_key".to_string(),
             ],
             max_share_count: 50,
         }
@@ -63,7 +66,10 @@ pub struct FederatedKnowledgeStore {
 impl FederatedKnowledgeStore {
     /// Load from `.pipit/knowledge/federated.json`.
     pub fn load(project_root: &Path) -> Self {
-        let path = project_root.join(".pipit").join("knowledge").join("federated.json");
+        let path = project_root
+            .join(".pipit")
+            .join("knowledge")
+            .join("federated.json");
         let units = if path.exists() {
             std::fs::read_to_string(&path)
                 .ok()
@@ -72,7 +78,10 @@ impl FederatedKnowledgeStore {
         } else {
             Vec::new()
         };
-        let policy_path = project_root.join(".pipit").join("knowledge").join("federation-policy.json");
+        let policy_path = project_root
+            .join(".pipit")
+            .join("knowledge")
+            .join("federation-policy.json");
         let policy = if policy_path.exists() {
             std::fs::read_to_string(&policy_path)
                 .ok()
@@ -112,14 +121,16 @@ impl FederatedKnowledgeStore {
     /// Query the knowledge store for relevant learnings.
     pub fn query(&self, query: &str, top_k: usize) -> Vec<&LearningUnit> {
         let query_features = compute_tfidf(query);
-        let mut scored: Vec<(&LearningUnit, f64)> = self.units.iter()
+        let mut scored: Vec<(&LearningUnit, f64)> = self
+            .units
+            .iter()
             .map(|unit| {
                 let sim = cosine_similarity(&query_features, &unit.features);
                 let age_days = chrono::Utc::now()
                     .signed_duration_since(
                         chrono::DateTime::parse_from_rfc3339(&unit.last_used)
                             .map(|dt| dt.with_timezone(&chrono::Utc))
-                            .unwrap_or_else(|_| chrono::Utc::now())
+                            .unwrap_or_else(|_| chrono::Utc::now()),
                     )
                     .num_days() as f64;
                 let decay = (-0.001 * age_days).exp();
@@ -136,7 +147,8 @@ impl FederatedKnowledgeStore {
         if !self.policy.enabled {
             return Vec::new();
         }
-        self.units.iter()
+        self.units
+            .iter()
             .filter(|u| {
                 // Check project allowlist
                 if !self.policy.allowed_projects.is_empty()
@@ -176,7 +188,8 @@ impl FederatedKnowledgeStore {
 /// Compute TF-IDF feature vector from text (Bag-of-Words approach).
 fn compute_tfidf(text: &str) -> HashMap<String, f64> {
     let mut tf: HashMap<String, f64> = HashMap::new();
-    let words: Vec<&str> = text.split_whitespace()
+    let words: Vec<&str> = text
+        .split_whitespace()
         .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_'))
         .filter(|w| w.len() > 2)
         .collect();
@@ -192,12 +205,17 @@ fn compute_tfidf(text: &str) -> HashMap<String, f64> {
 
 /// Cosine similarity between two sparse feature vectors.
 fn cosine_similarity(a: &HashMap<String, f64>, b: &HashMap<String, f64>) -> f64 {
-    let dot: f64 = a.iter()
+    let dot: f64 = a
+        .iter()
         .filter_map(|(key, va)| b.get(key).map(|vb| va * vb))
         .sum();
     let mag_a: f64 = a.values().map(|v| v * v).sum::<f64>().sqrt();
     let mag_b: f64 = b.values().map(|v| v * v).sum::<f64>().sqrt();
-    if mag_a < 1e-10 || mag_b < 1e-10 { 0.0 } else { dot / (mag_a * mag_b) }
+    if mag_a < 1e-10 || mag_b < 1e-10 {
+        0.0
+    } else {
+        dot / (mag_a * mag_b)
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +237,9 @@ mod tests {
         let c = compute_tfidf("javascript web frontend react");
         let sim_ab = cosine_similarity(&a, &b);
         let sim_ac = cosine_similarity(&a, &c);
-        assert!(sim_ab > sim_ac, "Rust topics should be more similar than Rust vs JS");
+        assert!(
+            sim_ab > sim_ac,
+            "Rust topics should be more similar than Rust vs JS"
+        );
     }
 }

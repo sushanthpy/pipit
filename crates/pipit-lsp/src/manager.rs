@@ -3,8 +3,8 @@
 //! Discovers which LSP servers are needed, launches them, and provides
 //! a unified interface for the agent to query semantic information.
 
-use crate::{LspKind, DefinitionResult, ReferencesResult, TypeInfo};
 use crate::client::LspClient;
+use crate::{DefinitionResult, LspKind, ReferencesResult, TypeInfo};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -51,14 +51,24 @@ impl LspManager {
     }
 
     /// Go-to-definition — resolves what a symbol points to.
-    pub async fn goto_definition(&self, file: &Path, line: u32, col: u32) -> Option<DefinitionResult> {
+    pub async fn goto_definition(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Option<DefinitionResult> {
         let kind = self.kind_for_file(file)?;
         let client = self.clients.get(&kind)?;
         client.goto_definition(file, line, col).await.ok()
     }
 
     /// Find all references to a symbol.
-    pub async fn find_references(&self, file: &Path, line: u32, col: u32) -> Option<ReferencesResult> {
+    pub async fn find_references(
+        &self,
+        file: &Path,
+        line: u32,
+        col: u32,
+    ) -> Option<ReferencesResult> {
         let kind = self.kind_for_file(file)?;
         let client = self.clients.get(&kind)?;
         client.find_references(file, line, col).await.ok()

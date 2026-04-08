@@ -8,7 +8,7 @@
 //! Cost: O(1) per event — one match on `SdkVersion` with conditional
 //! field inclusion. ContentDelta events short-circuit with zero-copy.
 
-use crate::sdk::{EngineEvent, EngineOutcome, BudgetSummary};
+use crate::sdk::{BudgetSummary, EngineEvent, EngineOutcome};
 use serde_json::Value;
 
 /// Supported SDK protocol versions.
@@ -67,7 +67,11 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
         })),
 
         // v3-only events: filtered out for v2 consumers
-        EngineEvent::Replay { message, seq, is_last } => {
+        EngineEvent::Replay {
+            message,
+            seq,
+            is_last,
+        } => {
             if version < SdkVersion::V3 {
                 return None; // v2 doesn't know about replay
             }
@@ -79,7 +83,10 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
             }))
         }
 
-        EngineEvent::CompactBoundary { preserved_count, freed_tokens } => {
+        EngineEvent::CompactBoundary {
+            preserved_count,
+            freed_tokens,
+        } => {
             if version < SdkVersion::V3 {
                 return None;
             }
@@ -140,7 +147,10 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
             "turn_number": turn_number,
         })),
 
-        EngineEvent::TurnEnd { turn_number, reason } => Some(serde_json::json!({
+        EngineEvent::TurnEnd {
+            turn_number,
+            reason,
+        } => Some(serde_json::json!({
             "type": "turn_end",
             "turn_number": turn_number,
             "reason": reason,
@@ -151,14 +161,23 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
             "full_text": full_text,
         })),
 
-        EngineEvent::ToolCallStart { call_id, name, args } => Some(serde_json::json!({
+        EngineEvent::ToolCallStart {
+            call_id,
+            name,
+            args,
+        } => Some(serde_json::json!({
             "type": "tool_call_start",
             "call_id": call_id,
             "name": name,
             "args": args,
         })),
 
-        EngineEvent::ToolCallEnd { call_id, name, result, success } => Some(serde_json::json!({
+        EngineEvent::ToolCallEnd {
+            call_id,
+            name,
+            result,
+            success,
+        } => Some(serde_json::json!({
             "type": "tool_call_end",
             "call_id": call_id,
             "name": name,
@@ -166,21 +185,32 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
             "success": success,
         })),
 
-        EngineEvent::ApprovalNeeded { call_id, name, args } => Some(serde_json::json!({
+        EngineEvent::ApprovalNeeded {
+            call_id,
+            name,
+            args,
+        } => Some(serde_json::json!({
             "type": "approval_needed",
             "call_id": call_id,
             "name": name,
             "args": args,
         })),
 
-        EngineEvent::PlanSelected { strategy, rationale, pivoted } => Some(serde_json::json!({
+        EngineEvent::PlanSelected {
+            strategy,
+            rationale,
+            pivoted,
+        } => Some(serde_json::json!({
             "type": "plan_selected",
             "strategy": strategy,
             "rationale": rationale,
             "pivoted": pivoted,
         })),
 
-        EngineEvent::VerifierVerdict { verdict, confidence } => Some(serde_json::json!({
+        EngineEvent::VerifierVerdict {
+            verdict,
+            confidence,
+        } => Some(serde_json::json!({
             "type": "verifier_verdict",
             "verdict": verdict,
             "confidence": confidence,
@@ -198,7 +228,10 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
             "to": to,
         })),
 
-        EngineEvent::Compression { messages_removed, tokens_freed } => Some(serde_json::json!({
+        EngineEvent::Compression {
+            messages_removed,
+            tokens_freed,
+        } => Some(serde_json::json!({
             "type": "compression",
             "messages_removed": messages_removed,
             "tokens_freed": tokens_freed,
@@ -262,7 +295,9 @@ mod tests {
 
     #[test]
     fn test_content_delta_passes_all_versions() {
-        let event = EngineEvent::ContentDelta { text: "hello".into() };
+        let event = EngineEvent::ContentDelta {
+            text: "hello".into(),
+        };
         assert!(map_event(&event, SdkVersion::V2).is_some());
         assert!(map_event(&event, SdkVersion::V3).is_some());
     }

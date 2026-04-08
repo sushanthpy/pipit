@@ -1,28 +1,32 @@
-use crate::events::{AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler, ToolCallOutcome, TurnEndReason};
-use crate::capability::{PolicyKernel, CapabilityRequest, CapabilitySet, PolicyDecision, ResourceScope, ExecutionLineage};
-use crate::governor::{Governor, RiskReport};
-use crate::ledger::{SessionLedger, SessionEvent};
-use crate::loop_detector::LoopDetector;
-use crate::session_kernel::{SessionKernel, SessionKernelConfig};
-use crate::turn_kernel::{TurnKernel, TurnInput, TurnOutput, TurnPhase};
-use crate::telemetry_facade::{TelemetryFacade, SpanStatus, SpanValue};
-use crate::pev::{ModelRouter, PevConfig};
-use crate::planner::{CandidatePlan, Planner, PlanStrategy, VerifyStrategy};
-use crate::proof::{
-    ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, PlanPivot, ProofPacket,
-    PolicyStage, RealizedEdit, VerificationKind,
+use crate::capability::{
+    CapabilityRequest, CapabilitySet, ExecutionLineage, PolicyDecision, PolicyKernel, ResourceScope,
 };
-use crate::tool_semantics::{builtin_semantics, classify_semantically, SemanticClass};
+use crate::events::{
+    AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler, ToolCallOutcome, TurnEndReason,
+};
+use crate::governor::{Governor, RiskReport};
+use crate::ledger::{SessionEvent, SessionLedger};
+use crate::loop_detector::LoopDetector;
+use crate::pev::{ModelRouter, PevConfig};
+use crate::planner::{CandidatePlan, PlanStrategy, Planner, VerifyStrategy};
+use crate::proof::{
+    ChangeClaim, ConfidenceReport, EvidenceArtifact, Objective, PlanPivot, PolicyStage,
+    ProofPacket, RealizedEdit, VerificationKind,
+};
+use crate::session_kernel::{SessionKernel, SessionKernelConfig};
+use crate::telemetry_facade::{SpanStatus, SpanValue, TelemetryFacade};
+use crate::tool_semantics::{SemanticClass, builtin_semantics, classify_semantically};
+use crate::turn_kernel::{TurnInput, TurnKernel, TurnOutput, TurnPhase};
 use crate::verifier::Verifier;
+use futures::FutureExt;
+use futures::StreamExt;
+use pipit_config::{ApprovalMode, PricingConfig};
 use pipit_context::ContextManager;
 use pipit_extensions::ExtensionRunner;
-use pipit_config::{ApprovalMode, PricingConfig};
 use pipit_provider::{
     AssistantResponse, CompletionRequest, ContentEvent, LlmProvider, Message, StopReason,
 };
 use pipit_tools::{ToolContext, ToolRegistry};
-use futures::StreamExt;
-use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -90,7 +94,11 @@ pub struct ProofState {
 }
 
 impl ProofState {
-    fn new(objective: Objective, selected_plan: CandidatePlan, candidate_plans: Vec<CandidatePlan>) -> Self {
+    fn new(
+        objective: Objective,
+        selected_plan: CandidatePlan,
+        candidate_plans: Vec<CandidatePlan>,
+    ) -> Self {
         let claim = ChangeClaim::from_objective(objective.clone());
         Self {
             objective,
@@ -188,6 +196,10 @@ pub struct AgentLoop {
     telemetry_controller: crate::query_profiler::TelemetryController,
     /// Command registry for slash command dispatch.
     command_registry: crate::command_registry::CommandRegistry,
+    /// Session ID for memory store integration.
+    session_id: String,
+    /// Optional session memory store — sinks compaction summaries for recall.
+    memory_store: Option<Box<dyn pipit_context::MemoryStore>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,17 +233,30 @@ impl AgentLoop {
         let (event_tx, event_rx) = broadcast::channel(1024);
         let (steering_tx, steering_rx) = mpsc::channel(32);
 
-        let loop_detector =
-            LoopDetector::new(config.loop_detection_window, config.loop_detection_threshold);
+        let loop_detector = LoopDetector::new(
+            config.loop_detection_window,
+            config.loop_detection_threshold,
+        );
 
         let tool_context = ToolContext::new(project_root.clone(), config.approval_mode);
 
         let policy_kernel = PolicyKernel::from_approval_mode(config.approval_mode, project_root);
 
         let session_id = uuid::Uuid::new_v4().to_string();
-        let model_name = models.for_role(crate::pev::ModelRole::Executor).model_id.clone();
-        let provider_name = models.for_role(crate::pev::ModelRole::Executor).provider.id().to_string();
-        let telemetry = Arc::new(TelemetryFacade::new(&session_id, &model_name, &provider_name));
+        let model_name = models
+            .for_role(crate::pev::ModelRole::Executor)
+            .model_id
+            .clone();
+        let provider_name = models
+            .for_role(crate::pev::ModelRole::Executor)
+            .provider
+            .id()
+            .to_string();
+        let telemetry = Arc::new(TelemetryFacade::new(
+            &session_id,
+            &model_name,
+            &provider_name,
+        ));
         let command_registry = crate::command_registry::builtin_registry();
         let max_turns = config.max_turns;
 
@@ -257,6 +282,8 @@ impl AgentLoop {
             telemetry,
             telemetry_controller: crate::query_profiler::TelemetryController::new(),
             command_registry,
+            session_id,
+            memory_store: None,
         };
 
         (agent, event_rx, steering_tx)
@@ -275,6 +302,11 @@ impl AgentLoop {
         self.session_kernel = Some(std::sync::Mutex::new(kernel));
     }
 
+    /// Enable session memory store for compaction summary persistence.
+    pub fn enable_memory_store(&mut self, store: Box<dyn pipit_context::MemoryStore>) {
+        self.memory_store = Some(store);
+    }
+
     /// Record a session event to the ledger (if enabled). Non-blocking.
     fn record(&self, event: SessionEvent) {
         // Route through kernel if available (single authority)
@@ -287,7 +319,11 @@ impl AgentLoop {
                     SessionEvent::AssistantResponseStarted { turn } => {
                         let _ = kernel.begin_response(*turn);
                     }
-                    SessionEvent::ToolCallProposed { call_id, tool_name, args } => {
+                    SessionEvent::ToolCallProposed {
+                        call_id,
+                        tool_name,
+                        args,
+                    } => {
                         let _ = kernel.propose_tool_call(call_id, tool_name, args);
                     }
                     SessionEvent::ToolApproved { call_id } => {
@@ -296,16 +332,40 @@ impl AgentLoop {
                     SessionEvent::ToolStarted { call_id } => {
                         let _ = kernel.start_tool(call_id);
                     }
-                    SessionEvent::ToolCompleted { call_id, success, mutated, result_summary, result_blob_hash } => {
-                        let _ = kernel.complete_tool(call_id, *success, *mutated, result_summary, result_blob_hash.clone());
+                    SessionEvent::ToolCompleted {
+                        call_id,
+                        success,
+                        mutated,
+                        result_summary,
+                        result_blob_hash,
+                    } => {
+                        let _ = kernel.complete_tool(
+                            call_id,
+                            *success,
+                            *mutated,
+                            result_summary,
+                            result_blob_hash.clone(),
+                        );
                     }
-                    SessionEvent::ContextCompressed { messages_removed, tokens_freed, strategy } => {
-                        let _ = kernel.record_compression(*messages_removed, *tokens_freed, strategy);
+                    SessionEvent::ContextCompressed {
+                        messages_removed,
+                        tokens_freed,
+                        strategy,
+                    } => {
+                        let _ =
+                            kernel.record_compression(*messages_removed, *tokens_freed, strategy);
                     }
-                    SessionEvent::PlanSelected { strategy, rationale } => {
+                    SessionEvent::PlanSelected {
+                        strategy,
+                        rationale,
+                    } => {
                         let _ = kernel.select_plan(strategy, rationale);
                     }
-                    SessionEvent::PlanPivoted { from_strategy, to_strategy, trigger } => {
+                    SessionEvent::PlanPivoted {
+                        from_strategy,
+                        to_strategy,
+                        trigger,
+                    } => {
                         let _ = kernel.pivot_plan(from_strategy, to_strategy, trigger);
                     }
                     SessionEvent::TurnCompleted { turn } => {
@@ -362,20 +422,29 @@ impl AgentLoop {
     /// Used to distinguish first-turn Q&A from multi-turn coding tasks.
     fn has_had_tool_calls(&self) -> bool {
         self.context.messages().iter().any(|msg| {
-            msg.content.iter().any(|block| {
-                matches!(block, pipit_provider::ContentBlock::ToolCall { .. })
-            })
+            msg.content
+                .iter()
+                .any(|block| matches!(block, pipit_provider::ContentBlock::ToolCall { .. }))
         })
     }
 
     /// Convenience: get the executor provider (the default for the main loop).
     fn provider(&self) -> &Arc<dyn LlmProvider> {
-        &self.models.for_role(crate::pev::ModelRole::Executor).provider
+        &self
+            .models
+            .for_role(crate::pev::ModelRole::Executor)
+            .provider
     }
 
     /// Hot-swap the model at runtime (from /model command).
     /// Creates a new provider with the given model string, keeping the same provider kind and API key.
-    pub fn set_model(&mut self, provider_kind: pipit_config::ProviderKind, model: &str, api_key: &str, base_url: Option<&str>) -> Result<(), String> {
+    pub fn set_model(
+        &mut self,
+        provider_kind: pipit_config::ProviderKind,
+        model: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+    ) -> Result<(), String> {
         let new_provider = pipit_provider::create_provider(provider_kind, model, api_key, base_url)
             .map_err(|e| format!("Failed to create provider for model '{}': {}", model, e))?;
         self.models = crate::ModelRouter::single(Arc::from(new_provider), model.to_string());
@@ -387,10 +456,8 @@ impl AgentLoop {
         self.tool_context.approval_mode = mode;
         self.config.approval_mode = mode;
         // Rebuild the policy kernel so the granted capability set matches the new mode.
-        self.policy_kernel = PolicyKernel::from_approval_mode(
-            mode,
-            self.tool_context.project_root.clone(),
-        );
+        self.policy_kernel =
+            PolicyKernel::from_approval_mode(mode, self.tool_context.project_root.clone());
     }
 
     /// Get mutable access to the policy kernel for injecting project-level
@@ -433,11 +500,7 @@ impl AgentLoop {
     }
 
     /// Run the agent loop for a single user message.
-    pub async fn run(
-        &mut self,
-        user_message: String,
-        cancel: CancellationToken,
-    ) -> AgentOutcome {
+    pub async fn run(&mut self, user_message: String, cancel: CancellationToken) -> AgentOutcome {
         // Preprocess through extensions
         let processed = match self.extensions.on_input(&user_message).await {
             Ok(Some(modified)) => modified,
@@ -484,10 +547,8 @@ impl AgentLoop {
             candidate_plans = vec![selected_plan.clone()];
         } else {
             // Normal planning flow (heuristic planner for all modes)
-            candidate_plans =
-                planner.candidate_plans(&objective, &claim.confidence, &evidence);
-            selected_plan =
-                planner.select_plan(&objective, &claim.confidence, &evidence);
+            candidate_plans = planner.candidate_plans(&objective, &claim.confidence, &evidence);
+            selected_plan = planner.select_plan(&objective, &claim.confidence, &evidence);
         }
 
         claim.align_with_plan(&selected_plan);
@@ -512,7 +573,9 @@ impl AgentLoop {
         // Add user message to context
         self.context.push_message(Message::user(&processed));
         // ── Canonical FSM: Idle → Accepted ──
-        let outputs = self.turn_kernel.transition(TurnInput::UserMessage(processed.clone()));
+        let outputs = self
+            .turn_kernel
+            .transition(TurnInput::UserMessage(processed.clone()));
         self.process_turn_outputs(&outputs);
         // ── Canonical FSM: Accepted → ContextFrozen ──
         // Control-plane snapshot: freeze tool registry, policy view, context budget
@@ -523,24 +586,21 @@ impl AgentLoop {
         self.emit(AgentEvent::TurnStart { turn_number: 0 });
 
         let mut turn = 0u32;
-        /// How many bonus turns to grant when the agent has recent forward progress.
-        const GRACE_TURNS: u32 = 3;
-        /// How many turns before the limit to inject a wind-down warning.
-        const WINDDOWN_WARNING_TURNS: u32 = 3;
         /// Track the last turn that produced a file mutation (forward progress).
         let mut last_mutation_turn: u32 = 0;
-        /// Whether we're in the grace period (past max_turns but still active).
-        let mut in_grace_period = false;
-        /// When the grace period started (wall-clock). Hard-abort if >120s.
-        let mut grace_start: Option<std::time::Instant> = None;
-        /// Whether the wind-down warning has already been injected.
-        let mut winddown_warned = false;
+        /// Consecutive StopReason::Error retries (abort after 3).
+        let mut consecutive_error_retries: u32 = 0;
+        /// Per-turn MaxTokens continuation counter (abort after 3 continuations per turn).
+        let mut max_tokens_continuations: u32 = 0;
+        /// Auto-continue counter for EndTurn without tool calls.
+        /// Prevents infinite re-prompting when the model keeps ending without tools.
+        let mut end_turn_continuations: u32 = 0;
 
         // ── Adaptive turn budget (replaces dumb counter for extension decisions) ──
-        let mut adaptive_budget = crate::adaptive_budget::AdaptiveTurnBudget::new(self.config.max_turns);
+        let mut adaptive_budget =
+            crate::adaptive_budget::AdaptiveTurnBudget::new(self.config.max_turns);
         /// Track unique files modified across the session.
         let mut unique_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut winddown_warned = false;
 
         // ═══════════════════════════════════════════════════════
         // THE LOOP: LLM → tool calls → LLM → tool calls → done
@@ -551,24 +611,6 @@ impl AgentLoop {
                 self.drain_steering_messages().await;
             }
 
-            // Grace period wall-clock timeout: if the grace period has been
-            // active for >120s with no completed turn, hard-abort.
-            if let Some(start) = grace_start {
-                if start.elapsed() > std::time::Duration::from_secs(120) {
-                    let usage = self.context.token_usage();
-                    self.emit(AgentEvent::TokenUsageUpdate {
-                        used: usage.total,
-                        limit: usage.limit,
-                        cost: usage.cost,
-                    });
-                    return AgentOutcome::Error(
-                        "Grace period timed out after 120s without completing. \
-                         The model may be stuck on a slow API call or unresponsive. Stopping."
-                            .to_string(),
-                    );
-                }
-            }
-
             // Check context budget, compress if needed
             if self.context.needs_compression() {
                 // Fire PreCompact hook before compressing
@@ -577,15 +619,52 @@ impl AgentLoop {
                 }
                 self.emit(AgentEvent::CompressionStart);
                 let compress_provider = self.provider().clone();
-                match self.context.compress(&*compress_provider, cancel.clone()).await {
+                let session_id = self.session_id.clone();
+                match self
+                    .context
+                    .compress_pipeline(
+                        compress_provider,
+                        &session_id,
+                        self.memory_store.as_deref(),
+                        cancel.clone(),
+                    )
+                    .await
+                {
                     Ok(stats) => {
                         self.emit(AgentEvent::CompressionEnd {
                             messages_removed: stats.messages_removed,
                             tokens_freed: stats.tokens_freed,
                         });
+                        // Fire PostCompact hook after successful compression
+                        if let Err(e) = self
+                            .extensions
+                            .on_post_compact(stats.messages_removed, stats.tokens_freed)
+                            .await
+                        {
+                            tracing::warn!("PostCompact extension hook failed: {}", e);
+                        }
                     }
                     Err(e) => {
-                        tracing::warn!("Compression failed: {}", e);
+                        tracing::warn!(
+                            "Pipeline compression failed, falling back to monolithic: {}",
+                            e
+                        );
+                        // Fallback to monolithic compressor
+                        match self
+                            .context
+                            .compress(&*self.provider().clone(), cancel.clone())
+                            .await
+                        {
+                            Ok(stats) => {
+                                self.emit(AgentEvent::CompressionEnd {
+                                    messages_removed: stats.messages_removed,
+                                    tokens_freed: stats.tokens_freed,
+                                });
+                            }
+                            Err(e2) => {
+                                tracing::warn!("Fallback compression also failed: {}", e2);
+                            }
+                        }
                     }
                 }
             }
@@ -603,29 +682,44 @@ impl AgentLoop {
                 }
                 crate::adaptive_budget::TurnBudgetDecision::WindDown { turns_remaining } => {
                     self.context.push_message(Message::user(
-                        &crate::adaptive_budget::AdaptiveTurnBudget::wind_down_message(turns_remaining)
+                        &crate::adaptive_budget::AdaptiveTurnBudget::wind_down_message(
+                            turns_remaining,
+                        ),
                     ));
                     self.emit(AgentEvent::Waiting {
                         label: format!("{} turns remaining", turns_remaining),
                     });
                 }
-                crate::adaptive_budget::TurnBudgetDecision::Extend { extra_turns, ref reason } => {
-                    let is_final = adaptive_budget.extensions_granted >= adaptive_budget.max_auto_extensions;
+                crate::adaptive_budget::TurnBudgetDecision::Extend {
+                    extra_turns,
+                    ref reason,
+                } => {
+                    let is_final =
+                        adaptive_budget.extensions_granted >= adaptive_budget.max_auto_extensions;
                     let msg = if is_final {
-                        crate::adaptive_budget::AdaptiveTurnBudget::final_extension_message(extra_turns)
+                        crate::adaptive_budget::AdaptiveTurnBudget::final_extension_message(
+                            extra_turns,
+                        )
                     } else {
-                        crate::adaptive_budget::AdaptiveTurnBudget::extension_message(extra_turns, reason)
+                        crate::adaptive_budget::AdaptiveTurnBudget::extension_message(
+                            extra_turns,
+                            reason,
+                        )
                     };
                     self.context.push_message(Message::user(&msg));
                     self.emit(AgentEvent::Waiting {
                         label: format!("Budget extended +{} turns ({})", extra_turns, reason),
                     });
                     tracing::info!(
-                        turn, extra_turns, reason = reason.as_str(),
+                        turn,
+                        extra_turns,
+                        reason = reason.as_str(),
                         "Adaptive budget: extension granted",
                     );
-                    in_grace_period = true;
-                    grace_start = Some(std::time::Instant::now());
+                    // Notify UI of new budget so status bar updates
+                    self.emit(AgentEvent::BudgetExtended {
+                        new_approved: adaptive_budget.approved_budget,
+                    });
                 }
                 crate::adaptive_budget::TurnBudgetDecision::Stop { reason } => {
                     let usage = self.context.token_usage();
@@ -641,19 +735,6 @@ impl AgentLoop {
                 }
             }
 
-            // Grace period wall-clock safety: hard-abort after 300s of continuous extension
-            if let Some(start) = grace_start {
-                if start.elapsed() > std::time::Duration::from_secs(300) {
-                    let usage = self.context.token_usage();
-                    self.emit(AgentEvent::TokenUsageUpdate {
-                        used: usage.total, limit: usage.limit, cost: usage.cost,
-                    });
-                    return AgentOutcome::Error(
-                        "Extension period timed out after 300s. Stopping.".to_string(),
-                    );
-                }
-            }
-
             self.emit(AgentEvent::TurnStart { turn_number: turn });
 
             // Build completion request — show ALL tools to the model.
@@ -662,10 +743,8 @@ impl AgentLoop {
             if !evidence.is_empty() {
                 claim.confidence = verifier.summarize_confidence(&evidence, &realized_edits);
                 let previous_plan = selected_plan.clone();
-                candidate_plans =
-                    planner.candidate_plans(&objective, &claim.confidence, &evidence);
-                selected_plan =
-                    planner.select_plan(&objective, &claim.confidence, &evidence);
+                candidate_plans = planner.candidate_plans(&objective, &claim.confidence, &evidence);
+                selected_plan = planner.select_plan(&objective, &claim.confidence, &evidence);
                 if selected_plan != previous_plan {
                     let pivot = PlanPivot {
                         turn_number: turn,
@@ -711,31 +790,43 @@ impl AgentLoop {
                     self.emit(AgentEvent::Waiting {
                         label: format!(
                             "Warning: ${:.4} of ${:.2} budget used ({:.0}%)",
-                            current_cost, max_budget, current_cost / max_budget * 100.0
+                            current_cost,
+                            max_budget,
+                            current_cost / max_budget * 100.0
                         ),
                     });
                 }
             }
 
             // Stream the LLM response
-            self.emit(AgentEvent::Waiting { label: "Sending to model\u{2026}".to_string() });
+            let model_id = self
+                .models
+                .for_role(crate::pev::ModelRole::Executor)
+                .model_id
+                .clone();
+            self.emit(AgentEvent::Waiting {
+                label: format!("Sending to model ({})\u{2026}", model_id),
+            });
 
             // ── Canonical FSM: → Requesting ──
             let tk = self.turn_kernel.transition(TurnInput::RequestSent);
             self.process_turn_outputs(&tk);
 
-            let mut llm_span = self.telemetry.start_span("llm.complete")
-                .attr("model.name", SpanValue::String(
-                    self.models.for_role(crate::pev::ModelRole::Executor).model_id.clone()
-                ))
+            let mut llm_span = self
+                .telemetry
+                .start_span("llm.complete")
+                .attr(
+                    "model.name",
+                    SpanValue::String(
+                        self.models
+                            .for_role(crate::pev::ModelRole::Executor)
+                            .model_id
+                            .clone(),
+                    ),
+                )
                 .attr("turn", SpanValue::Int(turn as i64));
             let response = match self
-                .stream_response_with_recovery(
-                    &claim,
-                    &selected_plan,
-                    &tools,
-                    cancel.clone(),
-                )
+                .stream_response_with_recovery(&claim, &selected_plan, &tools, cancel.clone())
                 .await
             {
                 Ok(r) => {
@@ -761,22 +852,35 @@ impl AgentLoop {
 
             // Track cost via telemetry facade (Kahan summation for precision)
             if response.stop_reason.is_some() {
-                let cost = compute_cost(self.provider().id(), &response.usage, &self.config.pricing);
+                let cost =
+                    compute_cost(self.provider().id(), &response.usage, &self.config.pricing);
                 self.context.add_cost(cost);
                 self.telemetry.session_counters.add_cost(cost);
-                self.telemetry.session_counters.add_tokens(
-                    response.usage.input_tokens,
-                    response.usage.output_tokens,
-                );
+                self.telemetry
+                    .session_counters
+                    .add_tokens(response.usage.input_tokens, response.usage.output_tokens);
             }
             self.telemetry.session_counters.increment_turns();
 
             // ── Closed-loop telemetry feedback ──
             // Feed turn observations into the controller and check for control signals.
             {
-                let ttft_ms = None; // TODO: wire from QueryProfiler checkpoints
+                let ttft_ms = response.ttft_ms;
+                let turn_latency_ms = response
+                    .ttft_ms
+                    .map(|t| {
+                        // Use TTFT as lower bound; actual turn latency is from request start
+                        // to response completion. We approximate with usage-derived estimate:
+                        // output_tokens / ~50 tok/s ≈ generation time in ms, added to TTFT.
+                        t + (response.usage.output_tokens as u64 * 20) // ~50 tok/s ≈ 20ms/tok
+                    })
+                    .unwrap_or(0);
                 let tool_calls_this_turn = response.tool_calls.len() as u32;
-                self.telemetry_controller.observe_turn(ttft_ms, 0, tool_calls_this_turn);
+                self.telemetry_controller.observe_turn(
+                    ttft_ms,
+                    turn_latency_ms,
+                    tool_calls_this_turn,
+                );
 
                 let signals = self.telemetry_controller.control_signals();
                 if signals.trigger_compaction && !self.context.needs_compression() {
@@ -817,15 +921,71 @@ impl AgentLoop {
             // Handle stop reason
             match response.stop_reason.unwrap_or(StopReason::EndTurn) {
                 StopReason::EndTurn | StopReason::Stop => {
+                    // Reset error retry counter on successful response
+                    consecutive_error_retries = 0;
+                    max_tokens_continuations = 0;
                     // ── Canonical FSM: ResponseStarted → ResponseCompleted ──
                     let tk_outputs = self.turn_kernel.transition(TurnInput::ResponseComplete);
                     self.process_turn_outputs(&tk_outputs);
 
+                    let model_says_done =
+                        crate::adaptive_budget::detect_completion_signal(&response.text);
+
                     // Record turn signals (no tools, response only)
                     adaptive_budget.record_turn(crate::adaptive_budget::TurnSignals {
-                        model_signaled_done: crate::adaptive_budget::detect_completion_signal(&response.text),
+                        model_signaled_done: model_says_done,
                         ..Default::default()
                     });
+
+                    // ── Auto-continue logic ──
+                    // Best-practice agent loops keep running as long as there is
+                    // work to do.  Previously we exited immediately on EndTurn,
+                    // causing half-finished tasks.
+                    //
+                    // Now: if the model did NOT explicitly signal completion, AND
+                    // it has been actively working recently, we inject a continuation
+                    // prompt and keep the loop running.  A counter caps re-prompts
+                    // so we don't loop forever on a model that simply refuses to
+                    // call tools.
+                    let had_recent_activity = adaptive_budget.had_recent_tool_activity(3);
+                    let should_auto_continue =
+                        !model_says_done && had_recent_activity && end_turn_continuations < 3;
+
+                    if should_auto_continue {
+                        end_turn_continuations += 1;
+                        tracing::info!(
+                            turn,
+                            end_turn_continuations,
+                            "EndTurn without completion signal — auto-continuing",
+                        );
+                        self.emit(AgentEvent::TurnEnd {
+                            turn_number: turn,
+                            reason: TurnEndReason::Complete,
+                        });
+
+                        // ── FSM: commit + reset the current turn before continuing ──
+                        // Without this, the kernel stays in ResponseCompleted and the
+                        // next turn's inputs (UserAccepted, etc.) hit the catch-all
+                        // "invalid transition" branch, generating warn! spam.
+                        let tk_outputs = self.turn_kernel.transition(TurnInput::TurnCommitted);
+                        self.process_turn_outputs(&tk_outputs);
+                        let tk_outputs = self.turn_kernel.transition(TurnInput::Reset);
+                        self.process_turn_outputs(&tk_outputs);
+
+                        self.context.push_message(Message::user(
+                            "[SYSTEM] Your response ended without calling any tools. \
+                             The task may not be fully complete. Review your progress:\n\
+                             - Are all requested changes implemented?\n\
+                             - Have you run verification (tests, lint) if applicable?\n\
+                             - Is there anything remaining to finish the task?\n\n\
+                             If more work is needed, continue using tools. \
+                             If the task is truly complete, provide your final summary.",
+                        ));
+                        continue;
+                    }
+
+                    // Model signaled done or no recent activity — accept completion.
+                    end_turn_continuations = 0;
 
                     // No tool calls, done
                     self.emit(AgentEvent::TurnEnd {
@@ -881,6 +1041,10 @@ impl AgentLoop {
                     };
                 }
                 StopReason::ToolUse => {
+                    // Reset error/continuation counters on successful tool use
+                    consecutive_error_retries = 0;
+                    max_tokens_continuations = 0;
+                    end_turn_continuations = 0;
                     // ── Canonical FSM: ResponseStarted → ToolProposed ──
                     let tool_calls = response.tool_calls.clone();
                     let tk_outputs = self.turn_kernel.transition(TurnInput::ToolCallsReceived {
@@ -890,10 +1054,13 @@ impl AgentLoop {
 
                     // Execute tool calls with turn-level timeout
                     let turn_timeout = std::time::Duration::from_secs(
-                        self.config.tool_timeout_secs.max(30) * (tool_calls.len() as u64).max(1)
+                        self.config.tool_timeout_secs.max(30) * (tool_calls.len() as u64).max(1),
                     );
                     let tool_future = self.execute_tools(
-                        &tool_calls, cancel.clone(), &governor, &claim.confidence
+                        &tool_calls,
+                        cancel.clone(),
+                        &governor,
+                        &claim.confidence,
                     );
                     let (results, modified_files, artifacts, edits, tool_risk) = tokio::select! {
                         result = tool_future => result,
@@ -902,7 +1069,10 @@ impl AgentLoop {
                                 error: format!("Tool execution timed out after {}s", turn_timeout.as_secs()),
                                 will_retry: false,
                             });
-                            // Push timeout error as tool results so the agent knows what happened
+                            // Push timeout error as tool results so the agent knows what happened.
+                            // Only push for tools that haven't already completed — the
+                            // execute_tools future may have finished some calls before the
+                            // turn-level timeout fired.
                             for call in &tool_calls {
                                 self.context.push_tool_result(
                                     &call.call_id,
@@ -914,7 +1084,13 @@ impl AgentLoop {
                                 turn_number: turn,
                                 reason: TurnEndReason::Error,
                             });
-                            turn += 1;
+                            // Record timeout signals so adaptive budget sees tool activity
+                            adaptive_budget.record_turn(crate::adaptive_budget::TurnSignals {
+                                tool_calls: tool_calls.len() as u32,
+                                had_error: true,
+                                ..Default::default()
+                            });
+                            // Don't increment turn — the loop header does it
                             continue;
                         }
                     };
@@ -977,11 +1153,19 @@ impl AgentLoop {
                     adaptive_budget.record_turn(crate::adaptive_budget::TurnSignals {
                         files_mutated: modified_files.len() as u32,
                         tool_calls: tool_calls.len() as u32,
-                        had_error: results.iter().any(|(_, r)| matches!(r, ToolCallOutcome::Error { .. })),
+                        had_error: results
+                            .iter()
+                            .any(|(_, r)| matches!(r, ToolCallOutcome::Error { .. })),
                         total_files_mutated: realized_edits.len() as u32,
                         unique_files_modified: unique_files.len() as u32,
-                        idle_turns: if had_mutation_success { 0 } else { turn.saturating_sub(last_mutation_turn) },
-                        model_signaled_done: crate::adaptive_budget::detect_completion_signal(&response.text),
+                        idle_turns: if had_mutation_success {
+                            0
+                        } else {
+                            turn.saturating_sub(last_mutation_turn)
+                        },
+                        // Don't trust completion signals when the model is actively using tools.
+                        // The model says "done" while calling tools = unreliable signal.
+                        model_signaled_done: false,
                         verification_passed: false, // updated after verification
                     });
 
@@ -1006,12 +1190,13 @@ impl AgentLoop {
                             ));
                         }
 
-                        self.context.push_message(Message::user(&build_loop_recovery_message(
-                            &name,
-                            count,
-                            &evidence,
-                            self.consecutive_loop_hits,
-                        )));
+                        self.context
+                            .push_message(Message::user(&build_loop_recovery_message(
+                                &name,
+                                count,
+                                &evidence,
+                                self.consecutive_loop_hits,
+                            )));
                     } else {
                         // Reset counter when no loop is detected
                         self.consecutive_loop_hits = 0;
@@ -1047,24 +1232,40 @@ impl AgentLoop {
                              - Use a different tool entirely\n\
                              - Read the file first to understand the current state\n\
                              - Ask the user for clarification\n\
-                             - If the task cannot be completed, explain why and stop"
+                             - If the task cannot be completed, explain why and stop",
                         ));
                     }
 
-                    // Push tool results to context (with truncation)
-                    for (call_id, result) in results {
-                        let (content, is_error) = match &result {
-                            ToolCallOutcome::Success { content, .. } => {
-                                (content.clone(), false)
-                            }
-                            ToolCallOutcome::PolicyBlocked { message, .. } => {
-                                (message.clone(), true)
-                            }
-                            ToolCallOutcome::Error { message } => {
-                                (message.clone(), true)
-                            }
-                        };
-                        self.context.push_tool_result(&call_id, &content, is_error);
+                    // Push tool results to context in the ORIGINAL call order.
+                    // The scheduler may reorder calls (reads before writes, batched),
+                    // but the LLM expects results in the same order it emitted tool_use blocks.
+                    let results_map: std::collections::HashMap<String, ToolCallOutcome> =
+                        results.into_iter().collect();
+                    for call in &tool_calls {
+                        let (content, is_error) =
+                            if let Some(result) = results_map.get(&call.call_id) {
+                                match result {
+                                    ToolCallOutcome::Success { content, .. } => {
+                                        (content.clone(), false)
+                                    }
+                                    ToolCallOutcome::PolicyBlocked { message, .. } => {
+                                        (message.clone(), true)
+                                    }
+                                    ToolCallOutcome::Error { message } => (message.clone(), true),
+                                }
+                            } else {
+                                // Tool was dispatched but no result came back — shouldn't happen,
+                                // but defensively report rather than silently skip.
+                                (
+                                    format!(
+                                        "Internal error: no result received for tool '{}'",
+                                        call.tool_name
+                                    ),
+                                    true,
+                                )
+                            };
+                        self.context
+                            .push_tool_result(&call.call_id, &content, is_error);
                     }
 
                     self.emit(AgentEvent::TurnEnd {
@@ -1075,11 +1276,47 @@ impl AgentLoop {
                         tracing::warn!("TurnEnd extension hook failed: {}", e);
                     }
 
-                    // Post-edit verification: auto-run lint/test if files were mutated
-                    if !modified_files.is_empty() {
-                        self.emit(AgentEvent::Waiting { label: "Running verification\u{2026}".to_string() });
-                        let verification_results =
-                            self.run_post_edit_verification(&modified_files, cancel.clone()).await;
+                    // Post-edit verification: auto-run lint/test if files were mutated.
+                    //
+                    // Skip verification when:
+                    // 1. No lint/test commands are configured (greenfield projects)
+                    // 2. Only config/metadata files were changed (no code to verify)
+                    // 3. Fewer than 3 code files exist in the session (still bootstrapping)
+                    //
+                    // This avoids the throughput penalty of running verification on every
+                    // write turn during project scaffolding, where lint/test either don't
+                    // exist yet or would produce noise on incomplete code.
+                    let has_verification_commands =
+                        self.config.lint_command.is_some() || self.config.test_command.is_some();
+                    let only_config_files = modified_files.iter().all(|f| {
+                        let fl = f.to_lowercase();
+                        fl.ends_with(".json")
+                            || fl.ends_with(".toml")
+                            || fl.ends_with(".yaml")
+                            || fl.ends_with(".yml")
+                            || fl.ends_with(".env")
+                            || fl.ends_with(".env.local")
+                            || fl.ends_with(".env.example")
+                            || fl.ends_with(".gitignore")
+                            || fl.ends_with(".md")
+                            || fl.ends_with(".lock")
+                            || fl.ends_with(".config.js")
+                            || fl.ends_with(".config.ts")
+                            || fl.ends_with("tsconfig.json")
+                            || fl.ends_with("package.json")
+                    });
+                    let should_verify = has_verification_commands
+                        && !modified_files.is_empty()
+                        && !only_config_files;
+
+                    if should_verify {
+                        self.emit(AgentEvent::Waiting {
+                            label: "Running verification\u{2026}".to_string(),
+                        });
+                        let verification_results = self
+                            .run_post_edit_verification(&modified_files, cancel.clone())
+                            .await;
+                        let all_passed = verification_results.iter().all(|(_, _, s)| *s);
                         for (cmd, output, success) in &verification_results {
                             evidence.push(EvidenceArtifact::CommandResult {
                                 kind: classify_verification_command(cmd),
@@ -1088,37 +1325,46 @@ impl AgentLoop {
                                 success: *success,
                             });
                         }
+                        // Feed verification result back to adaptive budget so it
+                        // counts "verification passed + idle" as a stop signal.
+                        if let Some(last_signals) = adaptive_budget.turn_history.last_mut() {
+                            last_signals.verification_passed = all_passed;
+                        }
                         // If verification failed, inject the failure into context
                         // so the agent sees it and can fix the issue
                         for (cmd, output, success) in &verification_results {
                             if !success {
                                 self.context.push_message(Message::user(&format!(
                                     "[Auto-verification failed]\n$ {}\n{}",
-                                    cmd, truncate(output, 1000)
+                                    cmd,
+                                    truncate(output, 1000)
                                 )));
                             }
                         }
                     }
 
-                    // Continue the loop
-                    self.emit(AgentEvent::Waiting { label: "Preparing next turn\u{2026}".to_string() });
+                    // Continue the loop — commit + reset the FSM so the next
+                    // turn starts from Idle phase (prevents "invalid transition"
+                    // warnings when the next turn sends UserMessage etc.)
+                    {
+                        let tk_outputs = self.turn_kernel.transition(TurnInput::TurnCommitted);
+                        self.process_turn_outputs(&tk_outputs);
+                        let tk_outputs = self.turn_kernel.transition(TurnInput::Reset);
+                        self.process_turn_outputs(&tk_outputs);
+                    }
+                    self.emit(AgentEvent::Waiting {
+                        label: "Preparing next turn\u{2026}".to_string(),
+                    });
                 }
                 StopReason::MaxTokens => {
-                    // Fix #14: Continue generation via assistant prefill if supported
-                    if self.provider().capabilities().supports_prefill && !response.text.is_empty() {
-                        // Append partial text as assistant prefill and loop again
-                        self.context.push_message(Message::user(
-                            "Continue from where you left off. Your previous response was truncated."
-                        ));
-                        // Continue the loop to get more output
-                    } else {
+                    // Per-turn continuation budget: prevent infinite MaxTokens loops
+                    // where the model keeps generating the same truncated response.
+                    max_tokens_continuations += 1;
+                    if max_tokens_continuations > 3 {
                         self.emit(AgentEvent::TurnEnd {
                             turn_number: turn,
                             reason: TurnEndReason::Complete,
                         });
-                        if let Err(e) = self.extensions.on_turn_end(&[]).await {
-                            tracing::warn!("TurnEnd extension hook failed: {}", e);
-                        }
                         let usage = self.context.token_usage();
                         let proof = if let Some(ref mut ps) = self.proof_state {
                             ps.refresh_confidence(&*verifier);
@@ -1139,12 +1385,76 @@ impl AgentLoop {
                             )
                         };
                         return AgentOutcome::Completed {
-                            turns: turn, total_tokens: usage.total, cost: usage.cost, proof,
+                            turns: turn,
+                            total_tokens: usage.total,
+                            cost: usage.cost,
+                            proof,
                         };
+                    }
+
+                    if self.provider().capabilities().supports_prefill && !response.text.is_empty()
+                    {
+                        // Append partial text as assistant prefill and loop again
+                        self.context.push_message(Message::user(
+                            "Continue from where you left off. Your previous response was truncated."
+                        ));
+                        // Continue the loop to get more output
+                    } else {
+                        // No prefill support: compact context to free space, then retry.
+                        // Reducing context on MaxTokens is better than giving up.
+                        self.emit(AgentEvent::Waiting {
+                            label: "Output truncated — compacting context and retrying…"
+                                .to_string(),
+                        });
+                        // Remove the truncated response — the model will regenerate
+                        self.context.pop_last_assistant();
+                        // Try to free space
+                        let freed = self.context.evict_stale_tool_results(6);
+                        if freed > 0 {
+                            self.emit(AgentEvent::Waiting {
+                                label: format!("Freed ~{} tokens from stale tool results", freed),
+                            });
+                        }
+                        let freed2 = self.context.truncate_large_results(4000);
+                        if freed2 > 0 {
+                            self.emit(AgentEvent::Waiting {
+                                label: format!("Freed ~{} tokens from large results", freed2),
+                            });
+                        }
+                        // Inject a nudge so the model knows to be more concise
+                        self.context.push_message(Message::user(
+                            "[SYSTEM] Your previous response was truncated due to output length. \
+                             Please be more concise. Focus on the most important action and \
+                             use tool calls instead of explaining what you would do.",
+                        ));
+                        continue;
                     }
                 }
                 StopReason::Error => {
-                    return AgentOutcome::Error("LLM returned error stop reason".to_string());
+                    // Retry transient LLM errors with exponential backoff.
+                    // The model returned an error stop_reason but the connection
+                    // itself succeeded — this is often a transient backend issue.
+                    consecutive_error_retries += 1;
+                    if consecutive_error_retries > 3 {
+                        return AgentOutcome::Error(
+                            "LLM returned error stop reason 3 times consecutively. Aborting."
+                                .to_string(),
+                        );
+                    }
+                    let delay_ms = 500 * 2u64.pow(consecutive_error_retries - 1);
+                    self.emit(AgentEvent::ProviderError {
+                        error: format!(
+                            "LLM returned error stop reason — retrying in {}ms (attempt {}/3)",
+                            delay_ms, consecutive_error_retries
+                        ),
+                        will_retry: true,
+                    });
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    // Remove the failed assistant message from context so the
+                    // model doesn't see its own error response as history.
+                    self.context.pop_last_assistant();
+                    // Don't increment turn — this is a retry, not a new turn.
+                    continue;
                 }
             }
         }
@@ -1156,9 +1466,14 @@ impl AgentLoop {
         request: CompletionRequest,
         cancel: CancellationToken,
     ) -> Result<AssistantResponse, pipit_provider::ProviderError> {
-        let mut stream = self.provider().complete(request.clone(), cancel.clone()).await?;
+        let mut stream = self
+            .provider()
+            .complete(request.clone(), cancel.clone())
+            .await?;
         let mut response = AssistantResponse::new();
         let mut has_tool_calls = false;
+        let request_start = std::time::Instant::now();
+        let mut first_token_recorded = false;
 
         // TTFT timeout: if no data arrives for 60 seconds, abort.
         // This prevents indefinite hangs when the model server accepts
@@ -1205,6 +1520,10 @@ impl AgentLoop {
 
             match event {
                 Ok(ContentEvent::ContentDelta { text }) => {
+                    if !first_token_recorded {
+                        response.ttft_ms = Some(request_start.elapsed().as_millis() as u64);
+                        first_token_recorded = true;
+                    }
                     response.push_text(&text);
                     self.emit(AgentEvent::ContentDelta { text: text.clone() });
                     if let Err(e) = self.extensions.on_content_delta(&text).await {
@@ -1212,6 +1531,10 @@ impl AgentLoop {
                     }
                 }
                 Ok(ContentEvent::ThinkingDelta { text }) => {
+                    if !first_token_recorded {
+                        response.ttft_ms = Some(request_start.elapsed().as_millis() as u64);
+                        first_token_recorded = true;
+                    }
                     response.push_thinking(&text);
                     self.emit(AgentEvent::ThinkingDelta { text });
                 }
@@ -1228,10 +1551,7 @@ impl AgentLoop {
                         args,
                     });
                 }
-                Ok(ContentEvent::Finished {
-                    stop_reason,
-                    usage,
-                }) => {
+                Ok(ContentEvent::Finished { stop_reason, usage }) => {
                     response.finish(stop_reason, usage);
                 }
                 Ok(_) => {}
@@ -1260,17 +1580,20 @@ impl AgentLoop {
                             e
                         );
                         self.emit(AgentEvent::Waiting {
-                            label: "Network interrupted — reconnecting with partial response…".to_string(),
+                            label: "Network interrupted — reconnecting with partial response…"
+                                .to_string(),
                         });
 
                         // Build continuation request: inject partial text as assistant message
                         // so the model continues from where it left off.
                         let mut continuation = request.clone();
-                        continuation.messages.push(Message::assistant(&response.text));
+                        continuation
+                            .messages
+                            .push(Message::assistant(&response.text));
                         continuation.messages.push(Message::user(
                             "[SYSTEM] Your previous response was interrupted by a network error. \
                              The partial response above has been preserved. Please continue from \
-                             where you left off. Do not repeat what you already said."
+                             where you left off. Do not repeat what you already said.",
                         ));
 
                         // Brief backoff before reconnection
@@ -1285,23 +1608,40 @@ impl AgentLoop {
                                     match event {
                                         Ok(ContentEvent::ContentDelta { text }) => {
                                             response.push_text(&text);
-                                            self.emit(AgentEvent::ContentDelta { text: text.clone() });
+                                            self.emit(AgentEvent::ContentDelta {
+                                                text: text.clone(),
+                                            });
                                         }
                                         Ok(ContentEvent::ThinkingDelta { text }) => {
                                             response.push_thinking(&text);
                                             self.emit(AgentEvent::ThinkingDelta { text });
                                         }
-                                        Ok(ContentEvent::ToolCallComplete { call_id, tool_name, args }) => {
+                                        Ok(ContentEvent::ToolCallComplete {
+                                            call_id,
+                                            tool_name,
+                                            args,
+                                        }) => {
                                             has_tool_calls = true;
-                                            response.push_tool_call(call_id.clone(), tool_name.clone(), args.clone());
-                                            self.emit(AgentEvent::ToolCallStart { call_id, name: tool_name, args });
+                                            response.push_tool_call(
+                                                call_id.clone(),
+                                                tool_name.clone(),
+                                                args.clone(),
+                                            );
+                                            self.emit(AgentEvent::ToolCallStart {
+                                                call_id,
+                                                name: tool_name,
+                                                args,
+                                            });
                                         }
                                         Ok(ContentEvent::Finished { stop_reason, usage }) => {
                                             response.finish(stop_reason, usage);
                                         }
                                         Ok(_) => {}
                                         Err(e2) => {
-                                            tracing::warn!("Reconnection stream also failed: {}", e2);
+                                            tracing::warn!(
+                                                "Reconnection stream also failed: {}",
+                                                e2
+                                            );
                                             return Err(e2);
                                         }
                                     }
@@ -1333,14 +1673,15 @@ impl AgentLoop {
         let mut attempts = 0usize;
 
         // Pre-flight: proactively shrink context if over budget
-        let (input_est, model_limit, over) = self.context.preflight_check(
-            tools.len(),
-            self.repo_map.as_deref(),
-        );
+        let (input_est, model_limit, over) = self
+            .context
+            .preflight_check(tools.len(), self.repo_map.as_deref());
         if over > 0 {
             tracing::warn!(
                 "Pre-flight: estimated {} tokens vs {} limit (over by {}). Reducing.",
-                input_est, model_limit, over
+                input_est,
+                model_limit,
+                over
             );
             // Stage 1: evict stale tool results (older than 10 messages)
             let freed1 = self.context.evict_stale_tool_results(10);
@@ -1364,7 +1705,9 @@ impl AgentLoop {
                 });
             }
             // Stage 4: check again, if still over, drop repo map + compress
-            let (_est2, _lim2, over2) = self.context.preflight_check(tools.len(), self.repo_map.as_deref());
+            let (_est2, _lim2, over2) = self
+                .context
+                .preflight_check(tools.len(), self.repo_map.as_deref());
             if over2 > 0 {
                 let reduction = self.reduce_request_size();
                 if reduction.applied {
@@ -1376,7 +1719,9 @@ impl AgentLoop {
         }
 
         loop {
-            let request = self.build_completion_request(claim, selected_plan, tools).await;
+            let request = self
+                .build_completion_request(claim, selected_plan, tools)
+                .await;
 
             match self.stream_response(request, cancel.clone()).await {
                 Ok(response) => {
@@ -1393,13 +1738,16 @@ impl AgentLoop {
                     self.emit(AgentEvent::ProviderError {
                         error: format!(
                             "{} Retrying with reduced context ({}).",
-                            err,
-                            reduction.summary
+                            err, reduction.summary
                         ),
                         will_retry: true,
                     });
                 }
-                Err(err) if err.is_transient() && attempts < 3 && self.telemetry.session_counters.can_retry() => {
+                Err(err)
+                    if err.is_transient()
+                        && attempts < 3
+                        && self.telemetry.session_counters.can_retry() =>
+                {
                     attempts += 1;
                     self.telemetry.session_counters.record_retry();
                     let delay_ms = 500 * 2u64.pow(attempts as u32);
@@ -1443,7 +1791,8 @@ impl AgentLoop {
             ));
         }
 
-        if let Ok(Some(modified_system)) = self.extensions.on_before_request(&request.system).await {
+        if let Ok(Some(modified_system)) = self.extensions.on_before_request(&request.system).await
+        {
             request.system = modified_system;
         }
         request
@@ -1542,11 +1891,9 @@ impl AgentLoop {
                 justification: Some(format!("Tool '{}' invocation", call.tool_name)),
             };
 
-            let decision = self.policy_kernel.evaluate(
-                &call.tool_name,
-                &cap_request,
-                &lineage,
-            );
+            let decision = self
+                .policy_kernel
+                .evaluate(&call.tool_name, &cap_request, &lineage);
 
             match decision {
                 PolicyDecision::Deny { reason } => {
@@ -1566,7 +1913,11 @@ impl AgentLoop {
                         stage: PolicyStage::PreToolUse,
                         summary: format!("Policy denied: {}", reason),
                         mutation_applied: false,
-                        path: call.args.get("path").and_then(|v| v.as_str()).map(str::to_string),
+                        path: call
+                            .args
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
                     });
                     continue;
                 }
@@ -1623,7 +1974,11 @@ impl AgentLoop {
                                         stage: PolicyStage::PreToolUse,
                                         summary: format!("Scoped grant violated: {}", violation),
                                         mutation_applied: false,
-                                        path: call.args.get("path").and_then(|v| v.as_str()).map(str::to_string),
+                                        path: call
+                                            .args
+                                            .get("path")
+                                            .and_then(|v| v.as_str())
+                                            .map(str::to_string),
                                     });
                                     continue;
                                 }
@@ -1660,25 +2015,36 @@ impl AgentLoop {
 
         // ── Execute batches: concurrent within batch, sequential across batches ──
         for batch in &batches {
-            if cancel.is_cancelled() { break; }
+            if cancel.is_cancelled() {
+                break;
+            }
 
-            let batch_calls: Vec<&pipit_provider::ToolCall> = batch.indices.iter()
-                .map(|&i| &all_approved[i])
-                .collect();
+            let batch_calls: Vec<&pipit_provider::ToolCall> =
+                batch.indices.iter().map(|&i| &all_approved[i]).collect();
 
             if batch_calls.len() == 1 || !batch.all_read_only {
                 // Sequential: execute one at a time (writes, or mixed)
                 for call in batch_calls {
-                    if cancel.is_cancelled() { break; }
+                    if cancel.is_cancelled() {
+                        break;
+                    }
 
-                    let modified_args = match self.extensions.on_before_tool(&call.tool_name, &call.args).await {
+                    let modified_args = match self
+                        .extensions
+                        .on_before_tool(&call.tool_name, &call.args)
+                        .await
+                    {
                         Ok(Some(new_args)) => new_args,
                         Ok(None) => call.args.clone(),
                         Err(err) => {
-                            let outcome = ToolCallOutcome::Error { message: err.to_string() };
+                            let outcome = ToolCallOutcome::Error {
+                                message: err.to_string(),
+                            };
                             evidence.push(evidence_from_tool(call, &outcome));
                             self.emit(AgentEvent::ToolCallEnd {
-                                call_id: call.call_id.clone(), name: call.tool_name.clone(), result: outcome.clone(),
+                                call_id: call.call_id.clone(),
+                                name: call.tool_name.clone(),
+                                result: outcome.clone(),
                             });
                             results.push((call.call_id.clone(), outcome));
                             continue;
@@ -1687,15 +2053,30 @@ impl AgentLoop {
                     let mut modified_call = call.clone();
                     modified_call.args = modified_args;
 
-                    let mut tool_span = self.telemetry.start_span("tool.execute")
+                    let mut tool_span = self
+                        .telemetry
+                        .start_span("tool.execute")
                         .attr("tool.name", SpanValue::String(call.tool_name.clone()));
-                    let outcome = execute_single_tool(&self.tools, &modified_call, &self.tool_context, cancel.clone(), self.config.dry_run).await;
+                    let outcome = execute_single_tool(
+                        &self.tools,
+                        &modified_call,
+                        &self.tool_context,
+                        cancel.clone(),
+                        self.config.dry_run,
+                    )
+                    .await;
                     let success = matches!(outcome, ToolCallOutcome::Success { .. });
-                    tool_span.finish(if success { SpanStatus::Ok } else { SpanStatus::Error });
+                    tool_span.finish(if success {
+                        SpanStatus::Ok
+                    } else {
+                        SpanStatus::Error
+                    });
                     self.telemetry.record_span(tool_span);
                     self.telemetry.session_counters.increment_tool_calls();
-                    let mutation_applied = matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
-                    let outcome = apply_after_tool_hook(&*self.extensions, &call.tool_name, outcome).await;
+                    let mutation_applied =
+                        matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
+                    let outcome =
+                        apply_after_tool_hook(&*self.extensions, &call.tool_name, outcome).await;
                     if mutation_applied {
                         if let Some(path) = call.args.get("path").and_then(|value| value.as_str()) {
                             modified_files.push(path.to_string());
@@ -1707,7 +2088,9 @@ impl AgentLoop {
                     }
                     evidence.push(evidence_from_tool(call, &outcome));
                     self.emit(AgentEvent::ToolCallEnd {
-                        call_id: call.call_id.clone(), name: call.tool_name.clone(), result: outcome.clone(),
+                        call_id: call.call_id.clone(),
+                        name: call.tool_name.clone(),
+                        result: outcome.clone(),
                     });
                     results.push((call.call_id.clone(), outcome));
                 }
@@ -1723,17 +2106,28 @@ impl AgentLoop {
                         let extensions = self.extensions.clone();
                         let dry_run = self.config.dry_run;
                         async move {
-                            let modified_args = match extensions.on_before_tool(&call.tool_name, &call.args).await {
+                            let modified_args = match extensions
+                                .on_before_tool(&call.tool_name, &call.args)
+                                .await
+                            {
                                 Ok(Some(new_args)) => new_args,
                                 Ok(None) => call.args.clone(),
                                 Err(err) => {
-                                    return (call.call_id.clone(), ToolCallOutcome::Error { message: err.to_string() });
+                                    return (
+                                        call.call_id.clone(),
+                                        ToolCallOutcome::Error {
+                                            message: err.to_string(),
+                                        },
+                                    );
                                 }
                             };
                             let mut modified_call = call.clone();
                             modified_call.args = modified_args;
-                            let outcome = execute_single_tool(&tools, &modified_call, &ctx, cancel, dry_run).await;
-                            let outcome = apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
+                            let outcome =
+                                execute_single_tool(&tools, &modified_call, &ctx, cancel, dry_run)
+                                    .await;
+                            let outcome =
+                                apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
                             (call.call_id.clone(), outcome)
                         }
                     })
@@ -1741,10 +2135,15 @@ impl AgentLoop {
 
                 let batch_results = futures::future::join_all(concurrent_futures).await;
                 for (call_id, outcome) in &batch_results {
-                    let name = calls.iter().find(|c| c.call_id == *call_id)
-                        .map(|c| c.tool_name.as_str()).unwrap_or("unknown");
+                    let name = calls
+                        .iter()
+                        .find(|c| c.call_id == *call_id)
+                        .map(|c| c.tool_name.as_str())
+                        .unwrap_or("unknown");
                     self.emit(AgentEvent::ToolCallEnd {
-                        call_id: call_id.clone(), name: name.to_string(), result: outcome.clone(),
+                        call_id: call_id.clone(),
+                        name: name.to_string(),
+                        result: outcome.clone(),
                     });
                     if let Some(call) = calls.iter().find(|c| c.call_id == *call_id) {
                         evidence.push(evidence_from_tool(call, outcome));
@@ -1754,7 +2153,13 @@ impl AgentLoop {
             }
         }
 
-        (results, modified_files, evidence, realized_edits, highest_risk)
+        (
+            results,
+            modified_files,
+            evidence,
+            realized_edits,
+            highest_risk,
+        )
     }
 
     /// Drain any pending steering messages.
@@ -1774,14 +2179,23 @@ impl AgentLoop {
     fn emit(&self, event: AgentEvent) {
         // Record significant events to the session ledger for crash recovery.
         match &event {
-            AgentEvent::ToolCallStart { call_id, name, args } => {
+            AgentEvent::ToolCallStart {
+                call_id,
+                name,
+                args,
+            } => {
                 self.record(SessionEvent::ToolCallProposed {
                     call_id: call_id.clone(),
                     tool_name: name.clone(),
                     args: args.clone(),
                 });
             }
-            AgentEvent::ToolCallEnd { call_id, name, result, .. } => {
+            AgentEvent::ToolCallEnd {
+                call_id,
+                name,
+                result,
+                ..
+            } => {
                 let (success, mutated) = match result {
                     ToolCallOutcome::Success { mutated, .. } => (true, *mutated),
                     _ => (false, false),
@@ -1794,7 +2208,10 @@ impl AgentLoop {
                     result_blob_hash: None,
                 });
             }
-            AgentEvent::CompressionEnd { messages_removed, tokens_freed } => {
+            AgentEvent::CompressionEnd {
+                messages_removed,
+                tokens_freed,
+            } => {
                 self.record(SessionEvent::ContextCompressed {
                     messages_removed: *messages_removed,
                     tokens_freed: *tokens_freed,
@@ -1805,9 +2222,16 @@ impl AgentLoop {
                 self.record(SessionEvent::AssistantResponseStarted { turn: *turn_number });
             }
             AgentEvent::SteeringMessageInjected { text } => {
-                self.record(SessionEvent::UserMessageAccepted { content: text.clone() });
+                self.record(SessionEvent::UserMessageAccepted {
+                    content: text.clone(),
+                });
             }
-            AgentEvent::PlanSelected { strategy, rationale, pivoted, .. } => {
+            AgentEvent::PlanSelected {
+                strategy,
+                rationale,
+                pivoted,
+                ..
+            } => {
                 if *pivoted {
                     self.record(SessionEvent::PlanPivoted {
                         from_strategy: String::new(),
@@ -1853,6 +2277,17 @@ impl AgentLoop {
         self.context.token_usage()
     }
 
+    /// Get the text content of the last assistant message in context.
+    /// Used by `/commit` to extract LLM-generated commit messages.
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.context
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, pipit_provider::Role::Assistant))
+            .map(|m| m.text_content())
+    }
+
     pub fn clear_context(&mut self) {
         self.context.clear();
     }
@@ -1866,7 +2301,11 @@ impl AgentLoop {
     /// Call from signal handlers to ensure no data loss on Ctrl-C.
     pub fn graceful_shutdown(&self) -> ShutdownSummary {
         let usage = self.context.token_usage();
-        let turns = self.telemetry.session_counters.turns.load(std::sync::atomic::Ordering::Relaxed) as u32;
+        let turns = self
+            .telemetry
+            .session_counters
+            .turns
+            .load(std::sync::atomic::Ordering::Relaxed) as u32;
         let cost = self.telemetry.session_counters.total_cost();
 
         // 1. End session via kernel (single authority) or legacy ledger
@@ -1908,8 +2347,8 @@ impl AgentLoop {
     pub fn save_session(&self, session_dir: &std::path::Path) -> Result<(), String> {
         std::fs::create_dir_all(session_dir).map_err(|e| e.to_string())?;
         let session_file = session_dir.join("messages.json");
-        let json = serde_json::to_string_pretty(self.context.messages())
-            .map_err(|e| e.to_string())?;
+        let json =
+            serde_json::to_string_pretty(self.context.messages()).map_err(|e| e.to_string())?;
         std::fs::write(&session_file, json).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -1933,8 +2372,9 @@ impl AgentLoop {
         cancel: CancellationToken,
     ) -> Result<pipit_context::budget::CompressionStats, String> {
         let provider = self.provider().clone();
+        let session_id = self.session_id.clone();
         self.context
-            .compress(&*provider, cancel)
+            .compress_pipeline(provider, &session_id, self.memory_store.as_deref(), cancel)
             .await
             .map_err(|e| e.to_string())
     }
@@ -1981,18 +2421,10 @@ impl AgentLoop {
                     } else {
                         format!("{}\n{}", stdout, stderr)
                     };
-                    results.push((
-                        cmd.to_string(),
-                        combined,
-                        output.status.success(),
-                    ));
+                    results.push((cmd.to_string(), combined, output.status.success()));
                 }
                 Err(e) => {
-                    results.push((
-                        cmd.to_string(),
-                        format!("Failed to run: {}", e),
-                        false,
-                    ));
+                    results.push((cmd.to_string(), format!("Failed to run: {}", e), false));
                 }
             }
         }
@@ -2022,12 +2454,7 @@ pub(crate) fn summarize_tool_outcome(tool_name: &str, outcome: &ToolCallOutcome)
                 PolicyStage::PostToolUse if *mutated => "post-tool policy blocked after mutation",
                 PolicyStage::PostToolUse => "post-tool policy blocked",
             };
-            format!(
-                "{} {}: {}",
-                tool_name,
-                stage_label,
-                truncate(message, 160)
-            )
+            format!("{} {}: {}", tool_name, stage_label, truncate(message, 160))
         }
         ToolCallOutcome::Error { message } => {
             format!("{} failed: {}", tool_name, truncate(message, 160))
@@ -2042,54 +2469,49 @@ pub(crate) fn evidence_from_tool(
     call: &pipit_provider::ToolCall,
     outcome: &ToolCallOutcome,
 ) -> EvidenceArtifact {
-    if let ToolCallOutcome::PolicyBlocked {
-        stage,
-        mutated,
-        ..
-    } = outcome
-    {
+    if let ToolCallOutcome::PolicyBlocked { stage, mutated, .. } = outcome {
         return EvidenceArtifact::PolicyViolation {
             tool_name: call.tool_name.clone(),
             stage: stage.clone(),
             summary: summarize_tool_outcome(&call.tool_name, outcome),
             mutation_applied: *mutated,
-            path: call.args.get("path").and_then(|value| value.as_str()).map(str::to_string),
+            path: call
+                .args
+                .get("path")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
         };
     }
 
     let semantic_class = classify_semantically(&call.tool_name, &call.args);
 
     match semantic_class {
-        SemanticClass::Read { paths } => {
-            EvidenceArtifact::FileRead {
-                path: paths.into_iter().next(),
-                summary: summarize_tool_outcome(&call.tool_name, outcome),
-            }
-        }
-        SemanticClass::Search { .. } | SemanticClass::Pure => {
-            EvidenceArtifact::FileRead {
-                path: call.args.get("path").and_then(|v| v.as_str()).map(str::to_string),
-                summary: summarize_tool_outcome(&call.tool_name, outcome),
-            }
-        }
-        SemanticClass::Edit { paths } => {
-            EvidenceArtifact::EditApplied {
-                path: paths.into_iter().next(),
-                summary: summarize_tool_outcome(&call.tool_name, outcome),
-            }
-        }
-        SemanticClass::Exec { command } => {
-            EvidenceArtifact::CommandResult {
-                kind: classify_verification_command(&command),
-                command,
-                output: match outcome {
-                    ToolCallOutcome::Success { content, .. } => truncate(content, 240),
-                    ToolCallOutcome::PolicyBlocked { message, .. } => truncate(message, 240),
-                    ToolCallOutcome::Error { message } => truncate(message, 240),
-                },
-                success: matches!(outcome, ToolCallOutcome::Success { .. }),
-            }
-        }
+        SemanticClass::Read { paths } => EvidenceArtifact::FileRead {
+            path: paths.into_iter().next(),
+            summary: summarize_tool_outcome(&call.tool_name, outcome),
+        },
+        SemanticClass::Search { .. } | SemanticClass::Pure => EvidenceArtifact::FileRead {
+            path: call
+                .args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            summary: summarize_tool_outcome(&call.tool_name, outcome),
+        },
+        SemanticClass::Edit { paths } => EvidenceArtifact::EditApplied {
+            path: paths.into_iter().next(),
+            summary: summarize_tool_outcome(&call.tool_name, outcome),
+        },
+        SemanticClass::Exec { command } => EvidenceArtifact::CommandResult {
+            kind: classify_verification_command(&command),
+            command,
+            output: match outcome {
+                ToolCallOutcome::Success { content, .. } => truncate(content, 240),
+                ToolCallOutcome::PolicyBlocked { message, .. } => truncate(message, 240),
+                ToolCallOutcome::Error { message } => truncate(message, 240),
+            },
+            success: matches!(outcome, ToolCallOutcome::Success { .. }),
+        },
         SemanticClass::Delegate { .. } | SemanticClass::External { .. } => {
             EvidenceArtifact::ToolExecution {
                 tool_name: call.tool_name.clone(),
@@ -2120,7 +2542,10 @@ fn finalize_proof(
     let confidence = verifier.summarize_confidence(evidence, realized_edits);
     claim.confidence = confidence.clone();
     let unresolved_assumptions = verifier.unresolved_assumptions(&claim.assumptions, evidence);
-    let modified_files: Vec<String> = realized_edits.iter().map(|edit| edit.path.clone()).collect();
+    let modified_files: Vec<String> = realized_edits
+        .iter()
+        .map(|edit| edit.path.clone())
+        .collect();
     let rollback_checkpoint = governor.create_rollback_checkpoint(project_root, &modified_files);
 
     // Record implementation tiers for provenance
@@ -2301,7 +2726,10 @@ fn latest_failed_verification(evidence: &[EvidenceArtifact]) -> Option<(String, 
         } if matches!(
             kind,
             VerificationKind::Test | VerificationKind::Build | VerificationKind::RuntimeCheck
-        ) => Some((command.clone(), output.clone())),
+        ) =>
+        {
+            Some((command.clone(), output.clone()))
+        }
         _ => None,
     })
 }
@@ -2312,18 +2740,20 @@ pub(crate) async fn apply_after_tool_hook(
     outcome: ToolCallOutcome,
 ) -> ToolCallOutcome {
     match outcome {
-        ToolCallOutcome::Success { content, mutated } => match extensions.on_after_tool(tool_name, &content).await {
-            Ok(Some(note)) => ToolCallOutcome::Success {
-                content: format!("{}\n\n[Hook]\n{}", content, note),
-                mutated,
-            },
-            Ok(None) => ToolCallOutcome::Success { content, mutated },
-            Err(err) => ToolCallOutcome::PolicyBlocked {
-                message: err.to_string(),
-                stage: PolicyStage::PostToolUse,
-                mutated,
-            },
-        },
+        ToolCallOutcome::Success { content, mutated } => {
+            match extensions.on_after_tool(tool_name, &content).await {
+                Ok(Some(note)) => ToolCallOutcome::Success {
+                    content: format!("{}\n\n[Hook]\n{}", content, note),
+                    mutated,
+                },
+                Ok(None) => ToolCallOutcome::Success { content, mutated },
+                Err(err) => ToolCallOutcome::PolicyBlocked {
+                    message: err.to_string(),
+                    stage: PolicyStage::PostToolUse,
+                    mutated,
+                },
+            }
+        }
         other => other,
     }
 }
@@ -2481,7 +2911,8 @@ mod tests {
         let summary = summarize_tool_outcome(
             "edit_file",
             &ToolCallOutcome::PolicyBlocked {
-                message: "Hook blocked tool execution: post-hook rejected formatted output".to_string(),
+                message: "Hook blocked tool execution: post-hook rejected formatted output"
+                    .to_string(),
                 stage: PolicyStage::PostToolUse,
                 mutated: true,
             },
@@ -2502,7 +2933,8 @@ mod tests {
         let evidence = evidence_from_tool(
             &call,
             &ToolCallOutcome::PolicyBlocked {
-                message: "Hook blocked tool execution: formatter policy rejected change".to_string(),
+                message: "Hook blocked tool execution: formatter policy rejected change"
+                    .to_string(),
                 stage: PolicyStage::PostToolUse,
                 mutated: true,
             },
@@ -2533,12 +2965,14 @@ mod tests {
                 message: "HTTP 413 Payload Too Large".to_string(),
             }
         ));
-        assert!(is_request_too_large_error(&pipit_provider::ProviderError::Other(
-            "HTTP 413 Payload Too Large: length limit exceeded".to_string(),
-        )));
-        assert!(!is_request_too_large_error(&pipit_provider::ProviderError::Other(
-            "HTTP 500 internal error".to_string(),
-        )));
+        assert!(is_request_too_large_error(
+            &pipit_provider::ProviderError::Other(
+                "HTTP 413 Payload Too Large: length limit exceeded".to_string(),
+            )
+        ));
+        assert!(!is_request_too_large_error(
+            &pipit_provider::ProviderError::Other("HTTP 500 internal error".to_string(),)
+        ));
     }
 }
 
@@ -2551,7 +2985,11 @@ pub(crate) async fn execute_single_tool(
 ) -> ToolCallOutcome {
     let tool = match tools.get(&call.tool_name) {
         Some(t) => t,
-        None => return ToolCallOutcome::Error { message: format!("Tool not found: {}", call.tool_name) },
+        None => {
+            return ToolCallOutcome::Error {
+                message: format!("Tool not found: {}", call.tool_name),
+            };
+        }
     };
 
     let schema = tool.schema();
@@ -2564,7 +3002,10 @@ pub(crate) async fn execute_single_tool(
             if let Some(field_name) = field.as_str() {
                 if call.args.get(field_name).is_none() || call.args[field_name].is_null() {
                     return ToolCallOutcome::Error {
-                        message: format!("Missing required argument '{}' for tool '{}'", field_name, call.tool_name),
+                        message: format!(
+                            "Missing required argument '{}' for tool '{}'",
+                            field_name, call.tool_name
+                        ),
                     };
                 }
             }
@@ -2591,7 +3032,9 @@ pub(crate) async fn execute_single_tool(
                         return ToolCallOutcome::Error {
                             message: format!(
                                 "Type mismatch for '{}' in tool '{}': expected {}, got {}",
-                                prop_name, call.tool_name, expected_type,
+                                prop_name,
+                                call.tool_name,
+                                expected_type,
                                 json_type_name(arg_value)
                             ),
                         };
@@ -2624,8 +3067,8 @@ pub(crate) async fn execute_single_tool(
     if dry_run {
         let semantics = builtin_semantics(&call.tool_name);
         if semantics.needs_approval_by_purity() {
-            let args_preview = serde_json::to_string_pretty(&call.args)
-                .unwrap_or_else(|_| call.args.to_string());
+            let args_preview =
+                serde_json::to_string_pretty(&call.args).unwrap_or_else(|_| call.args.to_string());
             return ToolCallOutcome::Success {
                 content: format!(
                     "[DRY RUN] Would execute '{}' with args:\n{}",
@@ -2642,13 +3085,19 @@ pub(crate) async fn execute_single_tool(
     let args = call.args.clone();
     let execute_future = tool.execute(args, ctx, cancel);
 
-    match std::panic::AssertUnwindSafe(execute_future).catch_unwind().await {
-        Ok(Ok(result)) => ToolCallOutcome::Success { content: result.content, mutated: result.mutated },
+    match std::panic::AssertUnwindSafe(execute_future)
+        .catch_unwind()
+        .await
+    {
+        Ok(Ok(result)) => ToolCallOutcome::Success {
+            content: result.content,
+            mutated: result.mutated,
+        },
         Ok(Err(e)) => {
             let raw = e.to_string();
             let enriched = enrich_tool_error(&tool_name, &raw);
             ToolCallOutcome::Error { message: enriched }
-        },
+        }
         Err(panic_payload) => {
             let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
                 s.clone()
@@ -2659,7 +3108,10 @@ pub(crate) async fn execute_single_tool(
             };
             tracing::error!(tool = %tool_name, "Tool panicked: {}", panic_msg);
             ToolCallOutcome::Error {
-                message: format!("Tool '{}' panicked: {}. The tool crashed but the session continues.", tool_name, panic_msg),
+                message: format!(
+                    "Tool '{}' panicked: {}. The tool crashed but the session continues.",
+                    tool_name, panic_msg
+                ),
             }
         }
     }
@@ -2715,10 +3167,7 @@ fn validate_tool_semantics(
                     || path_str_normalized.starts_with("../")
                     || path_str_normalized.ends_with("/..")
                 {
-                    return Err(format!(
-                        "Path '{}' contains traversal sequences",
-                        path_str
-                    ));
+                    return Err(format!("Path '{}' contains traversal sequences", path_str));
                 }
             }
         }

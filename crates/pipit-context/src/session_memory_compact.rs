@@ -128,24 +128,23 @@ impl MemoryStore for InMemoryStore {
         let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
 
         // Score by keyword overlap (BM25-like approximation)
-        let mut scored: Vec<(usize, f32)> = entries.iter()
+        let mut scored: Vec<(usize, f32)> = entries
+            .iter()
             .enumerate()
             .filter(|(_, e)| e.session_id == session_id)
             .map(|(i, entry)| {
-                let text = format!(
-                    "{} {}",
-                    entry.summary,
-                    entry.topics.join(" ")
-                ).to_lowercase();
+                let text = format!("{} {}", entry.summary, entry.topics.join(" ")).to_lowercase();
 
-                let score: f32 = query_terms.iter()
+                let score: f32 = query_terms
+                    .iter()
                     .map(|term| {
                         let tf = text.matches(term).count() as f32;
-                        let topic_bonus = if entry.topics.iter().any(|t| t.to_lowercase().contains(term)) {
-                            3.0
-                        } else {
-                            0.0
-                        };
+                        let topic_bonus =
+                            if entry.topics.iter().any(|t| t.to_lowercase().contains(term)) {
+                                3.0
+                            } else {
+                                0.0
+                            };
                         tf.min(5.0) + topic_bonus
                     })
                     .sum();
@@ -157,7 +156,8 @@ impl MemoryStore for InMemoryStore {
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        Ok(scored.iter()
+        Ok(scored
+            .iter()
             .take(top_k)
             .map(|(i, _)| entries[*i].clone())
             .collect())
@@ -165,7 +165,8 @@ impl MemoryStore for InMemoryStore {
 
     fn list(&self, session_id: &str) -> Result<Vec<MemoryEntry>, String> {
         let entries = self.entries.lock().map_err(|e| e.to_string())?;
-        Ok(entries.iter()
+        Ok(entries
+            .iter()
             .filter(|e| e.session_id == session_id)
             .cloned()
             .collect())
@@ -184,7 +185,9 @@ impl MemoryStore for InMemoryStore {
     }
 
     fn count(&self, session_id: &str) -> usize {
-        self.entries.lock().unwrap()
+        self.entries
+            .lock()
+            .unwrap()
             .iter()
             .filter(|e| e.session_id == session_id)
             .count()
@@ -200,8 +203,15 @@ pub fn summary_to_memory(
     original_tokens: u64,
 ) -> MemoryEntry {
     let topics = extract_topics(summary);
-    let id = format!("mem_{}_{}", session_id.chars().take(8).collect::<String>(),
-        uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>());
+    let id = format!(
+        "mem_{}_{}",
+        session_id.chars().take(8).collect::<String>(),
+        uuid::Uuid::new_v4()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>()
+    );
 
     MemoryEntry {
         id,
@@ -234,10 +244,15 @@ fn extract_topics(summary: &str) -> Vec<String> {
 
     // Extract file paths (anything ending in common extensions)
     for word in summary.split_whitespace() {
-        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_');
+        let clean =
+            word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '/' && c != '_');
         if clean.contains('.')
-            && (clean.ends_with(".rs") || clean.ends_with(".py") || clean.ends_with(".ts")
-                || clean.ends_with(".js") || clean.ends_with(".toml") || clean.ends_with(".json")
+            && (clean.ends_with(".rs")
+                || clean.ends_with(".py")
+                || clean.ends_with(".ts")
+                || clean.ends_with(".js")
+                || clean.ends_with(".toml")
+                || clean.ends_with(".json")
                 || clean.ends_with(".md"))
         {
             topics.push(clean.to_string());
@@ -287,18 +302,30 @@ mod tests {
     #[test]
     fn recall_filters_by_session() {
         let store = InMemoryStore::new();
-        store.store(MemoryEntry {
-            id: "m1".into(), session_id: "s1".into(),
-            summary: "auth fix".into(), turn_range: "1-5".into(),
-            topics: vec!["auth".into()], created_at: 0,
-            original_tokens: 100, summary_tokens: 10,
-        }).unwrap();
-        store.store(MemoryEntry {
-            id: "m2".into(), session_id: "s2".into(),
-            summary: "auth fix".into(), turn_range: "1-3".into(),
-            topics: vec!["auth".into()], created_at: 0,
-            original_tokens: 100, summary_tokens: 10,
-        }).unwrap();
+        store
+            .store(MemoryEntry {
+                id: "m1".into(),
+                session_id: "s1".into(),
+                summary: "auth fix".into(),
+                turn_range: "1-5".into(),
+                topics: vec!["auth".into()],
+                created_at: 0,
+                original_tokens: 100,
+                summary_tokens: 10,
+            })
+            .unwrap();
+        store
+            .store(MemoryEntry {
+                id: "m2".into(),
+                session_id: "s2".into(),
+                summary: "auth fix".into(),
+                turn_range: "1-3".into(),
+                topics: vec!["auth".into()],
+                created_at: 0,
+                original_tokens: 100,
+                summary_tokens: 10,
+            })
+            .unwrap();
 
         let results = store.recall("s1", "auth", 5).unwrap();
         assert_eq!(results.len(), 1);
@@ -311,8 +338,11 @@ mod tests {
         let topics = extract_topics(summary);
         assert!(topics.contains(&"server.py".to_string()));
         // "server/auth.rs" is extracted as a path-like token
-        assert!(topics.iter().any(|t| t.contains("auth.rs")),
-            "Expected auth.rs in topics: {:?}", topics);
+        assert!(
+            topics.iter().any(|t| t.contains("auth.rs")),
+            "Expected auth.rs in topics: {:?}",
+            topics
+        );
     }
 
     #[test]
@@ -326,12 +356,18 @@ mod tests {
     #[test]
     fn delete_works() {
         let store = InMemoryStore::new();
-        store.store(MemoryEntry {
-            id: "m1".into(), session_id: "s1".into(),
-            summary: "test".into(), turn_range: "1-1".into(),
-            topics: vec![], created_at: 0,
-            original_tokens: 0, summary_tokens: 0,
-        }).unwrap();
+        store
+            .store(MemoryEntry {
+                id: "m1".into(),
+                session_id: "s1".into(),
+                summary: "test".into(),
+                turn_range: "1-1".into(),
+                topics: vec![],
+                created_at: 0,
+                original_tokens: 0,
+                summary_tokens: 0,
+            })
+            .unwrap();
         assert_eq!(store.count("s1"), 1);
         assert!(store.delete("m1").unwrap());
         assert_eq!(store.count("s1"), 0);

@@ -16,12 +16,12 @@
 //! └──────────────────────────────────────┘
 //! ```
 
-pub mod swim;
 pub mod crdt;
-pub mod node;
 pub mod delegation;
+pub mod node;
+pub mod swim;
 
-pub use node::{NodeDescriptor, NodeId, MeshDaemon};
-pub use swim::SwimProtocol;
 pub use crdt::{CrdtStore, LwwRegister, OrSet};
 pub use delegation::MeshDelegation;
+pub use node::{MeshDaemon, NodeDescriptor, NodeId};
+pub use swim::SwimProtocol;

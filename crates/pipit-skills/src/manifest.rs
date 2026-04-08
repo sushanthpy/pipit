@@ -276,7 +276,10 @@ impl SkillPackage {
             })?;
             (manifest, ManifestSource::Explicit)
         } else {
-            (Self::synthesize_manifest(&metadata), ManifestSource::Synthesized)
+            (
+                Self::synthesize_manifest(&metadata),
+                ManifestSource::Synthesized,
+            )
         };
 
         Ok(Self {
@@ -361,10 +364,7 @@ impl SkillPackage {
 
     /// Validate inputs against the input schema.
     /// Returns list of validation errors (empty = valid).
-    pub fn validate_inputs(
-        &self,
-        inputs: &HashMap<String, serde_json::Value>,
-    ) -> Vec<String> {
+    pub fn validate_inputs(&self, inputs: &HashMap<String, serde_json::Value>) -> Vec<String> {
         let mut errors = Vec::new();
 
         for (name, spec) in &self.manifest.inputs {

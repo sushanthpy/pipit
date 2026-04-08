@@ -7,9 +7,7 @@ use crate::store::DaemonStore;
 
 use anyhow::Result;
 use chrono::Utc;
-use pipit_channel::{
-    ChannelId, ChannelRegistry, MessageOrigin, TaskUpdate, TaskUpdateKind,
-};
+use pipit_channel::{ChannelId, ChannelRegistry, MessageOrigin, TaskUpdate, TaskUpdateKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -93,9 +91,7 @@ impl Reporter {
                     }
 
                     // Check debounce — flush if interval elapsed
-                    if state.last_flush.elapsed()
-                        >= std::time::Duration::from_millis(DEBOUNCE_MS)
-                    {
+                    if state.last_flush.elapsed() >= std::time::Duration::from_millis(DEBOUNCE_MS) {
                         let text = state.tool_log.join("\n");
                         state.last_flush = std::time::Instant::now();
                         tracing::debug!(task_id = %update.task_id, "progress: {}", text);
@@ -111,8 +107,7 @@ impl Reporter {
             } => {
                 let mut progress = self.progress.lock().await;
                 if let Some(state) = progress.get_mut(&update.task_id) {
-                    let line =
-                        format_tool_complete(&update.origin, name, *success, *duration_ms);
+                    let line = format_tool_complete(&update.origin, name, *success, *duration_ms);
                     state.tool_log.push(line);
                     while state.tool_log.len() > MAX_TOOL_LOG_LINES {
                         state.tool_log.remove(0);
@@ -136,13 +131,7 @@ impl Reporter {
                 cost,
                 files_modified,
             } => {
-                let text = format_completed(
-                    &update.origin,
-                    summary,
-                    *turns,
-                    *cost,
-                    files_modified,
-                );
+                let text = format_completed(&update.origin, summary, *turns, *cost, files_modified);
                 tracing::info!(task_id = %update.task_id, "{}", text);
 
                 // Use put_durable for terminal events
@@ -195,7 +184,11 @@ impl Reporter {
 fn format_started(origin: &MessageOrigin, project: &str, model: &str) -> String {
     match origin {
         MessageOrigin::Telegram { .. } => {
-            format!("▸ *Working on {}*\n_Model: {}_", escape_md(project), escape_md(model))
+            format!(
+                "▸ *Working on {}*\n_Model: {}_",
+                escape_md(project),
+                escape_md(model)
+            )
         }
         MessageOrigin::Discord { .. } => {
             format!("**Working on {}**\nModel: `{}`", project, model)
@@ -204,11 +197,7 @@ fn format_started(origin: &MessageOrigin, project: &str, model: &str) -> String 
     }
 }
 
-fn format_tool_start(
-    origin: &MessageOrigin,
-    name: &str,
-    args_preview: Option<&str>,
-) -> String {
+fn format_tool_start(origin: &MessageOrigin, name: &str, args_preview: Option<&str>) -> String {
     let preview = args_preview.unwrap_or("");
     match origin {
         MessageOrigin::Telegram { .. } => {
@@ -267,8 +256,11 @@ fn format_completed(
     match origin {
         MessageOrigin::Telegram { .. } => {
             format!(
-                "✓ *Done* ({} turns, ${:.4})\n{}{}", 
-                turns, cost, escape_md(summary), files_str
+                "✓ *Done* ({} turns, ${:.4})\n{}{}",
+                turns,
+                cost,
+                escape_md(summary),
+                files_str
             )
         }
         MessageOrigin::Discord { .. } => {
@@ -286,7 +278,9 @@ fn format_completed(
 
 /// Escape special characters for Telegram MarkdownV2.
 fn escape_md(s: &str) -> String {
-    let specials = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+    let specials = [
+        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    ];
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
         if specials.contains(&c) {

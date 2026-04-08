@@ -52,8 +52,11 @@ pub trait Channel: Send + Sync + 'static {
 #[async_trait]
 pub trait StreamingChannel: Channel {
     /// Send an initial progress message and return a handle for editing it.
-    async fn send_streaming(&self, origin: &MessageOrigin, initial: &str)
-        -> Result<StreamHandle, ChannelError>;
+    async fn send_streaming(
+        &self,
+        origin: &MessageOrigin,
+        initial: &str,
+    ) -> Result<StreamHandle, ChannelError>;
 }
 
 /// Channels that support thread-per-task grouping (e.g., Discord threads).
@@ -69,11 +72,7 @@ pub trait ThreadedChannel: Channel {
 /// Channels that support emoji reactions for lightweight controls.
 #[async_trait]
 pub trait ReactiveChannel: Channel {
-    async fn add_reaction(
-        &self,
-        origin: &MessageOrigin,
-        emoji: &str,
-    ) -> Result<(), ChannelError>;
+    async fn add_reaction(&self, origin: &MessageOrigin, emoji: &str) -> Result<(), ChannelError>;
 
     async fn remove_reaction(
         &self,
@@ -111,7 +110,10 @@ impl ChannelRegistry {
 
     /// Iterate over all registered channels.
     pub fn all(&self) -> Vec<std::sync::Arc<dyn Channel>> {
-        self.channels.iter().map(|entry| entry.value().clone()).collect()
+        self.channels
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// List all registered channel IDs.

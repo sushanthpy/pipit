@@ -55,22 +55,38 @@ where
             }
             // Try parsing as JSON array of strings
             if let Ok(strings) = serde_json::from_str::<Vec<String>>(s) {
-                return Ok(strings.into_iter().map(|desc| PlanStep {
-                    description: desc,
-                    status: TaskStatus::NotStarted,
-                }).collect());
+                return Ok(strings
+                    .into_iter()
+                    .map(|desc| PlanStep {
+                        description: desc,
+                        status: TaskStatus::NotStarted,
+                    })
+                    .collect());
             }
             // Fall back: split by newlines
             Ok(s.lines()
                 .filter(|l| !l.trim().is_empty())
                 .map(|l| PlanStep {
-                    description: l.trim().trim_start_matches(|c: char| c == '-' || c == '*' || c == '•' || c.is_ascii_digit() || c == '.' || c == ')').trim().to_string(),
+                    description: l
+                        .trim()
+                        .trim_start_matches(|c: char| {
+                            c == '-'
+                                || c == '*'
+                                || c == '•'
+                                || c.is_ascii_digit()
+                                || c == '.'
+                                || c == ')'
+                        })
+                        .trim()
+                        .to_string(),
                     status: TaskStatus::NotStarted,
                 })
                 .collect())
         }
         serde_json::Value::Null => Ok(Vec::new()),
-        _ => Err(Error::custom("plan must be an array, a JSON string, or null")),
+        _ => Err(Error::custom(
+            "plan must be an array, a JSON string, or null",
+        )),
     }
 }
 
@@ -135,19 +151,14 @@ pub enum TaskInput {
         notes: Option<String>,
     },
     /// Get a task by ID.
-    Get {
-        id: String,
-    },
+    Get { id: String },
     /// List tasks with optional filter.
     List {
         #[serde(default)]
         filter: TaskFilter,
     },
     /// Stop/cancel a task.
-    Stop {
-        id: String,
-        reason: String,
-    },
+    Stop { id: String, reason: String },
     /// Append output to a task.
     Output {
         id: String,
@@ -222,10 +233,17 @@ impl TypedTool for UnifiedTaskTool {
         _ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<TypedToolResult, ToolError> {
-        let mut store = self.store.lock().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         match input {
-            TaskInput::Create { title, plan, parent } => {
+            TaskInput::Create {
+                title,
+                plan,
+                parent,
+            } => {
                 store.next_id += 1;
                 let id = format!("task_{}", store.next_id);
                 let task = Task {
@@ -245,7 +263,9 @@ impl TypedTool for UnifiedTaskTool {
             }
 
             TaskInput::Update { id, status, notes } => {
-                let task = store.tasks.get_mut(&id)
+                let task = store
+                    .tasks
+                    .get_mut(&id)
                     .ok_or_else(|| ToolError::InvalidArgs(format!("Task not found: {id}")))?;
                 if let Some(s) = status {
                     task.status = s;
@@ -259,28 +279,44 @@ impl TypedTool for UnifiedTaskTool {
             }
 
             TaskInput::Get { id } => {
-                let task = store.tasks.get(&id)
+                let task = store
+                    .tasks
+                    .get(&id)
                     .ok_or_else(|| ToolError::InvalidArgs(format!("Task not found: {id}")))?;
-                let json = serde_json::to_string_pretty(task)
-                    .unwrap_or_else(|_| format!("Task {id}"));
+                let json =
+                    serde_json::to_string_pretty(task).unwrap_or_else(|_| format!("Task {id}"));
                 Ok(TypedToolResult::text(json))
             }
 
             TaskInput::List { filter } => {
-                let tasks: Vec<&Task> = store.tasks.values()
+                let tasks: Vec<&Task> = store
+                    .tasks
+                    .values()
                     .filter(|t| {
                         if let Some(ref status) = filter.status {
-                            if t.status != *status { return false; }
+                            if t.status != *status {
+                                return false;
+                            }
                         }
                         if let Some(ref parent) = filter.parent {
-                            if t.parent.as_deref() != Some(parent.as_str()) { return false; }
+                            if t.parent.as_deref() != Some(parent.as_str()) {
+                                return false;
+                            }
                         }
                         true
                     })
                     .collect();
 
-                let summary = tasks.iter()
-                    .map(|t| format!("[{}] {} ({})", t.id, t.title, format!("{:?}", t.status).to_lowercase()))
+                let summary = tasks
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "[{}] {} ({})",
+                            t.id,
+                            t.title,
+                            format!("{:?}", t.status).to_lowercase()
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
 
@@ -292,15 +328,25 @@ impl TypedTool for UnifiedTaskTool {
             }
 
             TaskInput::Stop { id, reason } => {
-                let task = store.tasks.get_mut(&id)
+                let task = store
+                    .tasks
+                    .get_mut(&id)
                     .ok_or_else(|| ToolError::InvalidArgs(format!("Task not found: {id}")))?;
                 task.status = TaskStatus::Cancelled;
                 task.notes = format!("{}\nStopped: {}", task.notes, reason);
-                Ok(TypedToolResult::mutating(format!("Stopped task {id}: {reason}")))
+                Ok(TypedToolResult::mutating(format!(
+                    "Stopped task {id}: {reason}"
+                )))
             }
 
-            TaskInput::Output { id, output, is_final } => {
-                let task = store.tasks.get_mut(&id)
+            TaskInput::Output {
+                id,
+                output,
+                is_final,
+            } => {
+                let task = store
+                    .tasks
+                    .get_mut(&id)
                     .ok_or_else(|| ToolError::InvalidArgs(format!("Task not found: {id}")))?;
                 task.output.push(output.clone());
                 if is_final {
@@ -326,21 +372,31 @@ mod tests {
         let ctx = ToolContext::new(PathBuf::from("/tmp"), pipit_config::ApprovalMode::FullAuto);
         let cancel = CancellationToken::new();
 
-        let result = tool.execute(
-            TaskInput::Create {
-                title: "Test task".into(),
-                plan: vec![],
-                parent: None,
-            },
-            &ctx, cancel.clone(),
-        ).await.unwrap();
+        let result = tool
+            .execute(
+                TaskInput::Create {
+                    title: "Test task".into(),
+                    plan: vec![],
+                    parent: None,
+                },
+                &ctx,
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
         assert!(result.mutated);
         assert!(result.content.contains("task_1"));
 
-        let result = tool.execute(
-            TaskInput::Get { id: "task_1".into() },
-            &ctx, cancel,
-        ).await.unwrap();
+        let result = tool
+            .execute(
+                TaskInput::Get {
+                    id: "task_1".into(),
+                },
+                &ctx,
+                cancel,
+            )
+            .await
+            .unwrap();
         assert!(result.content.contains("Test task"));
     }
 }

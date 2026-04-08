@@ -8,10 +8,8 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::pev::{ModelRouter, ModelRole, PlanSpec, planner_system_prompt};
-use crate::planner::{
-    CandidatePlan, PlanSource, PlanStrategy, Planner, StrategyKind,
-};
+use crate::pev::{ModelRole, ModelRouter, PlanSpec, planner_system_prompt};
+use crate::planner::{CandidatePlan, PlanSource, PlanStrategy, Planner, StrategyKind};
 use crate::proof::{ConfidenceReport, EvidenceArtifact, Objective, VerificationStep};
 use pipit_provider::{CompletionRequest, ContentBlock, ContentEvent, LlmProvider, Message, Role};
 use std::sync::Arc;
@@ -67,7 +65,8 @@ impl LlmPlanner {
         let files_score = (spec.files_to_read.len().min(5) as f32) / 5.0;
         let invariants_score = (spec.invariants.len().min(5) as f32) / 5.0;
         let verification_score = (spec.verification_steps.len().min(5) as f32) / 5.0;
-        let expected_value = 0.5 + 0.1 * files_score + 0.1 * invariants_score + 0.1 * verification_score;
+        let expected_value =
+            0.5 + 0.1 * files_score + 0.1 * invariants_score + 0.1 * verification_score;
 
         // Strategy mapping from LLM strategy description
         let strategy = classify_strategy(&spec.strategy);
@@ -94,10 +93,7 @@ impl LlmPlanner {
 
     /// Synchronous plan generation for the trait implementation.
     /// Since the trait is not async, we use tokio::runtime::Handle to block.
-    fn generate_plan_blocking(
-        &self,
-        objective: &Objective,
-    ) -> Option<CandidatePlan> {
+    fn generate_plan_blocking(&self, objective: &Objective) -> Option<CandidatePlan> {
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(h) => h,
             Err(_) => return None,
@@ -146,13 +142,25 @@ fn classify_strategy(description: &str) -> StrategyKind {
     let lower = description.to_ascii_lowercase();
     if lower.contains("minimal") || lower.contains("patch") || lower.contains("surgical") {
         StrategyKind::MinimalPatch
-    } else if lower.contains("root cause") || lower.contains("debug") || lower.contains("investigate") {
+    } else if lower.contains("root cause")
+        || lower.contains("debug")
+        || lower.contains("investigate")
+    {
         StrategyKind::RootCauseRepair
-    } else if lower.contains("architectural") || lower.contains("refactor") || lower.contains("restructur") {
+    } else if lower.contains("architectural")
+        || lower.contains("refactor")
+        || lower.contains("restructur")
+    {
         StrategyKind::ArchitecturalRepair
-    } else if lower.contains("diagnostic") || lower.contains("analyze") || lower.contains("read-only") {
+    } else if lower.contains("diagnostic")
+        || lower.contains("analyze")
+        || lower.contains("read-only")
+    {
         StrategyKind::DiagnosticOnly
-    } else if lower.contains("characteriz") || lower.contains("test first") || lower.contains("baseline") {
+    } else if lower.contains("characteriz")
+        || lower.contains("test first")
+        || lower.contains("baseline")
+    {
         StrategyKind::CharacterizationFirst
     } else {
         StrategyKind::RootCauseRepair // Default for LLM plans
@@ -167,7 +175,9 @@ impl PlanStrategy for LlmPlanner {
         evidence: &[EvidenceArtifact],
     ) -> Vec<CandidatePlan> {
         // Start with heuristic baseline
-        let mut plans = self.heuristic.candidate_plans_with_evidence(objective, confidence, evidence);
+        let mut plans = self
+            .heuristic
+            .candidate_plans_with_evidence(objective, confidence, evidence);
 
         // Try LLM-generated plan
         match self.generate_plan_blocking(objective) {
@@ -181,7 +191,9 @@ impl PlanStrategy for LlmPlanner {
                 plans.insert(0, llm_plan);
             }
             None => {
-                tracing::warn!("LLM planner failed to produce a valid plan, using heuristic fallback");
+                tracing::warn!(
+                    "LLM planner failed to produce a valid plan, using heuristic fallback"
+                );
             }
         }
 

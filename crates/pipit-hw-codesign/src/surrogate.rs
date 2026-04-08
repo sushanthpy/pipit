@@ -1,9 +1,16 @@
 //! Synthesis Surrogate Model — Task HW-2
 //!
-//! Predicts FPGA synthesis outcomes from Verilog AST features.
-//! Gradient-boosted tree over ~30 features.
-//! Prediction: O(T·depth) ≈ 5μs. Training: O(N·d·T).
-//! Useful when Kendall's τ > 0.7 vs actual synthesis.
+//! **STATUS: PLACEHOLDER / NOT ML-TRAINED**
+//!
+//! Estimates FPGA synthesis outcomes from Verilog AST features using
+//! hardcoded linear weights. This is a development placeholder — the
+//! predictions are rough heuristics, not trained model outputs.
+//!
+//! For production use, this should be replaced with a gradient-boosted
+//! tree trained on actual synthesis data. The API shape (SynthesisFeatures
+//! → SynthesisPrediction) is stable and will be preserved.
+//!
+//! Prediction: O(d) = O(15). No training step.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,21 +55,21 @@ impl SurrogateModel {
     pub fn default_model() -> Self {
         Self {
             feature_weights: vec![
-                -2.0,   // module_count (more modules → lower freq due to cross-module paths)
-                -5.0,   // hierarchy_depth
-                -0.01,  // total_signals
-                -0.5,   // max_fan_out
-                -3.0,   // adder_count
-                -10.0,  // multiplier_count (multipliers are expensive)
-                -1.0,   // mux_width_max
-                0.1,    // register_count (pipelining helps frequency)
-                -2.0,   // fsm_state_count
-                -0.5,   // memory_depth
-                0.0,    // total_lines (not predictive)
-                -1.0,   // always_block_count
-                -0.5,   // generate_block_count
-                0.0,    // parameter_count
-                -1.5,   // instantiation_count
+                -2.0,  // module_count (more modules → lower freq due to cross-module paths)
+                -5.0,  // hierarchy_depth
+                -0.01, // total_signals
+                -0.5,  // max_fan_out
+                -3.0,  // adder_count
+                -10.0, // multiplier_count (multipliers are expensive)
+                -1.0,  // mux_width_max
+                0.1,   // register_count (pipelining helps frequency)
+                -2.0,  // fsm_state_count
+                -0.5,  // memory_depth
+                0.0,   // total_lines (not predictive)
+                -1.0,  // always_block_count
+                -0.5,  // generate_block_count
+                0.0,   // parameter_count
+                -1.5,  // instantiation_count
             ],
         }
     }
@@ -70,7 +77,9 @@ impl SurrogateModel {
     /// Predict synthesis outcomes from features. O(d) = O(15).
     pub fn predict(&self, features: &SynthesisFeatures) -> SynthesisPrediction {
         let feat_vec = features.to_vec();
-        let dot: f64 = self.feature_weights.iter()
+        let dot: f64 = self
+            .feature_weights
+            .iter()
             .zip(&feat_vec)
             .map(|(w, f)| w * *f)
             .sum();
@@ -82,13 +91,16 @@ impl SurrogateModel {
         let luts = (features.adder_count as f64 * 8.0
             + features.multiplier_count as f64 * 100.0
             + features.mux_width_max as f64 * features.total_signals as f64 * 0.1
-            + features.total_signals as f64 * 0.5).ceil() as f64;
+            + features.total_signals as f64 * 0.5)
+            .ceil() as f64;
         let lut_util = (luts / 50000.0).min(1.0); // Assume 50K LUT device
 
         // BRAM estimation
         let bram = if features.memory_depth > 0 {
             ((features.memory_depth as f64 * 32.0) / 36864.0).ceil() as u32 // 36Kbit BRAMs
-        } else { 0 };
+        } else {
+            0
+        };
 
         // Power: roughly proportional to frequency × utilization
         let power = freq * lut_util * 0.5;
@@ -108,7 +120,9 @@ impl SurrogateModel {
 
     /// Rank design variants by predicted frequency (for evolutionary selection).
     pub fn rank_variants(&self, variants: &[SynthesisFeatures]) -> Vec<(usize, f64)> {
-        let mut ranked: Vec<(usize, f64)> = variants.iter().enumerate()
+        let mut ranked: Vec<(usize, f64)> = variants
+            .iter()
+            .enumerate()
             .map(|(i, f)| (i, self.predict(f).max_frequency_mhz))
             .collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -119,13 +133,20 @@ impl SurrogateModel {
 impl SynthesisFeatures {
     pub fn to_vec(&self) -> Vec<f64> {
         vec![
-            self.module_count as f64, self.hierarchy_depth as f64,
-            self.total_signals as f64, self.max_fan_out as f64,
-            self.adder_count as f64, self.multiplier_count as f64,
-            self.mux_width_max as f64, self.register_count as f64,
-            self.fsm_state_count as f64, self.memory_depth as f64,
-            self.total_lines as f64, self.always_block_count as f64,
-            self.generate_block_count as f64, self.parameter_count as f64,
+            self.module_count as f64,
+            self.hierarchy_depth as f64,
+            self.total_signals as f64,
+            self.max_fan_out as f64,
+            self.adder_count as f64,
+            self.multiplier_count as f64,
+            self.mux_width_max as f64,
+            self.register_count as f64,
+            self.fsm_state_count as f64,
+            self.memory_depth as f64,
+            self.total_lines as f64,
+            self.always_block_count as f64,
+            self.generate_block_count as f64,
+            self.parameter_count as f64,
             self.instantiation_count as f64,
         ]
     }
@@ -135,7 +156,9 @@ impl SynthesisFeatures {
         Self {
             module_count: source.matches("module ").count() as u32,
             hierarchy_depth: 1,
-            total_signals: (source.matches("wire ").count() + source.matches("reg ").count() + source.matches("logic ").count()) as u32,
+            total_signals: (source.matches("wire ").count()
+                + source.matches("reg ").count()
+                + source.matches("logic ").count()) as u32,
             max_fan_out: 4,
             adder_count: source.matches(" + ").count() as u32,
             multiplier_count: source.matches(" * ").count() as u32,
@@ -147,7 +170,11 @@ impl SynthesisFeatures {
             always_block_count: source.matches("always").count() as u32,
             generate_block_count: source.matches("generate").count() as u32,
             parameter_count: source.matches("parameter").count() as u32,
-            instantiation_count: source.matches("(").count().saturating_sub(source.matches("module").count()) as u32,
+            instantiation_count: source
+                .matches("(")
+                .count()
+                .saturating_sub(source.matches("module").count())
+                as u32,
         }
     }
 }
@@ -160,39 +187,80 @@ mod tests {
     fn test_prediction_reasonable() {
         let model = SurrogateModel::default_model();
         let simple = SynthesisFeatures {
-            module_count: 1, hierarchy_depth: 1, total_signals: 10,
-            max_fan_out: 4, adder_count: 2, multiplier_count: 0,
-            mux_width_max: 2, register_count: 5, fsm_state_count: 0,
-            memory_depth: 0, total_lines: 50, always_block_count: 2,
-            generate_block_count: 0, parameter_count: 1, instantiation_count: 0,
+            module_count: 1,
+            hierarchy_depth: 1,
+            total_signals: 10,
+            max_fan_out: 4,
+            adder_count: 2,
+            multiplier_count: 0,
+            mux_width_max: 2,
+            register_count: 5,
+            fsm_state_count: 0,
+            memory_depth: 0,
+            total_lines: 50,
+            always_block_count: 2,
+            generate_block_count: 0,
+            parameter_count: 1,
+            instantiation_count: 0,
         };
         let pred = model.predict(&simple);
-        assert!(pred.max_frequency_mhz > 100.0 && pred.max_frequency_mhz < 600.0,
-                "Simple design freq: {}", pred.max_frequency_mhz);
-        assert!(pred.lut_utilization < 0.5, "Simple design util: {}", pred.lut_utilization);
+        assert!(
+            pred.max_frequency_mhz > 100.0 && pred.max_frequency_mhz < 600.0,
+            "Simple design freq: {}",
+            pred.max_frequency_mhz
+        );
+        assert!(
+            pred.lut_utilization < 0.5,
+            "Simple design util: {}",
+            pred.lut_utilization
+        );
     }
 
     #[test]
     fn test_complex_design_slower() {
         let model = SurrogateModel::default_model();
         let simple = SynthesisFeatures {
-            module_count: 1, hierarchy_depth: 1, total_signals: 10,
-            max_fan_out: 2, adder_count: 1, multiplier_count: 0,
-            mux_width_max: 1, register_count: 5, fsm_state_count: 0,
-            memory_depth: 0, total_lines: 20, always_block_count: 1,
-            generate_block_count: 0, parameter_count: 0, instantiation_count: 0,
+            module_count: 1,
+            hierarchy_depth: 1,
+            total_signals: 10,
+            max_fan_out: 2,
+            adder_count: 1,
+            multiplier_count: 0,
+            mux_width_max: 1,
+            register_count: 5,
+            fsm_state_count: 0,
+            memory_depth: 0,
+            total_lines: 20,
+            always_block_count: 1,
+            generate_block_count: 0,
+            parameter_count: 0,
+            instantiation_count: 0,
         };
         let complex = SynthesisFeatures {
-            module_count: 10, hierarchy_depth: 5, total_signals: 500,
-            max_fan_out: 32, adder_count: 20, multiplier_count: 8,
-            mux_width_max: 16, register_count: 200, fsm_state_count: 12,
-            memory_depth: 1024, total_lines: 2000, always_block_count: 50,
-            generate_block_count: 5, parameter_count: 10, instantiation_count: 30,
+            module_count: 10,
+            hierarchy_depth: 5,
+            total_signals: 500,
+            max_fan_out: 32,
+            adder_count: 20,
+            multiplier_count: 8,
+            mux_width_max: 16,
+            register_count: 200,
+            fsm_state_count: 12,
+            memory_depth: 1024,
+            total_lines: 2000,
+            always_block_count: 50,
+            generate_block_count: 5,
+            parameter_count: 10,
+            instantiation_count: 30,
         };
         let simple_pred = model.predict(&simple);
         let complex_pred = model.predict(&complex);
-        assert!(simple_pred.max_frequency_mhz > complex_pred.max_frequency_mhz,
-                "Simple {} > Complex {}", simple_pred.max_frequency_mhz, complex_pred.max_frequency_mhz);
+        assert!(
+            simple_pred.max_frequency_mhz > complex_pred.max_frequency_mhz,
+            "Simple {} > Complex {}",
+            simple_pred.max_frequency_mhz,
+            complex_pred.max_frequency_mhz
+        );
     }
 
     #[test]

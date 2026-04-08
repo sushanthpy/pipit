@@ -77,7 +77,10 @@ impl TypedTool for PlanModeTool {
         match input {
             PlanModeInput::Enter { plan } => {
                 let msg = if let Some(p) = plan {
-                    format!("Entered plan mode.\n\nPlan:\n{}\n\nI will only read files and discuss approach — no edits until plan mode is exited.", p)
+                    format!(
+                        "Entered plan mode.\n\nPlan:\n{}\n\nI will only read files and discuss approach — no edits until plan mode is exited.",
+                        p
+                    )
                 } else {
                     "Entered plan mode. I will only read files and discuss approach — no edits until plan mode is exited.".into()
                 };
@@ -85,7 +88,10 @@ impl TypedTool for PlanModeTool {
             }
             PlanModeInput::Exit { summary } => {
                 let msg = if let Some(s) = summary {
-                    format!("Exited plan mode. Summary: {}\n\nResuming normal editing mode.", s)
+                    format!(
+                        "Exited plan mode. Summary: {}\n\nResuming normal editing mode.",
+                        s
+                    )
                 } else {
                     "Exited plan mode. Resuming normal editing mode.".into()
                 };
@@ -131,7 +137,8 @@ pub struct WorktreeTool;
 impl TypedTool for WorktreeTool {
     type Input = WorktreeInput;
     const NAME: &'static str = "worktree";
-    const CAPABILITIES: CapabilitySet = CapabilitySet(CapabilitySet::FS_WRITE.0 | CapabilitySet::PROCESS_EXEC.0);
+    const CAPABILITIES: CapabilitySet =
+        CapabilitySet(CapabilitySet::FS_WRITE.0 | CapabilitySet::PROCESS_EXEC.0);
     const PURITY: Purity = Purity::Mutating;
 
     fn describe() -> ToolCard {
@@ -178,16 +185,22 @@ impl TypedTool for WorktreeTool {
                     .current_dir(root)
                     .output()
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("git worktree add failed: {e}")))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("git worktree add failed: {e}"))
+                    })?;
 
                 if output.status.success() {
                     Ok(TypedToolResult::mutating(format!(
                         "Created worktree '{}' at {} (based on {})",
-                        name, wt_path.display(), base
+                        name,
+                        wt_path.display(),
+                        base
                     )))
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(ToolError::ExecutionFailed(format!("git worktree add failed: {stderr}")))
+                    Err(ToolError::ExecutionFailed(format!(
+                        "git worktree add failed: {stderr}"
+                    )))
                 }
             }
 
@@ -198,27 +211,39 @@ impl TypedTool for WorktreeTool {
                     .current_dir(root)
                     .output()
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("git worktree list failed: {e}")))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("git worktree list failed: {e}"))
+                    })?;
 
                 let list_output = String::from_utf8_lossy(&check.stdout);
                 let wt_path = root.join(format!("../.pipit-worktrees/{}", name));
                 let wt_path_str = wt_path.to_string_lossy();
 
                 // Check both git's record and filesystem
-                let in_git = list_output.lines().any(|l| l.starts_with("worktree ") && l.contains(&*wt_path_str));
+                let in_git = list_output
+                    .lines()
+                    .any(|l| l.starts_with("worktree ") && l.contains(&*wt_path_str));
                 let on_disk = wt_path.exists();
 
                 if in_git || on_disk {
                     // Persist CWD change for session resume
                     let session_dir = root.join(".pipit").join("sessions").join("latest");
                     if session_dir.exists() {
-                        let _ = std::fs::write(session_dir.join("cwd"), wt_path.to_string_lossy().as_bytes());
+                        let _ = std::fs::write(
+                            session_dir.join("cwd"),
+                            wt_path.to_string_lossy().as_bytes(),
+                        );
                     }
                     ctx.set_cwd(wt_path.clone());
-                    Ok(TypedToolResult::mutating(format!("Switched to worktree '{name}' at {}", wt_path.display())))
+                    Ok(TypedToolResult::mutating(format!(
+                        "Switched to worktree '{name}' at {}",
+                        wt_path.display()
+                    )))
                 } else {
                     Err(ToolError::InvalidArgs(format!(
-                        "Worktree '{}' not found (checked git records and {})", name, wt_path.display()
+                        "Worktree '{}' not found (checked git records and {})",
+                        name,
+                        wt_path.display()
                     )))
                 }
             }
@@ -229,10 +254,14 @@ impl TypedTool for WorktreeTool {
                     .current_dir(root)
                     .output()
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("git worktree remove failed: {e}")))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("git worktree remove failed: {e}"))
+                    })?;
 
                 if output.status.success() {
-                    Ok(TypedToolResult::mutating(format!("Removed worktree '{name}'")))
+                    Ok(TypedToolResult::mutating(format!(
+                        "Removed worktree '{name}'"
+                    )))
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     Err(ToolError::ExecutionFailed(format!("Failed: {stderr}")))
@@ -245,7 +274,9 @@ impl TypedTool for WorktreeTool {
                     .current_dir(root)
                     .output()
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("git worktree list failed: {e}")))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("git worktree list failed: {e}"))
+                    })?;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 Ok(TypedToolResult::text(if stdout.is_empty() {

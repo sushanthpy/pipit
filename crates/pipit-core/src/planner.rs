@@ -10,6 +10,9 @@ pub enum StrategyKind {
     ArchitecturalRepair,
     DiagnosticOnly,
     CharacterizationFirst,
+    /// Greenfield: build from scratch. Prioritizes throughput over verification.
+    /// Selected when the workspace is empty or the objective is to create a new project.
+    Greenfield,
 }
 
 /// Provenance of a plan — distinguishes heuristic from LLM-generated plans.
@@ -156,15 +159,40 @@ impl Planner {
         evidence: &[EvidenceArtifact],
     ) -> Vec<CandidatePlan> {
         let statement = objective.statement.to_ascii_lowercase();
-        let mentions_refactor = statement.contains("refactor") || statement.contains("architecture");
+        let mentions_refactor =
+            statement.contains("refactor") || statement.contains("architecture");
         let mentions_verify = statement.contains("verify") || statement.contains("test");
-        let mentions_fix = statement.contains("fix") || statement.contains("bug") || statement.contains("correct");
+        let mentions_fix =
+            statement.contains("fix") || statement.contains("bug") || statement.contains("correct");
         let verification_heavy = mentions_verify
             || statement.contains("both documented cases")
             || statement.contains("documented behavior")
             || statement.contains("example")
             || statement.contains("regression");
         let failed_verification_streak = repeated_failed_verifications(evidence);
+
+        // Detect greenfield/build-from-scratch intent
+        let mentions_build = statement.contains("build")
+            || statement.contains("create")
+            || statement.contains("implement")
+            || statement.contains("scaffold")
+            || statement.contains("generate")
+            || statement.contains("set up")
+            || statement.contains("setup")
+            || statement.contains("bootstrap")
+            || statement.contains("new project")
+            || statement.contains("from scratch");
+        let mentions_website = statement.contains("website")
+            || statement.contains("web app")
+            || statement.contains("application")
+            || statement.contains("api")
+            || statement.contains("frontend")
+            || statement.contains("backend")
+            || statement.contains("full-stack")
+            || statement.contains("fullstack");
+        // A greenfield task is one that builds something new rather than fixing existing code.
+        // No evidence at start = empty workspace, combined with build/create intent.
+        let is_greenfield = mentions_build && !mentions_fix && evidence.is_empty();
         let pivot_to_characterization = failed_verification_streak >= 2;
 
         let mut plans = Vec::new();
@@ -201,7 +229,9 @@ impl Planner {
 
         plans.push(CandidatePlan {
             strategy: StrategyKind::RootCauseRepair,
-            rationale: "Spend additional effort to understand the underlying failure mode before editing.".to_string(),
+            rationale:
+                "Spend additional effort to understand the underlying failure mode before editing."
+                    .to_string(),
             // Only boost RootCauseRepair when there IS evidence of a problem
             // (failed tests, errors, etc.) but confidence remains low.
             // At the start of a task, zero confidence is normal.
@@ -213,10 +243,14 @@ impl Planner {
             estimated_cost: 0.45,
             verification_plan: vec![
                 VerificationStep {
-                    description: "Read the relevant implementation and documentation before mutating.".to_string(),
+                    description:
+                        "Read the relevant implementation and documentation before mutating."
+                            .to_string(),
                 },
                 VerificationStep {
-                    description: "Verify behavior with a runtime command or focused test after the change.".to_string(),
+                    description:
+                        "Verify behavior with a runtime command or focused test after the change."
+                            .to_string(),
                 },
             ],
             plan_source: PlanSource::Heuristic,
@@ -270,7 +304,9 @@ impl Planner {
 
         plans.push(CandidatePlan {
             strategy: StrategyKind::DiagnosticOnly,
-            rationale: "If confidence stays too low, stop mutation and return evidence plus options.".to_string(),
+            rationale:
+                "If confidence stays too low, stop mutation and return evidence plus options."
+                    .to_string(),
             // DiagnosticOnly should score high only when the agent has been running
             // (evidence exists) but confidence is still low. At the start of a task
             // (no evidence), zero confidence is normal and shouldn't trigger diagnostic mode.
@@ -285,10 +321,29 @@ impl Planner {
             },
             estimated_cost: 0.15,
             verification_plan: vec![VerificationStep {
-                description: "Collect evidence without mutating if the state remains too uncertain.".to_string(),
+                description:
+                    "Collect evidence without mutating if the state remains too uncertain."
+                        .to_string(),
             }],
             plan_source: PlanSource::Heuristic,
         });
+
+        // Greenfield strategy: highest priority when building from scratch.
+        // Score is set to dominate all other strategies when greenfield intent
+        // is detected, because patching/diagnosing/characterizing are all wrong
+        // when there's no existing code to work with.
+        if is_greenfield {
+            plans.push(CandidatePlan {
+                strategy: StrategyKind::Greenfield,
+                rationale: "Build from scratch — prioritize throughput and structure creation over verification.".to_string(),
+                expected_value: 0.92,
+                estimated_cost: 0.10, // Low cost = high net score, dominates MinimalPatch
+                verification_plan: vec![VerificationStep {
+                    description: "Verify the project builds and runs after all files are created.".to_string(),
+                }],
+                plan_source: PlanSource::Heuristic,
+            });
+        }
 
         plans.sort_by(|a, b| {
             let a_score = a.expected_value - a.estimated_cost;
@@ -472,8 +527,13 @@ impl AdaptiveScorer {
     pub fn new() -> Self {
         let mut strategies = std::collections::HashMap::new();
         // Initialize with Beta(1,1) uniform prior for each strategy
-        for kind in &["MinimalPatch", "RootCauseRepair", "ArchitecturalRepair",
-                       "DiagnosticOnly", "CharacterizationFirst"] {
+        for kind in &[
+            "MinimalPatch",
+            "RootCauseRepair",
+            "ArchitecturalRepair",
+            "DiagnosticOnly",
+            "CharacterizationFirst",
+        ] {
             strategies.insert(kind.to_string(), (1.0, 1.0));
         }
         Self { strategies }
@@ -521,10 +581,7 @@ impl AdaptiveScorer {
 
 /// Generate an autonomous remediation task from health metrics.
 /// Called by the health monitor when H(t) < threshold.
-pub fn generate_remediation_plan(
-    health_prompt: &str,
-    scorer: &AdaptiveScorer,
-) -> CandidatePlan {
+pub fn generate_remediation_plan(health_prompt: &str, scorer: &AdaptiveScorer) -> CandidatePlan {
     let objective = Objective::from_prompt(health_prompt);
     let planner = Planner;
     let confidence = ConfidenceReport::default();
@@ -565,29 +622,61 @@ pub fn is_question_task(prompt: &str) -> bool {
 
     // Starts with a question word
     const QUESTION_STARTERS: &[&str] = &[
-        "what ", "what's ", "whats ",
-        "how ", "how's ",
-        "why ", "where ", "when ", "which ",
-        "who ", "whom ",
-        "can you explain", "could you explain",
-        "explain ", "describe ",
-        "tell me", "show me",
-        "is there", "are there",
-        "does ", "do you know",
-        "what is", "what are",
-        "how do ", "how does ",
-        "how can ", "how should ",
-        "what do ", "what does ",
+        "what ",
+        "what's ",
+        "whats ",
+        "how ",
+        "how's ",
+        "why ",
+        "where ",
+        "when ",
+        "which ",
+        "who ",
+        "whom ",
+        "can you explain",
+        "could you explain",
+        "explain ",
+        "describe ",
+        "tell me",
+        "show me",
+        "is there",
+        "are there",
+        "does ",
+        "do you know",
+        "what is",
+        "what are",
+        "how do ",
+        "how does ",
+        "how can ",
+        "how should ",
+        "what do ",
+        "what does ",
     ];
 
     if QUESTION_STARTERS.iter().any(|q| trimmed.starts_with(q)) {
         // Check for action verbs that override the question form
         // e.g., "can you fix the bug" is a task, not a question
         const TASK_VERBS_IN_QUESTIONS: &[&str] = &[
-            "fix", "add", "create", "write", "edit", "change",
-            "update", "refactor", "implement", "build", "delete",
-            "remove", "modify", "replace", "move", "rename",
-            "install", "deploy", "configure", "set up",
+            "fix",
+            "add",
+            "create",
+            "write",
+            "edit",
+            "change",
+            "update",
+            "refactor",
+            "implement",
+            "build",
+            "delete",
+            "remove",
+            "modify",
+            "replace",
+            "move",
+            "rename",
+            "install",
+            "deploy",
+            "configure",
+            "set up",
         ];
 
         if TASK_VERBS_IN_QUESTIONS.iter().any(|v| trimmed.contains(v)) {
@@ -601,16 +690,37 @@ pub fn is_question_task(prompt: &str) -> bool {
     let word_count = trimmed.split_whitespace().count();
     if word_count <= 8 {
         const ACTION_WORDS: &[&str] = &[
-            "fix", "add", "create", "write", "edit", "change",
-            "update", "refactor", "implement", "build", "delete",
-            "remove", "modify", "replace", "move", "rename",
-            "install", "deploy", "run", "execute", "test",
-            "debug", "optimize", "migrate", "convert",
+            "fix",
+            "add",
+            "create",
+            "write",
+            "edit",
+            "change",
+            "update",
+            "refactor",
+            "implement",
+            "build",
+            "delete",
+            "remove",
+            "modify",
+            "replace",
+            "move",
+            "rename",
+            "install",
+            "deploy",
+            "run",
+            "execute",
+            "test",
+            "debug",
+            "optimize",
+            "migrate",
+            "convert",
         ];
 
-        if !ACTION_WORDS.iter().any(|w| {
-            trimmed.split_whitespace().any(|token| token == *w)
-        }) {
+        if !ACTION_WORDS
+            .iter()
+            .any(|w| trimmed.split_whitespace().any(|token| token == *w))
+        {
             return true;
         }
     }
@@ -660,7 +770,9 @@ mod question_task_tests {
         assert!(!is_question_task("refactor the database module"));
         assert!(!is_question_task("create a migration for the users table"));
         assert!(!is_question_task("run the test suite and fix failures"));
-        assert!(!is_question_task("implement retry logic for the HTTP client"));
+        assert!(!is_question_task(
+            "implement retry logic for the HTTP client"
+        ));
     }
 
     #[test]

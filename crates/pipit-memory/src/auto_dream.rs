@@ -1,4 +1,3 @@
-
 //! Auto-Dream — Background memory consolidation (Task 5).
 //!
 //! During idle periods (between sessions or after long pauses), the auto-dream
@@ -37,10 +36,21 @@ impl Default for DreamConfig {
             max_facts: 10,
             salience_threshold: 0.3,
             boost_keywords: vec![
-                "always".into(), "never".into(), "prefer".into(), "convention".into(),
-                "decided".into(), "chosen".into(), "architecture".into(), "pattern".into(),
-                "important".into(), "remember".into(), "note".into(), "key".into(),
-                "rule".into(), "standard".into(), "requirement".into(),
+                "always".into(),
+                "never".into(),
+                "prefer".into(),
+                "convention".into(),
+                "decided".into(),
+                "chosen".into(),
+                "architecture".into(),
+                "pattern".into(),
+                "important".into(),
+                "remember".into(),
+                "note".into(),
+                "key".into(),
+                "rule".into(),
+                "standard".into(),
+                "requirement".into(),
             ],
             auto_categorize: true,
         }
@@ -141,7 +151,10 @@ pub fn apply_facts(
     for fact in facts {
         // Secret scan before adding
         if crate::secret_scanner::contains_secrets(&fact.text) {
-            tracing::warn!("Skipping fact with detected secret: {}", &fact.text[..50.min(fact.text.len())]);
+            tracing::warn!(
+                "Skipping fact with detected secret: {}",
+                &fact.text[..50.min(fact.text.len())]
+            );
             continue;
         }
         memory.add_entry(&fact.category, &fact.text);
@@ -171,7 +184,7 @@ pub fn apply_facts_via_log(
 /// A transcript entry (simplified view of a conversation turn).
 #[derive(Debug, Clone)]
 pub struct TranscriptEntry {
-    pub role: String,  // "user" or "assistant"
+    pub role: String, // "user" or "assistant"
     pub content: String,
 }
 
@@ -192,7 +205,11 @@ fn build_idf(sentences: &[(usize, String)]) -> HashMap<String, f64> {
     for (_, sentence) in sentences {
         let words: HashSet<String> = sentence
             .split_whitespace()
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string()
+            })
             .filter(|w| w.len() > 2)
             .collect();
 
@@ -213,7 +230,11 @@ fn build_idf(sentences: &[(usize, String)]) -> HashMap<String, f64> {
 fn sentence_score(sentence: &str, idf: &HashMap<String, f64>, boost_keywords: &[String]) -> f64 {
     let words: Vec<String> = sentence
         .split_whitespace()
-        .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|w| {
+            w.to_lowercase()
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
         .filter(|w| w.len() > 2)
         .collect();
 
@@ -265,7 +286,10 @@ fn auto_categorize(text: &str) -> String {
 
     if lower.contains("prefer") || lower.contains("style") || lower.contains("convention") {
         "preferences".to_string()
-    } else if lower.contains("architecture") || lower.contains("design") || lower.contains("pattern") {
+    } else if lower.contains("architecture")
+        || lower.contains("design")
+        || lower.contains("pattern")
+    {
         "architecture".to_string()
     } else if lower.contains("bug") || lower.contains("fix") || lower.contains("issue") {
         "debugging".to_string()
@@ -314,16 +338,17 @@ mod tests {
 
     #[test]
     fn deduplication_works() {
-        let transcript = vec![
-            TranscriptEntry {
-                role: "assistant".into(),
-                content: "We always use error handling with Result types in this project.".into(),
-            },
-        ];
+        let transcript = vec![TranscriptEntry {
+            role: "assistant".into(),
+            content: "We always use error handling with Result types in this project.".into(),
+        }];
 
         // Existing memory already has this fact
         let mut memory = MemoryDocument::new_empty(std::path::Path::new("/tmp/MEMORY.md"));
-        memory.add_entry("conventions", "We always use error handling with Result types in this project");
+        memory.add_entry(
+            "conventions",
+            "We always use error handling with Result types in this project",
+        );
 
         let config = DreamConfig::default();
         let facts = consolidate(&transcript, &memory, &config);
@@ -333,4 +358,3 @@ mod tests {
         assert!(!has_duplicate);
     }
 }
-

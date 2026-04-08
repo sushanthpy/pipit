@@ -56,7 +56,8 @@ pub struct NotebookTool;
 impl TypedTool for NotebookTool {
     type Input = NotebookInput;
     const NAME: &'static str = "notebook";
-    const CAPABILITIES: CapabilitySet = CapabilitySet(CapabilitySet::FS_READ.0 | CapabilitySet::FS_WRITE.0);
+    const CAPABILITIES: CapabilitySet =
+        CapabilitySet(CapabilitySet::FS_READ.0 | CapabilitySet::FS_WRITE.0);
     const PURITY: Purity = Purity::Mutating;
 
     fn describe() -> ToolCard {
@@ -94,18 +95,30 @@ impl TypedTool for NotebookTool {
         match input {
             NotebookInput::Read { path } => {
                 let full_path = ctx.project_root.join(&path);
-                let content = tokio::fs::read_to_string(&full_path).await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read {path}: {e}")))?;
-                let nb: serde_json::Value = serde_json::from_str(&content)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Invalid notebook JSON: {e}")))?;
+                let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to read {path}: {e}"))
+                })?;
+                let nb: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Invalid notebook JSON: {e}"))
+                })?;
 
                 let cells = nb.get("cells").and_then(|c| c.as_array());
                 let mut summary = Vec::new();
                 if let Some(cells) = cells {
                     for (i, cell) in cells.iter().enumerate() {
-                        let ct = cell.get("cell_type").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        let source = cell.get("source").and_then(|v| v.as_array())
-                            .map(|a| a.iter().filter_map(|l| l.as_str()).collect::<Vec<_>>().join(""))
+                        let ct = cell
+                            .get("cell_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let source = cell
+                            .get("source")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|l| l.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            })
                             .unwrap_or_default();
                         let preview = source.lines().next().unwrap_or("(empty)");
                         summary.push(format!("[{i}] {ct}: {preview}"));
@@ -118,14 +131,23 @@ impl TypedTool for NotebookTool {
                 )))
             }
 
-            NotebookInput::InsertCell { path, index, cell_type, content } => {
+            NotebookInput::InsertCell {
+                path,
+                index,
+                cell_type,
+                content,
+            } => {
                 let full_path = ctx.project_root.join(&path);
-                let file_content = tokio::fs::read_to_string(&full_path).await
+                let file_content = tokio::fs::read_to_string(&full_path)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read: {e}")))?;
                 let mut nb: serde_json::Value = serde_json::from_str(&file_content)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Invalid JSON: {e}")))?;
 
-                let ct_str = match cell_type { CellType::Code => "code", CellType::Markdown => "markdown" };
+                let ct_str = match cell_type {
+                    CellType::Code => "code",
+                    CellType::Markdown => "markdown",
+                };
                 let new_cell = serde_json::json!({
                     "cell_type": ct_str,
                     "source": content.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>(),
@@ -140,27 +162,40 @@ impl TypedTool for NotebookTool {
 
                 let out = serde_json::to_string_pretty(&nb)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize: {e}")))?;
-                tokio::fs::write(&full_path, &out).await
+                tokio::fs::write(&full_path, &out)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write: {e}")))?;
 
-                Ok(TypedToolResult::mutating(format!("Inserted {ct_str} cell in {path}"))
-                    .with_artifact(ArtifactKind::FileModified {
-                        path: path.clone(), before_hash: None, after_hash: None,
-                    }))
+                Ok(
+                    TypedToolResult::mutating(format!("Inserted {ct_str} cell in {path}"))
+                        .with_artifact(ArtifactKind::FileModified {
+                            path: path.clone(),
+                            before_hash: None,
+                            after_hash: None,
+                        }),
+                )
             }
 
-            NotebookInput::EditCell { path, index, content } => {
+            NotebookInput::EditCell {
+                path,
+                index,
+                content,
+            } => {
                 let full_path = ctx.project_root.join(&path);
-                let file_content = tokio::fs::read_to_string(&full_path).await
+                let file_content = tokio::fs::read_to_string(&full_path)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Read: {e}")))?;
                 let mut nb: serde_json::Value = serde_json::from_str(&file_content)
                     .map_err(|e| ToolError::ExecutionFailed(format!("JSON: {e}")))?;
 
                 if let Some(cells) = nb.get_mut("cells").and_then(|c| c.as_array_mut()) {
                     if index >= cells.len() {
-                        return Err(ToolError::InvalidArgs(format!("Cell index {index} out of range")));
+                        return Err(ToolError::InvalidArgs(format!(
+                            "Cell index {index} out of range"
+                        )));
                     }
-                    let source: Vec<serde_json::Value> = content.lines()
+                    let source: Vec<serde_json::Value> = content
+                        .lines()
                         .map(|l| serde_json::Value::String(format!("{l}\n")))
                         .collect();
                     cells[index]["source"] = serde_json::Value::Array(source);
@@ -168,32 +203,41 @@ impl TypedTool for NotebookTool {
 
                 let out = serde_json::to_string_pretty(&nb)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize: {e}")))?;
-                tokio::fs::write(&full_path, &out).await
+                tokio::fs::write(&full_path, &out)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write: {e}")))?;
 
-                Ok(TypedToolResult::mutating(format!("Edited cell {index} in {path}")))
+                Ok(TypedToolResult::mutating(format!(
+                    "Edited cell {index} in {path}"
+                )))
             }
 
             NotebookInput::DeleteCell { path, index } => {
                 let full_path = ctx.project_root.join(&path);
-                let file_content = tokio::fs::read_to_string(&full_path).await
+                let file_content = tokio::fs::read_to_string(&full_path)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Read: {e}")))?;
                 let mut nb: serde_json::Value = serde_json::from_str(&file_content)
                     .map_err(|e| ToolError::ExecutionFailed(format!("JSON: {e}")))?;
 
                 if let Some(cells) = nb.get_mut("cells").and_then(|c| c.as_array_mut()) {
                     if index >= cells.len() {
-                        return Err(ToolError::InvalidArgs(format!("Cell index {index} out of range")));
+                        return Err(ToolError::InvalidArgs(format!(
+                            "Cell index {index} out of range"
+                        )));
                     }
                     cells.remove(index);
                 }
 
                 let out = serde_json::to_string_pretty(&nb)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize: {e}")))?;
-                tokio::fs::write(&full_path, &out).await
+                tokio::fs::write(&full_path, &out)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write: {e}")))?;
 
-                Ok(TypedToolResult::mutating(format!("Deleted cell {index} from {path}")))
+                Ok(TypedToolResult::mutating(format!(
+                    "Deleted cell {index} from {path}"
+                )))
             }
         }
     }

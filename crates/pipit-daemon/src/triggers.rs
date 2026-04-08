@@ -57,10 +57,7 @@ pub enum TriggerEventKind {
         payload_preview: String,
     },
     /// Pattern matched in queue.
-    QueueMatch {
-        task_id: String,
-        pattern: String,
-    },
+    QueueMatch { task_id: String, pattern: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,23 +154,24 @@ impl EventTrigger for FileSystemTrigger {
 
         // Spawn the notify watcher in a blocking thread
         std::thread::spawn(move || {
-            use notify::{event::EventKind, RecursiveMode, Watcher};
+            use notify::{RecursiveMode, Watcher, event::EventKind};
 
             let tx = notify_tx.clone();
-            let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                if let Ok(event) = res {
-                    let change_type = match event.kind {
-                        EventKind::Create(_) => FileChangeType::Created,
-                        EventKind::Modify(_) => FileChangeType::Modified,
-                        EventKind::Remove(_) => FileChangeType::Deleted,
-                        _ => return,
-                    };
-                    for path in event.paths {
-                        let _ = tx.blocking_send((path, change_type.clone()));
+            let mut watcher =
+                notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                    if let Ok(event) = res {
+                        let change_type = match event.kind {
+                            EventKind::Create(_) => FileChangeType::Created,
+                            EventKind::Modify(_) => FileChangeType::Modified,
+                            EventKind::Remove(_) => FileChangeType::Deleted,
+                            _ => return,
+                        };
+                        for path in event.paths {
+                            let _ = tx.blocking_send((path, change_type.clone()));
+                        }
                     }
-                }
-            })
-            .expect("Failed to create file watcher");
+                })
+                .expect("Failed to create file watcher");
 
             for path in &watch_paths {
                 if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
@@ -195,8 +193,8 @@ impl EventTrigger for FileSystemTrigger {
                 let path_str = path.to_string_lossy().to_string();
 
                 // Check filters
-                let matches_include = include.is_empty()
-                    || include.iter().any(|p| glob_match(p, &path_str));
+                let matches_include =
+                    include.is_empty() || include.iter().any(|p| glob_match(p, &path_str));
                 let matches_exclude = exclude.iter().any(|p| glob_match(p, &path_str));
 
                 if !matches_include || matches_exclude {
@@ -286,7 +284,10 @@ impl WebhookPayload {
         // GitHub issue event
         if let Some(issue) = self.payload.get("issue") {
             if let Some(title) = issue.get("title").and_then(|t| t.as_str()) {
-                return format!("Webhook: {} issue '{}': {}", self.source, title, self.event_type);
+                return format!(
+                    "Webhook: {} issue '{}': {}",
+                    self.source, title, self.event_type
+                );
             }
         }
 
@@ -345,7 +346,10 @@ impl TriggerRouter {
                         event_type,
                         payload_preview,
                     } => {
-                        format!("Webhook {} from {}: {}", event_type, source, payload_preview)
+                        format!(
+                            "Webhook {} from {}: {}",
+                            event_type, source, payload_preview
+                        )
                     }
                     TriggerEventKind::QueueMatch { task_id, pattern } => {
                         format!("Queue match: task {} matched pattern {}", task_id, pattern)
@@ -354,9 +358,15 @@ impl TriggerRouter {
 
                 let task_id = uuid::Uuid::new_v4().to_string();
                 return handle
-                    .send_task(task_id, prompt, event.context.into_iter().map(|(k, v)| {
-                        (k, serde_json::Value::String(v))
-                    }).collect())
+                    .send_task(
+                        task_id,
+                        prompt,
+                        event
+                            .context
+                            .into_iter()
+                            .map(|(k, v)| (k, serde_json::Value::String(v)))
+                            .collect(),
+                    )
                     .await
                     .is_ok();
             }

@@ -191,10 +191,13 @@ mod tests {
 
     #[test]
     fn opens_after_threshold_failures() {
-        let cb = CircuitBreaker::new("test", CircuitBreakerConfig {
-            failure_threshold: 3,
-            recovery_timeout: Duration::from_secs(30),
-        });
+        let cb = CircuitBreaker::new(
+            "test",
+            CircuitBreakerConfig {
+                failure_threshold: 3,
+                recovery_timeout: Duration::from_secs(30),
+            },
+        );
 
         cb.record_failure();
         cb.record_failure();
@@ -207,10 +210,13 @@ mod tests {
 
     #[test]
     fn success_resets_to_closed() {
-        let cb = CircuitBreaker::new("test", CircuitBreakerConfig {
-            failure_threshold: 2,
-            ..Default::default()
-        });
+        let cb = CircuitBreaker::new(
+            "test",
+            CircuitBreakerConfig {
+                failure_threshold: 2,
+                ..Default::default()
+            },
+        );
 
         cb.record_failure();
         cb.record_failure();
@@ -223,10 +229,13 @@ mod tests {
 
     #[test]
     fn half_open_after_recovery_timeout() {
-        let cb = CircuitBreaker::new("test", CircuitBreakerConfig {
-            failure_threshold: 1,
-            recovery_timeout: Duration::from_millis(10),
-        });
+        let cb = CircuitBreaker::new(
+            "test",
+            CircuitBreakerConfig {
+                failure_threshold: 1,
+                recovery_timeout: Duration::from_millis(10),
+            },
+        );
 
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);

@@ -1,4 +1,4 @@
-use crate::{Tool, ToolContext, ToolError, ToolResult, ToolDisplay};
+use crate::{Tool, ToolContext, ToolDisplay, ToolError, ToolResult};
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;

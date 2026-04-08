@@ -35,8 +35,7 @@ impl WasmHookRuntime {
         config.consume_fuel(true); // Enable fuel metering
         config.wasm_component_model(false);
 
-        let engine = Engine::new(&config)
-            .map_err(|e| format!("WASM engine init failed: {e}"))?;
+        let engine = Engine::new(&config).map_err(|e| format!("WASM engine init failed: {e}"))?;
 
         Ok(Self {
             engine,
@@ -109,7 +108,8 @@ impl WasmHookRuntime {
         let mut store = Store::new(&self.engine, ());
 
         // Set fuel limit
-        store.set_fuel(fuel_limit)
+        store
+            .set_fuel(fuel_limit)
             .map_err(|e| format!("Failed to set fuel: {e}"))?;
 
         // Create WASI context with stdin/stdout capture
@@ -124,7 +124,8 @@ impl WasmHookRuntime {
         // 2. `_start` — WASI command that reads stdin and writes stdout
         // The pure function convention is tried first as it avoids WASI setup.
 
-        let instance = linker.instantiate(&mut store, module)
+        let instance = linker
+            .instantiate(&mut store, module)
             .map_err(|e| format!("WASM instantiation failed: {e}"))?;
 
         // Convention: the WASM module exports a function `hook(input_ptr, input_len) -> (ptr, len)`
@@ -137,40 +138,49 @@ impl WasmHookRuntime {
         // Try pure function convention first
         if let Some(hook_fn) = instance.get_func(&mut store, "hook") {
             // Allocate memory for input
-            let memory = instance.get_memory(&mut store, "memory")
+            let memory = instance
+                .get_memory(&mut store, "memory")
                 .ok_or("WASM module has no exported memory")?;
 
             let input_bytes = input_json.as_bytes();
             let input_offset = 1024u32; // Fixed offset for simplicity
-            memory.write(&mut store, input_offset as usize, input_bytes)
+            memory
+                .write(&mut store, input_offset as usize, input_bytes)
                 .map_err(|e| format!("Failed to write input to WASM memory: {e}"))?;
 
             // Call hook(input_ptr, input_len) → result_ptr
             let mut results = vec![Val::I32(0)];
-            hook_fn.call(
-                &mut store,
-                &[Val::I32(input_offset as i32), Val::I32(input_bytes.len() as i32)],
-                &mut results,
-            ).map_err(|e| {
-                // Check if fuel exhausted
-                if store.get_fuel().unwrap_or(0) == 0 {
-                    format!("WASM hook exceeded fuel limit ({fuel_limit} instructions)")
-                } else {
-                    format!("WASM hook execution failed: {e}")
-                }
-            })?;
+            hook_fn
+                .call(
+                    &mut store,
+                    &[
+                        Val::I32(input_offset as i32),
+                        Val::I32(input_bytes.len() as i32),
+                    ],
+                    &mut results,
+                )
+                .map_err(|e| {
+                    // Check if fuel exhausted
+                    if store.get_fuel().unwrap_or(0) == 0 {
+                        format!("WASM hook exceeded fuel limit ({fuel_limit} instructions)")
+                    } else {
+                        format!("WASM hook execution failed: {e}")
+                    }
+                })?;
 
             // Read result from memory
             let result_ptr = results[0].i32().unwrap_or(0) as usize;
             // Read result length from the next 4 bytes after the pointer
             let mut len_buf = [0u8; 4];
-            memory.read(&store, result_ptr, &mut len_buf)
+            memory
+                .read(&store, result_ptr, &mut len_buf)
                 .map_err(|e| format!("Failed to read result length: {e}"))?;
             let result_len = u32::from_le_bytes(len_buf) as usize;
 
             if result_len > 0 && result_len < 1_000_000 {
                 let mut result_buf = vec![0u8; result_len];
-                memory.read(&store, result_ptr + 4, &mut result_buf)
+                memory
+                    .read(&store, result_ptr + 4, &mut result_buf)
                     .map_err(|e| format!("Failed to read result: {e}"))?;
 
                 let result_json = String::from_utf8(result_buf)
@@ -184,14 +194,13 @@ impl WasmHookRuntime {
         // Fallback: module has no `hook` export → treat as a WASI command
         // that reads stdin and writes stdout (requires full WASI setup)
         if let Some(start_fn) = instance.get_func(&mut store, "_start") {
-            start_fn.call(&mut store, &[], &mut [])
-                .map_err(|e| {
-                    if store.get_fuel().unwrap_or(0) == 0 {
-                        format!("WASM hook exceeded fuel limit ({fuel_limit} instructions)")
-                    } else {
-                        format!("WASM _start failed: {e}")
-                    }
-                })?;
+            start_fn.call(&mut store, &[], &mut []).map_err(|e| {
+                if store.get_fuel().unwrap_or(0) == 0 {
+                    format!("WASM hook exceeded fuel limit ({fuel_limit} instructions)")
+                } else {
+                    format!("WASM _start failed: {e}")
+                }
+            })?;
         }
 
         // Default: allow

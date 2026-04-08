@@ -42,11 +42,16 @@ pub struct MeshDelegation {
 
 impl MeshDelegation {
     pub fn new() -> Self {
-        Self { affinity_rules: Vec::new() }
+        Self {
+            affinity_rules: Vec::new(),
+        }
     }
 
     pub fn add_affinity(&mut self, pattern: String, target_node: String) {
-        self.affinity_rules.push(AffinityRule { pattern, target_node });
+        self.affinity_rules.push(AffinityRule {
+            pattern,
+            target_node,
+        });
     }
 
     /// Select the best node for a task.
@@ -58,7 +63,10 @@ impl MeshDelegation {
         // Check affinity rules first
         for rule in &self.affinity_rules {
             if task.prompt.contains(&rule.pattern)
-                || task.required_capabilities.iter().any(|c| c.contains(&rule.pattern))
+                || task
+                    .required_capabilities
+                    .iter()
+                    .any(|c| c.contains(&rule.pattern))
             {
                 let nodes = registry.alive_nodes();
                 if let Some(node) = nodes.iter().find(|n| n.id == rule.target_node) {
@@ -87,7 +95,8 @@ impl MeshDelegation {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let json = serde_json::to_vec(task).map_err(|e| e.to_string())?;
-        let mut stream = tokio::net::TcpStream::connect(target.addr).await
+        let mut stream = tokio::net::TcpStream::connect(target.addr)
+            .await
             .map_err(|e| format!("Connect to {}: {}", target.addr, e))?;
         stream.write_all(&json).await.map_err(|e| e.to_string())?;
         stream.flush().await.map_err(|e| e.to_string())?;
@@ -95,8 +104,8 @@ impl MeshDelegation {
         // Read response
         let mut buf = vec![0u8; 1 << 20]; // 1MB max
         let n = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
-        let result: MeshTaskResult = serde_json::from_slice(&buf[..n])
-            .map_err(|e| format!("Parse response: {}", e))?;
+        let result: MeshTaskResult =
+            serde_json::from_slice(&buf[..n]).map_err(|e| format!("Parse response: {}", e))?;
         Ok(result)
     }
 }

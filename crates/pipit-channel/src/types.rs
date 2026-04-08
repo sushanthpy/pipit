@@ -282,7 +282,11 @@ impl TaskUpdate {
 /// method edits the original message in-place.
 pub struct StreamHandle {
     /// Closure that performs the edit (e.g., Telegram's editMessageText).
-    updater: Box<dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ChannelError>> + Send + Sync>,
+    updater: Box<
+        dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ChannelError>>
+            + Send
+            + Sync,
+    >,
 }
 
 impl StreamHandle {

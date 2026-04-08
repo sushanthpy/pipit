@@ -94,7 +94,10 @@ pub enum UserInput {
     /// A prompt with `@file` mentions that should be added to context.
     PromptWithFiles { prompt: String, files: Vec<String> },
     /// A prompt with image attachments (file paths to images).
-    PromptWithImages { prompt: String, image_paths: Vec<String> },
+    PromptWithImages {
+        prompt: String,
+        image_paths: Vec<String>,
+    },
     /// A slash command.
     Command(SlashCommand),
     /// Shell passthrough (!command).
@@ -292,9 +295,14 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
         return None;
     }
     // If the second character is also '/' or the text looks like a path, it's not a command
-    if after_slash.starts_with('/') || after_slash.starts_with("var/") || after_slash.starts_with("tmp/")
-        || after_slash.starts_with("usr/") || after_slash.starts_with("home/") || after_slash.starts_with("Users/")
-        || after_slash.starts_with("etc/") || after_slash.starts_with("opt/")
+    if after_slash.starts_with('/')
+        || after_slash.starts_with("var/")
+        || after_slash.starts_with("tmp/")
+        || after_slash.starts_with("usr/")
+        || after_slash.starts_with("home/")
+        || after_slash.starts_with("Users/")
+        || after_slash.starts_with("etc/")
+        || after_slash.starts_with("opt/")
     {
         return None;
     }
@@ -373,10 +381,22 @@ mod tests {
 
     #[test]
     fn parse_basic_commands() {
-        assert!(matches!(parse_slash_command("/help"), Some(SlashCommand::Help)));
-        assert!(matches!(parse_slash_command("/quit"), Some(SlashCommand::Quit)));
-        assert!(matches!(parse_slash_command("/context"), Some(SlashCommand::Context)));
-        assert!(matches!(parse_slash_command("/tokens"), Some(SlashCommand::Tokens)));
+        assert!(matches!(
+            parse_slash_command("/help"),
+            Some(SlashCommand::Help)
+        ));
+        assert!(matches!(
+            parse_slash_command("/quit"),
+            Some(SlashCommand::Quit)
+        ));
+        assert!(matches!(
+            parse_slash_command("/context"),
+            Some(SlashCommand::Context)
+        ));
+        assert!(matches!(
+            parse_slash_command("/tokens"),
+            Some(SlashCommand::Tokens)
+        ));
     }
 
     #[test]
@@ -424,6 +444,9 @@ mod tests {
 
     #[test]
     fn classify_question_mark_as_help() {
-        assert!(matches!(classify_input("?"), UserInput::Command(SlashCommand::Help)));
+        assert!(matches!(
+            classify_input("?"),
+            UserInput::Command(SlashCommand::Help)
+        ));
     }
 }

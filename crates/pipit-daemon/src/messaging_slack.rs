@@ -3,8 +3,8 @@
 //! Implements MessagingPort with: chat.postMessage, thread mapping via sled,
 //! adaptive backpressure with EMA of response latencies.
 
-use pipit_core::integration_ports::*;
 use async_trait::async_trait;
+use pipit_core::integration_ports::*;
 
 /// Slack Web API adapter implementing MessagingPort.
 pub struct SlackMessagingAdapter {
@@ -46,7 +46,9 @@ impl SlackMessagingAdapter {
 
 #[async_trait]
 impl MessagingPort for SlackMessagingAdapter {
-    fn platform(&self) -> &str { "slack" }
+    fn platform(&self) -> &str {
+        "slack"
+    }
 
     async fn send(&self, msg: OutboundMessage) -> Result<String, MessagingError> {
         if self.should_throttle() {
@@ -63,25 +65,31 @@ impl MessagingPort for SlackMessagingAdapter {
             body["thread_ts"] = serde_json::json!(thread_ts);
         }
         if !msg.attachments.is_empty() {
-            let attachments: Vec<serde_json::Value> = msg.attachments.iter().map(|a| {
-                let mut att = serde_json::json!({
-                    "title": a.title,
-                    "text": a.text,
-                });
-                if let Some(ref color) = a.color {
-                    att["color"] = serde_json::json!(color);
-                }
-                att
-            }).collect();
+            let attachments: Vec<serde_json::Value> = msg
+                .attachments
+                .iter()
+                .map(|a| {
+                    let mut att = serde_json::json!({
+                        "title": a.title,
+                        "text": a.text,
+                    });
+                    if let Some(ref color) = a.color {
+                        att["color"] = serde_json::json!(color);
+                    }
+                    att
+                })
+                .collect();
             body["attachments"] = serde_json::json!(attachments);
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://slack.com/api/chat.postMessage")
             .header("Authorization", format!("Bearer {}", self.bot_token))
             .header("Content-Type", "application/json")
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| MessagingError::SendFailed(e.to_string()))?;
 
         let latency = start.elapsed().as_millis() as f64;
@@ -91,7 +99,9 @@ impl MessagingPort for SlackMessagingAdapter {
             return Err(MessagingError::RateLimited);
         }
 
-        let json: serde_json::Value = resp.json().await
+        let json: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| MessagingError::SendFailed(e.to_string()))?;
 
         if json["ok"].as_bool() != Some(true) {
@@ -115,13 +125,16 @@ impl MessagingPort for SlackMessagingAdapter {
             text: text.to_string(),
             thread_id: None,
             attachments: vec![],
-        }).await?;
+        })
+        .await?;
         Ok(())
     }
 
     async fn install(&self, _workspace: &str) -> Result<String, MessagingError> {
         // OAuth V2 install flow would POST to oauth.v2.access
-        Err(MessagingError::Auth("Slack OAuth install requires interactive browser flow".into()))
+        Err(MessagingError::Auth(
+            "Slack OAuth install requires interactive browser flow".into(),
+        ))
     }
 
     async fn map_session(&self, _session_id: &str, _thread_id: &str) -> Result<(), MessagingError> {

@@ -38,10 +38,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 license = "MIT"
-rust-version = "1.90"
+rust-version = "1.94"
 
 [workspace.dependencies]
 # Async runtime
@@ -142,6 +142,9 @@ libc = "0.2"
 
 # Random
 rand = "0.8"
+
+# Property-based testing
+proptest = "1"
 
 # Gap-fill dependencies
 regex = "1"

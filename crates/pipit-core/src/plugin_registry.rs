@@ -92,8 +92,8 @@ impl PluginRegistry {
             return Ok(0);
         }
         let content = std::fs::read_to_string(&registry_file).map_err(|e| e.to_string())?;
-        let plugins: Vec<InstalledPlugin> = serde_json::from_str(&content)
-            .map_err(|e| e.to_string())?;
+        let plugins: Vec<InstalledPlugin> =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
         let count = plugins.len();
         for p in plugins {
             self.plugins.insert(p.manifest.id.clone(), p);
@@ -138,17 +138,22 @@ impl PluginRegistry {
             verified: true,
         };
 
-        self.plugins.insert(installed.manifest.id.clone(), installed);
+        self.plugins
+            .insert(installed.manifest.id.clone(), installed);
         Ok(())
     }
 
     /// Uninstall a plugin.
     pub fn uninstall(&mut self, id: &str) -> Result<(), String> {
-        let plugin = self.plugins.remove(id)
+        let plugin = self
+            .plugins
+            .remove(id)
             .ok_or_else(|| format!("Plugin '{}' not found", id))?;
 
         // Check reverse dependencies
-        let dependents: Vec<String> = self.plugins.values()
+        let dependents: Vec<String> = self
+            .plugins
+            .values()
             .filter(|p| p.manifest.dependencies.iter().any(|d| d.id == id))
             .map(|p| p.manifest.id.clone())
             .collect();
@@ -182,7 +187,9 @@ impl PluginRegistry {
 
     /// Enable/disable a plugin.
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), String> {
-        let plugin = self.plugins.get_mut(id)
+        let plugin = self
+            .plugins
+            .get_mut(id)
             .ok_or_else(|| format!("Plugin '{}' not found", id))?;
         plugin.enabled = enabled;
         Ok(())

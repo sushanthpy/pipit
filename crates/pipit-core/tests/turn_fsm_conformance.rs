@@ -14,12 +14,11 @@
 //! For S states and T legal transitions, coverage is bounded by testing
 //! each transition and selected interleavings.
 
-use pipit_core::turn_kernel::{TurnKernel, TurnInput, TurnOutput, TurnPhase, TurnSnapshot};
 use pipit_core::hydration::{
-    Subsystem, SUBSYSTEM_ORDER, DEPENDENCY_EDGES, verify_order,
-    MandatoryBoundary, MANDATORY_BOUNDARIES,
-    HydrationStage, stage_to_subsystem,
+    DEPENDENCY_EDGES, HydrationStage, MANDATORY_BOUNDARIES, MandatoryBoundary, SUBSYSTEM_ORDER,
+    Subsystem, stage_to_subsystem, verify_order,
 };
+use pipit_core::turn_kernel::{TurnInput, TurnKernel, TurnOutput, TurnPhase, TurnSnapshot};
 
 // ═══════════════════════════════════════════════════════════════
 //  Turn FSM Golden Path Tests
@@ -41,7 +40,9 @@ fn drive_with_tools(kernel: &mut TurnKernel, tool_count: usize, has_mutation: bo
     kernel.transition(TurnInput::ContextFrozen);
     kernel.transition(TurnInput::RequestSent);
     kernel.transition(TurnInput::StreamStarted);
-    kernel.transition(TurnInput::ToolCallsReceived { call_count: tool_count });
+    kernel.transition(TurnInput::ToolCallsReceived {
+        call_count: tool_count,
+    });
     kernel.transition(TurnInput::PermissionResolved {
         approved: (0..tool_count).map(|i| format!("call_{}", i)).collect(),
         denied: vec![],
@@ -54,8 +55,14 @@ fn drive_with_tools(kernel: &mut TurnKernel, tool_count: usize, has_mutation: bo
             mutated: has_mutation && i == 0,
         });
     }
-    let files = if has_mutation { vec!["test.rs".into()] } else { vec![] };
-    kernel.transition(TurnInput::AllToolsCompleted { modified_files: files });
+    let files = if has_mutation {
+        vec!["test.rs".into()]
+    } else {
+        vec![]
+    };
+    kernel.transition(TurnInput::AllToolsCompleted {
+        modified_files: files,
+    });
 }
 
 #[test]
@@ -121,28 +128,44 @@ fn reject_tool_completed_before_tool_started() {
     let outputs = kernel.transition(TurnInput::AllToolsCompleted {
         modified_files: vec![],
     });
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::InvalidTransition { .. })));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::InvalidTransition { .. }))
+    );
 }
 
 #[test]
 fn reject_response_complete_from_idle() {
     let mut kernel = TurnKernel::new(100);
     let outputs = kernel.transition(TurnInput::ResponseComplete);
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::InvalidTransition { .. })));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::InvalidTransition { .. }))
+    );
 }
 
 #[test]
 fn reject_context_frozen_from_idle() {
     let mut kernel = TurnKernel::new(100);
     let outputs = kernel.transition(TurnInput::ContextFrozen);
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::InvalidTransition { .. })));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::InvalidTransition { .. }))
+    );
 }
 
 #[test]
 fn reject_stream_started_from_idle() {
     let mut kernel = TurnKernel::new(100);
     let outputs = kernel.transition(TurnInput::StreamStarted);
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::InvalidTransition { .. })));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::InvalidTransition { .. }))
+    );
 }
 
 #[test]
@@ -155,7 +178,11 @@ fn reject_commit_before_response_complete() {
 
     // Try to commit while still in ResponseStarted
     let outputs = kernel.transition(TurnInput::TurnCommitted);
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::InvalidTransition { .. })));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::InvalidTransition { .. }))
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -289,8 +316,16 @@ fn permission_denial_prevents_execution() {
     });
 
     // Should go back to requesting (not executing)
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::RequestCompletion)));
-    assert!(!outputs.iter().any(|o| matches!(o, TurnOutput::ExecuteTools)));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::RequestCompletion))
+    );
+    assert!(
+        !outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::ExecuteTools))
+    );
 }
 
 #[test]
@@ -309,7 +344,11 @@ fn mixed_approval_proceeds_to_execution() {
     });
 
     // Should proceed to execution (at least one approved)
-    assert!(outputs.iter().any(|o| matches!(o, TurnOutput::ExecuteTools)));
+    assert!(
+        outputs
+            .iter()
+            .any(|o| matches!(o, TurnOutput::ExecuteTools))
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -405,7 +444,9 @@ fn all_non_terminal_phases_reachable_in_happy_path() {
     seen_phases.insert(kernel.phase);
 
     kernel.transition(TurnInput::SingleToolCompleted {
-        call_id: "c1".into(), success: true, mutated: true,
+        call_id: "c1".into(),
+        success: true,
+        mutated: true,
     });
 
     kernel.transition(TurnInput::AllToolsCompleted {
@@ -474,31 +515,33 @@ fn compression_valid_from_any_phase() {
 
         // Drive to the desired phase
         match initial_phase {
-            TurnPhase::Idle => {},
+            TurnPhase::Idle => {}
             TurnPhase::Accepted => {
                 kernel.transition(TurnInput::UserMessage("test".into()));
-            },
+            }
             TurnPhase::ContextFrozen => {
                 kernel.transition(TurnInput::UserMessage("test".into()));
                 kernel.transition(TurnInput::ContextFrozen);
-            },
+            }
             TurnPhase::Requesting => {
                 kernel.transition(TurnInput::UserMessage("test".into()));
                 kernel.transition(TurnInput::ContextFrozen);
                 kernel.transition(TurnInput::RequestSent);
-            },
+            }
             TurnPhase::ResponseStarted => {
                 kernel.transition(TurnInput::UserMessage("test".into()));
                 kernel.transition(TurnInput::ContextFrozen);
                 kernel.transition(TurnInput::RequestSent);
                 kernel.transition(TurnInput::StreamStarted);
-            },
+            }
             _ => {}
         }
 
         let outputs = kernel.transition(TurnInput::CompressionTriggered);
         assert!(
-            outputs.iter().any(|o| matches!(o, TurnOutput::CompressContext)),
+            outputs
+                .iter()
+                .any(|o| matches!(o, TurnOutput::CompressContext)),
             "CompressionTriggered should emit CompressContext from {:?}",
             initial_phase
         );

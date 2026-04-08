@@ -34,10 +34,7 @@ pub struct MessageUtility {
 ///   2. Role weight: system > user > assistant > tool_result
 ///   3. Reference count: messages cited by later tool_use_ids
 ///   4. Size penalty: very large messages get lower utility/cost ratio
-pub fn estimate_utilities(
-    messages: &[Message],
-    preserve_recent: usize,
-) -> Vec<MessageUtility> {
+pub fn estimate_utilities(messages: &[Message], preserve_recent: usize) -> Vec<MessageUtility> {
     let n = messages.len();
     let mut utilities = Vec::with_capacity(n);
 
@@ -47,12 +44,16 @@ pub fn estimate_utilities(
             || (msg.role == pipit_provider::Role::User && i == 0);
 
         // Token cost estimate (4 chars per token)
-        let content_len: usize = msg.content.iter().map(|b| match b {
-            pipit_provider::ContentBlock::Text(t) => t.len(),
-            pipit_provider::ContentBlock::ToolCall { args, .. } => args.to_string().len(),
-            pipit_provider::ContentBlock::ToolResult { content, .. } => content.len(),
-            _ => 0,
-        }).sum();
+        let content_len: usize = msg
+            .content
+            .iter()
+            .map(|b| match b {
+                pipit_provider::ContentBlock::Text(t) => t.len(),
+                pipit_provider::ContentBlock::ToolCall { args, .. } => args.to_string().len(),
+                pipit_provider::ContentBlock::ToolResult { content, .. } => content.len(),
+                _ => 0,
+            })
+            .sum();
         let cost = (content_len / 4).max(1) as u64;
 
         // Utility estimation
@@ -93,17 +94,16 @@ pub fn estimate_utilities(
 /// select until budget is met. O(n log n).
 ///
 /// Returns the set of message indices to KEEP.
-pub fn greedy_knapsack(
-    utilities: &[MessageUtility],
-    budget: u64,
-) -> Vec<usize> {
+pub fn greedy_knapsack(utilities: &[MessageUtility], budget: u64) -> Vec<usize> {
     // Protected messages are always kept
-    let mut keep: Vec<usize> = utilities.iter()
+    let mut keep: Vec<usize> = utilities
+        .iter()
         .filter(|u| u.protected)
         .map(|u| u.index)
         .collect();
 
-    let protected_cost: u64 = utilities.iter()
+    let protected_cost: u64 = utilities
+        .iter()
         .filter(|u| u.protected)
         .map(|u| u.cost)
         .sum();
@@ -116,14 +116,14 @@ pub fn greedy_knapsack(
     let remaining_budget = budget - protected_cost;
 
     // Non-protected messages sorted by utility/cost ratio (descending)
-    let mut candidates: Vec<&MessageUtility> = utilities.iter()
-        .filter(|u| !u.protected)
-        .collect();
+    let mut candidates: Vec<&MessageUtility> = utilities.iter().filter(|u| !u.protected).collect();
 
     candidates.sort_by(|a, b| {
         let ratio_a = a.utility / a.cost.max(1) as f64;
         let ratio_b = b.utility / b.cost.max(1) as f64;
-        ratio_b.partial_cmp(&ratio_a).unwrap_or(std::cmp::Ordering::Equal)
+        ratio_b
+            .partial_cmp(&ratio_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     // Greedy fill
@@ -141,10 +141,7 @@ pub fn greedy_knapsack(
 
 /// Apply the knapsack solution: remove messages not in the keep set.
 /// Returns the number of messages evicted and estimated tokens freed.
-pub fn apply_eviction(
-    messages: &mut Vec<Message>,
-    keep_indices: &[usize],
-) -> (usize, u64) {
+pub fn apply_eviction(messages: &mut Vec<Message>, keep_indices: &[usize]) -> (usize, u64) {
     let original_len = messages.len();
     let keep_set: std::collections::HashSet<usize> = keep_indices.iter().copied().collect();
 
@@ -155,10 +152,14 @@ pub fn apply_eviction(
         if keep_set.contains(&i) {
             new_messages.push(msg);
         } else {
-            let content_len: usize = msg.content.iter().map(|b| match b {
-                pipit_provider::ContentBlock::Text(t) => t.len(),
-                _ => 0,
-            }).sum();
+            let content_len: usize = msg
+                .content
+                .iter()
+                .map(|b| match b {
+                    pipit_provider::ContentBlock::Text(t) => t.len(),
+                    _ => 0,
+                })
+                .sum();
             tokens_freed += (content_len / 4) as u64;
         }
     }
@@ -184,9 +185,24 @@ mod tests {
     #[test]
     fn greedy_knapsack_keeps_high_utility() {
         let utilities = vec![
-            MessageUtility { index: 0, cost: 100, utility: 10.0, protected: false },
-            MessageUtility { index: 1, cost: 100, utility: 1.0, protected: false },
-            MessageUtility { index: 2, cost: 100, utility: 5.0, protected: false },
+            MessageUtility {
+                index: 0,
+                cost: 100,
+                utility: 10.0,
+                protected: false,
+            },
+            MessageUtility {
+                index: 1,
+                cost: 100,
+                utility: 1.0,
+                protected: false,
+            },
+            MessageUtility {
+                index: 2,
+                cost: 100,
+                utility: 5.0,
+                protected: false,
+            },
         ];
         // Budget for 2 messages
         let keep = greedy_knapsack(&utilities, 200);
@@ -199,8 +215,18 @@ mod tests {
     #[test]
     fn protected_messages_always_kept() {
         let utilities = vec![
-            MessageUtility { index: 0, cost: 100, utility: 0.01, protected: true }, // system
-            MessageUtility { index: 1, cost: 100, utility: 10.0, protected: false },
+            MessageUtility {
+                index: 0,
+                cost: 100,
+                utility: 0.01,
+                protected: true,
+            }, // system
+            MessageUtility {
+                index: 1,
+                cost: 100,
+                utility: 10.0,
+                protected: false,
+            },
         ];
         let keep = greedy_knapsack(&utilities, 150);
         assert!(keep.contains(&0)); // protected even with low utility
@@ -216,7 +242,11 @@ mod tests {
         ];
         let utils = estimate_utilities(&msgs, 2);
         // Same role — recency should dominate: later messages have higher utility
-        assert!(utils[3].utility > utils[0].utility,
-            "recent ({}) should beat old ({})", utils[3].utility, utils[0].utility);
+        assert!(
+            utils[3].utility > utils[0].utility,
+            "recent ({}) should beat old ({})",
+            utils[3].utility,
+            utils[0].utility
+        );
     }
 }

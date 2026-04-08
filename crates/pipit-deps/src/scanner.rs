@@ -21,7 +21,9 @@ pub fn detect_ecosystems(project_root: &Path) -> Vec<Ecosystem> {
     if project_root.join("package.json").exists() {
         ecosystems.push(Ecosystem::Npm);
     }
-    if project_root.join("pyproject.toml").exists() || project_root.join("requirements.txt").exists() {
+    if project_root.join("pyproject.toml").exists()
+        || project_root.join("requirements.txt").exists()
+    {
         ecosystems.push(Ecosystem::Python);
     }
     if project_root.join("go.mod").exists() {

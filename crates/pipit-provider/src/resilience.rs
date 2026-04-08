@@ -20,7 +20,7 @@
 //! Memory: ~128 bytes per provider. O(1) per transition.
 
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
-use crate::fallback::{FallbackController, FallbackConfig, FallbackResult};
+use crate::fallback::{FallbackConfig, FallbackController, FallbackResult};
 use crate::retry::{AdaptiveRetryPolicy, RetryContext, RetryEvent, compute_backoff};
 use crate::{LlmProvider, ProviderError};
 use std::sync::Arc;
@@ -42,30 +42,20 @@ pub enum ResilienceEvent {
         failure_count: u32,
     },
     /// Circuit breaker is testing recovery.
-    CircuitHalfOpen {
-        provider_id: String,
-    },
+    CircuitHalfOpen { provider_id: String },
     /// Circuit breaker recovered.
-    CircuitClosed {
-        provider_id: String,
-    },
+    CircuitClosed { provider_id: String },
     /// Model fallback triggered.
     FallbackTriggered {
         from_model: String,
         to_model: String,
     },
     /// All fallbacks exhausted.
-    FallbackExhausted {
-        error: String,
-    },
+    FallbackExhausted { error: String },
     /// Persistent mode heartbeat.
-    Heartbeat {
-        total_wait_secs: u64,
-    },
+    Heartbeat { total_wait_secs: u64 },
     /// Context overflow recovery (output tokens reduced).
-    ContextReduced {
-        new_max_tokens: u32,
-    },
+    ContextReduced { new_max_tokens: u32 },
 }
 
 /// The current state of the resilience FSM.
@@ -124,12 +114,12 @@ pub struct ResilienceController {
 }
 
 impl ResilienceController {
-    pub fn new(
-        provider_id: &str,
-        config: ResilienceConfig,
-    ) -> Self {
+    pub fn new(provider_id: &str, config: ResilienceConfig) -> Self {
         let circuit_breaker = CircuitBreaker::new(provider_id, config.circuit_breaker.clone());
-        let fallback = config.fallback.as_ref().map(|fc| FallbackController::new(fc.clone()));
+        let fallback = config
+            .fallback
+            .as_ref()
+            .map(|fc| FallbackController::new(fc.clone()));
 
         Self {
             config,
@@ -165,10 +155,7 @@ impl ResilienceController {
     /// Execute an operation through the resilience pipeline.
     ///
     /// Handles retry, circuit-break, and fallback transitions automatically.
-    pub async fn execute<F, Fut, T>(
-        &mut self,
-        operation: F,
-    ) -> Result<T, ProviderError>
+    pub async fn execute<F, Fut, T>(&mut self, operation: F) -> Result<T, ProviderError>
     where
         F: Fn(&RetryContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, ProviderError>>,
@@ -185,13 +172,15 @@ impl ResilienceController {
                 });
 
                 // Try fallback
-                if let Some(result) = self.try_fallback(ProviderError::Network(
-                    "Circuit breaker open".to_string(),
-                )) {
+                if let Some(result) =
+                    self.try_fallback(ProviderError::Network("Circuit breaker open".to_string()))
+                {
                     return Err(result);
                 }
 
-                return Err(ProviderError::Network("Circuit breaker open — all providers exhausted".to_string()));
+                return Err(ProviderError::Network(
+                    "Circuit breaker open — all providers exhausted".to_string(),
+                ));
             }
 
             if self.circuit_breaker.state() == CircuitState::HalfOpen {
@@ -221,10 +210,9 @@ impl ResilienceController {
 
                     // Context overflow: adjust tokens and retry
                     if e.is_context_recoverable() {
-                        if let Some(reduced) = crate::retry::recover_from_context_overflow(
-                            &e,
-                            &self.config.retry,
-                        ) {
+                        if let Some(reduced) =
+                            crate::retry::recover_from_context_overflow(&e, &self.config.retry)
+                        {
                             self.retry_ctx.max_tokens_override = Some(reduced);
                             self.emit(ResilienceEvent::ContextReduced {
                                 new_max_tokens: reduced,
@@ -241,7 +229,9 @@ impl ResilienceController {
                     // Track overload for fallback trigger
                     if is_overload(&e) {
                         self.retry_ctx.consecutive_overload += 1;
-                        if self.retry_ctx.consecutive_overload >= self.config.retry.max_overload_retries {
+                        if self.retry_ctx.consecutive_overload
+                            >= self.config.retry.max_overload_retries
+                        {
                             if let Some(err) = self.try_fallback(e) {
                                 return Err(err);
                             }
@@ -254,7 +244,9 @@ impl ResilienceController {
 
                     // Transient errors: retry with backoff
                     if e.is_transient() && attempt < max_retries {
-                        self.state = ResilienceState::Retrying { attempt: attempt + 1 };
+                        self.state = ResilienceState::Retrying {
+                            attempt: attempt + 1,
+                        };
                         let wait = compute_backoff(&self.config.retry.base, attempt);
 
                         self.emit(ResilienceEvent::RetryScheduled {
@@ -272,15 +264,23 @@ impl ResilienceController {
             }
         }
 
-        Err(ProviderError::Other("Resilience: max retries exceeded".to_string()))
+        Err(ProviderError::Other(
+            "Resilience: max retries exceeded".to_string(),
+        ))
     }
 
     /// Attempt fallback to next provider.
     fn try_fallback(&mut self, error: ProviderError) -> Option<ProviderError> {
         if let Some(ref mut fallback) = self.fallback {
             match fallback.attempt_fallback(error) {
-                FallbackResult::Switched { from_model, to_model, .. } => {
-                    self.state = ResilienceState::FallbackActive { model: to_model.clone() };
+                FallbackResult::Switched {
+                    from_model,
+                    to_model,
+                    ..
+                } => {
+                    self.state = ResilienceState::FallbackActive {
+                        model: to_model.clone(),
+                    };
                     self.retry_ctx.consecutive_overload = 0;
                     self.circuit_breaker.reset();
 
@@ -298,9 +298,7 @@ impl ResilienceController {
                     });
                     Some(original_error)
                 }
-                FallbackResult::NotRetriable { error } => {
-                    Some(error)
-                }
+                FallbackResult::NotRetriable { error } => Some(error),
             }
         } else {
             Some(error)

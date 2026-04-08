@@ -60,8 +60,7 @@ pub fn scheduling_descriptor(tool_name: &str) -> ToolSchedulingDescriptor {
         _ => PrefetchPolicy::NoPrefetch,
     };
 
-    let parallelizable = semantics.self_commutative
-        && semantics.purity <= Purity::Idempotent;
+    let parallelizable = semantics.self_commutative && semantics.purity <= Purity::Idempotent;
 
     ToolSchedulingDescriptor {
         tool_name: tool_name.to_string(),

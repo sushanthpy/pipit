@@ -83,28 +83,76 @@ impl TurnPhase {
 /// array lookup, not a match cascade.
 const LEGAL_TRANSITIONS: &[(TurnPhase, &str, TurnPhase)] = &[
     // Happy path (no tools)
-    (TurnPhase::Idle,              "user_message",        TurnPhase::Accepted),
-    (TurnPhase::Accepted,          "context_frozen",      TurnPhase::ContextFrozen),
-    (TurnPhase::ContextFrozen,     "request_sent",        TurnPhase::Requesting),
-    (TurnPhase::Requesting,        "stream_started",      TurnPhase::ResponseStarted),
-    (TurnPhase::ResponseStarted,   "response_complete",   TurnPhase::ResponseCompleted),
-    (TurnPhase::ResponseCompleted, "committed",           TurnPhase::Committed),
-
+    (TurnPhase::Idle, "user_message", TurnPhase::Accepted),
+    (
+        TurnPhase::Accepted,
+        "context_frozen",
+        TurnPhase::ContextFrozen,
+    ),
+    (
+        TurnPhase::ContextFrozen,
+        "request_sent",
+        TurnPhase::Requesting,
+    ),
+    (
+        TurnPhase::Requesting,
+        "stream_started",
+        TurnPhase::ResponseStarted,
+    ),
+    (
+        TurnPhase::ResponseStarted,
+        "response_complete",
+        TurnPhase::ResponseCompleted,
+    ),
+    (
+        TurnPhase::ResponseCompleted,
+        "committed",
+        TurnPhase::Committed,
+    ),
     // Tool path
-    (TurnPhase::ResponseStarted,   "tool_proposed",       TurnPhase::ToolProposed),
-    (TurnPhase::ToolProposed,      "permission_resolved", TurnPhase::PermissionResolved),
-    (TurnPhase::PermissionResolved,"tool_started",        TurnPhase::ToolStarted),
-    (TurnPhase::ToolStarted,       "tool_completed",      TurnPhase::ToolCompleted),
-    (TurnPhase::ToolCompleted,     "verification_start",  TurnPhase::Verifying),
-    (TurnPhase::ToolCompleted,     "request_sent",        TurnPhase::Requesting),   // no verification needed
-    (TurnPhase::Verifying,         "verification_done",   TurnPhase::Requesting),   // loop back for next LLM call
-
+    (
+        TurnPhase::ResponseStarted,
+        "tool_proposed",
+        TurnPhase::ToolProposed,
+    ),
+    (
+        TurnPhase::ToolProposed,
+        "permission_resolved",
+        TurnPhase::PermissionResolved,
+    ),
+    (
+        TurnPhase::PermissionResolved,
+        "tool_started",
+        TurnPhase::ToolStarted,
+    ),
+    (
+        TurnPhase::ToolStarted,
+        "tool_completed",
+        TurnPhase::ToolCompleted,
+    ),
+    (
+        TurnPhase::ToolCompleted,
+        "verification_start",
+        TurnPhase::Verifying,
+    ),
+    (
+        TurnPhase::ToolCompleted,
+        "request_sent",
+        TurnPhase::Requesting,
+    ), // no verification needed
+    (
+        TurnPhase::Verifying,
+        "verification_done",
+        TurnPhase::Requesting,
+    ), // loop back for next LLM call
     // All-denied tools: skip execution entirely
-    (TurnPhase::PermissionResolved,"request_sent",        TurnPhase::Requesting),
-
+    (
+        TurnPhase::PermissionResolved,
+        "request_sent",
+        TurnPhase::Requesting,
+    ),
     // Committed → Idle for next turn
-    (TurnPhase::Committed,         "reset",               TurnPhase::Idle),
-
+    (TurnPhase::Committed, "reset", TurnPhase::Idle),
     // Error from any phase
     // (handled specially — see transition() method)
 ];
@@ -141,7 +189,10 @@ pub enum TurnInput {
     /// Tool calls proposed to permission system.
     ToolProposed { call_ids: Vec<String> },
     /// All permissions resolved (approved/denied).
-    PermissionResolved { approved: Vec<String>, denied: Vec<String> },
+    PermissionResolved {
+        approved: Vec<String>,
+        denied: Vec<String>,
+    },
     /// Tool execution started.
     ToolExecutionStarted,
     /// A single tool call completed.
@@ -170,24 +221,24 @@ impl TurnInput {
     /// The transition-table key for this input.
     fn kind(&self) -> &str {
         match self {
-            Self::UserMessage(_)       => "user_message",
-            Self::ContextFrozen        => "context_frozen",
-            Self::RequestSent          => "request_sent",
-            Self::StreamStarted        => "stream_started",
-            Self::StreamChunk { .. }   => "stream_chunk",
+            Self::UserMessage(_) => "user_message",
+            Self::ContextFrozen => "context_frozen",
+            Self::RequestSent => "request_sent",
+            Self::StreamStarted => "stream_started",
+            Self::StreamChunk { .. } => "stream_chunk",
             Self::ToolCallsReceived { .. } => "tool_proposed",
-            Self::ResponseComplete     => "response_complete",
-            Self::ToolProposed { .. }  => "tool_proposed",
+            Self::ResponseComplete => "response_complete",
+            Self::ToolProposed { .. } => "tool_proposed",
             Self::PermissionResolved { .. } => "permission_resolved",
             Self::ToolExecutionStarted => "tool_started",
             Self::SingleToolCompleted { .. } => "single_tool_completed",
-            Self::AllToolsCompleted { .. }  => "tool_completed",
+            Self::AllToolsCompleted { .. } => "tool_completed",
             Self::VerificationCompleted { .. } => "verification_done",
-            Self::TurnCommitted        => "committed",
-            Self::Reset                => "reset",
+            Self::TurnCommitted => "committed",
+            Self::Reset => "reset",
             Self::CompressionTriggered => "compression",
-            Self::Cancelled            => "cancelled",
-            Self::Error(_)             => "error",
+            Self::Cancelled => "cancelled",
+            Self::Error(_) => "error",
         }
     }
 }
@@ -241,7 +292,11 @@ impl TurnMilestone {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        Self { phase, timestamp_ms, detail }
+        Self {
+            phase,
+            timestamp_ms,
+            detail,
+        }
     }
 }
 
@@ -356,7 +411,10 @@ impl TurnKernel {
                 let from = self.phase;
                 self.phase = TurnPhase::Failed;
                 self.snapshot.phase = TurnPhase::Failed;
-                self.snapshot.milestones.push(TurnMilestone::now(TurnPhase::Failed, Some("cancelled".into())));
+                self.snapshot.milestones.push(TurnMilestone::now(
+                    TurnPhase::Failed,
+                    Some("cancelled".into()),
+                ));
                 outputs.push(TurnOutput::PhaseChange(TurnPhase::Failed));
                 outputs.push(TurnOutput::Yield);
                 return outputs;
@@ -367,7 +425,9 @@ impl TurnKernel {
                 if self.consecutive_errors >= 3 {
                     self.phase = TurnPhase::Failed;
                     self.snapshot.phase = TurnPhase::Failed;
-                    self.snapshot.milestones.push(TurnMilestone::now(TurnPhase::Failed, Some(msg.clone())));
+                    self.snapshot
+                        .milestones
+                        .push(TurnMilestone::now(TurnPhase::Failed, Some(msg.clone())));
                     outputs.push(TurnOutput::PhaseChange(TurnPhase::Failed));
                     outputs.push(TurnOutput::Yield);
                 } else {
@@ -406,6 +466,17 @@ impl TurnKernel {
                 self.set_phase(TurnPhase::Requesting, None, &mut outputs);
             }
 
+            // Idle → Requesting: shortcut for multi-turn within a single run().
+            // After commit+reset between turns, the agent loop sends RequestSent
+            // directly without re-entering Accepted/ContextFrozen (those are
+            // one-time at the start of run()).
+            (TurnPhase::Idle, TurnInput::RequestSent) => {
+                self.turn_number += 1;
+                self.reset_turn_state();
+                self.snapshot = TurnSnapshot::new(self.turn_number);
+                self.set_phase(TurnPhase::Requesting, None, &mut outputs);
+            }
+
             // Requesting → ResponseStarted: first token received
             (TurnPhase::Requesting, TurnInput::StreamStarted) => {
                 self.set_phase(TurnPhase::ResponseStarted, None, &mut outputs);
@@ -421,7 +492,11 @@ impl TurnKernel {
             (TurnPhase::ResponseStarted, TurnInput::ToolCallsReceived { call_count }) => {
                 self.tool_calls_pending = call_count;
                 self.tool_calls_completed = 0;
-                self.set_phase(TurnPhase::ToolProposed, Some(format!("{} tools", call_count)), &mut outputs);
+                self.set_phase(
+                    TurnPhase::ToolProposed,
+                    Some(format!("{} tools", call_count)),
+                    &mut outputs,
+                );
             }
 
             // ResponseStarted → ResponseCompleted: no tools, done
@@ -459,7 +534,12 @@ impl TurnKernel {
 
             // ToolProposed → SingleToolCompleted: tool completions arriving
             // while still in ToolProposed (permission handled internally)
-            (TurnPhase::ToolProposed, TurnInput::SingleToolCompleted { call_id, mutated, .. }) => {
+            (
+                TurnPhase::ToolProposed,
+                TurnInput::SingleToolCompleted {
+                    call_id, mutated, ..
+                },
+            ) => {
                 self.tool_calls_completed += 1;
                 self.snapshot.completed_tools.push(call_id.clone());
                 if mutated {
@@ -481,7 +561,12 @@ impl TurnKernel {
             }
 
             // ToolStarted: individual tool completion (no phase change)
-            (TurnPhase::ToolStarted, TurnInput::SingleToolCompleted { call_id, mutated, .. }) => {
+            (
+                TurnPhase::ToolStarted,
+                TurnInput::SingleToolCompleted {
+                    call_id, mutated, ..
+                },
+            ) => {
                 self.tool_calls_completed += 1;
                 self.snapshot.completed_tools.push(call_id.clone());
                 if mutated {
@@ -528,9 +613,30 @@ impl TurnKernel {
                 outputs.push(TurnOutput::Yield);
             }
 
+            // Requesting → Committed: turn committed mid-loop.
+            // The agent loop commits the current turn before starting a new one
+            // (e.g., after tool execution when the FSM auto-transitioned back to
+            // Requesting). This is a valid inter-turn boundary.
+            (TurnPhase::Requesting, TurnInput::TurnCommitted) => {
+                self.set_phase(TurnPhase::Committed, None, &mut outputs);
+                outputs.push(TurnOutput::Yield);
+            }
+
             // Committed → Idle: reset for next turn
             (TurnPhase::Committed, TurnInput::Reset) => {
                 self.set_phase(TurnPhase::Idle, None, &mut outputs);
+            }
+
+            // Idle → TurnCommitted: no-op.
+            // The final completion path may try to commit when the kernel was
+            // already committed+reset from a previous inter-turn boundary.
+            (TurnPhase::Idle, TurnInput::TurnCommitted) => {
+                // Already idle — nothing to commit
+            }
+
+            // Idle → Reset: no-op (already idle)
+            (TurnPhase::Idle, TurnInput::Reset) => {
+                // Already idle
             }
 
             // PermissionResolved → Requesting: all tools denied, skip to next LLM call
@@ -557,10 +663,17 @@ impl TurnKernel {
     }
 
     /// Set phase with milestone tracking.
-    fn set_phase(&mut self, phase: TurnPhase, detail: Option<String>, outputs: &mut Vec<TurnOutput>) {
+    fn set_phase(
+        &mut self,
+        phase: TurnPhase,
+        detail: Option<String>,
+        outputs: &mut Vec<TurnOutput>,
+    ) {
         self.phase = phase;
         self.snapshot.phase = phase;
-        self.snapshot.milestones.push(TurnMilestone::now(phase, detail));
+        self.snapshot
+            .milestones
+            .push(TurnMilestone::now(phase, detail));
         outputs.push(TurnOutput::PhaseChange(phase));
     }
 
@@ -603,12 +716,20 @@ mod tests {
         let outputs = kernel.transition(TurnInput::UserMessage("fix the bug".into()));
         assert_eq!(kernel.phase, TurnPhase::Accepted);
         assert_eq!(kernel.turn_number, 1);
-        assert!(outputs.iter().any(|o| matches!(o, TurnOutput::FreezeControlPlane)));
+        assert!(
+            outputs
+                .iter()
+                .any(|o| matches!(o, TurnOutput::FreezeControlPlane))
+        );
 
         // Accepted → ContextFrozen
         let outputs = kernel.transition(TurnInput::ContextFrozen);
         assert_eq!(kernel.phase, TurnPhase::ContextFrozen);
-        assert!(outputs.iter().any(|o| matches!(o, TurnOutput::RequestCompletion)));
+        assert!(
+            outputs
+                .iter()
+                .any(|o| matches!(o, TurnOutput::RequestCompletion))
+        );
 
         // ContextFrozen → Requesting (explicit)
         let outputs = kernel.transition(TurnInput::RequestSent);
@@ -651,7 +772,11 @@ mod tests {
             denied: vec![],
         });
         assert_eq!(kernel.phase, TurnPhase::PermissionResolved);
-        assert!(outputs.iter().any(|o| matches!(o, TurnOutput::ExecuteTools)));
+        assert!(
+            outputs
+                .iter()
+                .any(|o| matches!(o, TurnOutput::ExecuteTools))
+        );
 
         // Execution starts
         kernel.transition(TurnInput::ToolExecutionStarted);
@@ -659,7 +784,9 @@ mod tests {
 
         // Individual tool completions
         kernel.transition(TurnInput::SingleToolCompleted {
-            call_id: "call_1".into(), success: true, mutated: true,
+            call_id: "call_1".into(),
+            success: true,
+            mutated: true,
         });
         assert_eq!(kernel.phase, TurnPhase::ToolStarted); // still waiting for call_2
 
@@ -667,7 +794,11 @@ mod tests {
         let outputs = kernel.transition(TurnInput::AllToolsCompleted {
             modified_files: vec!["foo.rs".into()],
         });
-        assert!(outputs.iter().any(|o| matches!(o, TurnOutput::RunVerification)));
+        assert!(
+            outputs
+                .iter()
+                .any(|o| matches!(o, TurnOutput::RunVerification))
+        );
     }
 
     #[test]
@@ -685,7 +816,11 @@ mod tests {
             denied: vec!["call_1".into()],
         });
         assert_eq!(kernel.phase, TurnPhase::PermissionResolved);
-        assert!(outputs.iter().any(|o| matches!(o, TurnOutput::RequestCompletion)));
+        assert!(
+            outputs
+                .iter()
+                .any(|o| matches!(o, TurnOutput::RequestCompletion))
+        );
     }
 
     #[test]

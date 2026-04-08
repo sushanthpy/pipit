@@ -96,20 +96,27 @@ impl CronScheduler {
         // This is a simplified single-task approach. A production implementation
         // would use a min-heap of fire times for O(log N) next-schedule finding.
 
-        let schedules: Vec<(String, cron::Schedule, String, String, TaskPriority, Option<MessageOrigin>)> =
-            self.schedules
-                .iter()
-                .map(|e| {
-                    (
-                        e.name.clone(),
-                        e.schedule.clone(),
-                        e.project.clone(),
-                        e.prompt.clone(),
-                        e.priority,
-                        e.notify_origin.clone(),
-                    )
-                })
-                .collect();
+        let schedules: Vec<(
+            String,
+            cron::Schedule,
+            String,
+            String,
+            TaskPriority,
+            Option<MessageOrigin>,
+        )> = self
+            .schedules
+            .iter()
+            .map(|e| {
+                (
+                    e.name.clone(),
+                    e.schedule.clone(),
+                    e.project.clone(),
+                    e.prompt.clone(),
+                    e.priority,
+                    e.notify_origin.clone(),
+                )
+            })
+            .collect();
 
         let store = self.store.clone();
         let sink = self.sink.clone();

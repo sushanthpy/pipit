@@ -1,4 +1,3 @@
-
 //! Model Routing — Alias resolution, priority cascade, fast-mode auto-routing.
 //!
 //! Priority cascade (highest → lowest):
@@ -125,11 +124,21 @@ impl ModelRouter {
             .or_else(|_| std::env::var("ANTHROPIC_MODEL"))
             .ok();
 
-        self.sources.push((ModelPriority::CliFlag, cli_model.map(String::from)));
+        self.sources
+            .push((ModelPriority::CliFlag, cli_model.map(String::from)));
         self.sources.push((ModelPriority::EnvVar, env_model));
-        self.sources.push((ModelPriority::ProjectConfig, project_config_model.map(String::from)));
-        self.sources.push((ModelPriority::GlobalConfig, global_config_model.map(String::from)));
-        self.sources.push((ModelPriority::ProviderDefault, Some(provider_default.to_string())));
+        self.sources.push((
+            ModelPriority::ProjectConfig,
+            project_config_model.map(String::from),
+        ));
+        self.sources.push((
+            ModelPriority::GlobalConfig,
+            global_config_model.map(String::from),
+        ));
+        self.sources.push((
+            ModelPriority::ProviderDefault,
+            Some(provider_default.to_string()),
+        ));
 
         // Resolve: first non-None source wins
         for (priority, source) in &self.sources {
@@ -158,7 +167,8 @@ impl ModelRouter {
 
     /// Override the model for the current session (/model command).
     pub fn set_session_override(&self, model: &str) {
-        let resolved = self.aliases
+        let resolved = self
+            .aliases
             .get(&model.to_lowercase())
             .cloned()
             .unwrap_or_else(|| model.to_string());
@@ -252,7 +262,8 @@ impl ModelRouter {
 
     /// Register a custom alias.
     pub fn add_alias(&mut self, alias: &str, model_id: &str) {
-        self.aliases.insert(alias.to_lowercase(), model_id.to_string());
+        self.aliases
+            .insert(alias.to_lowercase(), model_id.to_string());
     }
 }
 
@@ -310,9 +321,9 @@ mod tests {
     fn session_override_highest_priority() {
         let mut router = ModelRouter::new();
         router.init(
-            Some("haiku"),       // CLI flag
-            Some("sonnet"),      // project config
-            None,                // global config
+            Some("haiku"),              // CLI flag
+            Some("sonnet"),             // project config
+            None,                       // global config
             "claude-sonnet-4-20250514", // provider default
         );
         // CLI flag wins
@@ -344,4 +355,3 @@ mod tests {
         assert!(low < high);
     }
 }
-

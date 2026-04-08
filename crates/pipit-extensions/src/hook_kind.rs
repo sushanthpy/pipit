@@ -98,14 +98,30 @@ pub enum HookKind {
     },
 }
 
-fn default_timeout_ms() -> u64 { 30_000 }
-fn default_shell() -> String { "sh".into() }
-fn default_http_method() -> String { "POST".into() }
-fn default_max_tokens() -> u32 { 256 }
-fn default_agent_max_turns() -> u32 { 1 }
-fn default_cost_fraction() -> f64 { 0.1 }
-fn default_fuel_limit() -> u64 { 10_000_000 }
-fn default_memory_limit() -> u64 { 16 * 1024 * 1024 }
+fn default_timeout_ms() -> u64 {
+    30_000
+}
+fn default_shell() -> String {
+    "sh".into()
+}
+fn default_http_method() -> String {
+    "POST".into()
+}
+fn default_max_tokens() -> u32 {
+    256
+}
+fn default_agent_max_turns() -> u32 {
+    1
+}
+fn default_cost_fraction() -> f64 {
+    0.1
+}
+fn default_fuel_limit() -> u64 {
+    10_000_000
+}
+fn default_memory_limit() -> u64 {
+    16 * 1024 * 1024
+}
 
 impl HookKind {
     /// The execution timeout for this hook kind.
@@ -123,7 +139,7 @@ impl HookKind {
     /// Whether this hook kind is deterministic (same input → same output).
     pub fn is_deterministic(&self) -> bool {
         match self {
-            Self::Wasm { .. } => true,  // WASM execution is deterministic
+            Self::Wasm { .. } => true,     // WASM execution is deterministic
             Self::Command { .. } => false, // shell can read clock, network, etc.
             Self::Prompt { .. } => false,  // LLM output is stochastic
             Self::Http { .. } => false,    // remote server state varies
@@ -165,7 +181,9 @@ pub struct TypedHookManifest {
     pub async_hook: bool,
 }
 
-fn default_matcher() -> String { "*".into() }
+fn default_matcher() -> String {
+    "*".into()
+}
 
 impl TypedHookManifest {
     /// Check if this hook's matcher matches a tool name.
@@ -182,7 +200,7 @@ impl TypedHookManifest {
 // ═══════════════════════════════════════════════════════════════
 
 /// Context provided to hook execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HookContext {
     /// The event that triggered this hook.
     pub event: String,
@@ -201,7 +219,7 @@ pub struct HookContext {
 }
 
 /// Replay mode for hook execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ReplayMode {
     /// Normal execution — hook runs live.
     Live,
@@ -282,7 +300,12 @@ mod tests {
             events: vec!["PreToolUse".into()],
             matcher: "bash|edit_file".into(),
             description: None,
-            kind: HookKind::Command { command: "echo".into(), timeout_ms: 5000, shell: "sh".into(), env: HashMap::new() },
+            kind: HookKind::Command {
+                command: "echo".into(),
+                timeout_ms: 5000,
+                shell: "sh".into(),
+                env: HashMap::new(),
+            },
             async_hook: false,
         };
         assert!(manifest.matches_tool("bash"));
@@ -295,7 +318,12 @@ mod tests {
         // This test exists to ensure the match is exhaustive.
         // If you add a new HookKind variant, this won't compile
         // until you add the arm — which is the point.
-        let kind = HookKind::Command { command: "x".into(), timeout_ms: 1000, shell: "sh".into(), env: HashMap::new() };
+        let kind = HookKind::Command {
+            command: "x".into(),
+            timeout_ms: 1000,
+            shell: "sh".into(),
+            env: HashMap::new(),
+        };
         let _label = kind.kind_label(); // exhaustive match inside
         let _det = kind.is_deterministic();
         let _sand = kind.is_sandboxed();

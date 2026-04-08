@@ -1,18 +1,21 @@
 pub mod app;
-pub mod composer;
 pub mod components;
+pub mod composer;
 pub mod editor_integration;
+pub mod input;
 pub mod render;
 pub mod render_engine;
 pub mod tui;
-pub mod input;
 pub mod vim;
 
-pub use app::{TuiState, SharedTuiState, ActivityLine, CompletionBanner, UiMode, Overlay, WidthClass, handle_mouse, handle_resize};
+pub use app::{
+    ActivityLine, CompletionBanner, Overlay, SharedTuiState, TabView, TuiState, UiMode, WidthClass,
+    handle_mouse, handle_resize,
+};
 pub use composer::Composer;
 pub use render::StreamingMarkdownRenderer;
 pub use render_engine::SyntaxHighlighter;
-pub use tui::{PipitUi, InteractiveApprovalHandler, StatusBarState, VerificationState};
+pub use tui::{InteractiveApprovalHandler, PipitUi, StatusBarState, VerificationState};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;

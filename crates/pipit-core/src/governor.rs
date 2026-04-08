@@ -1,5 +1,7 @@
 use crate::proof::{ConfidenceReport, RollbackCheckpoint};
-use crate::tool_semantics::{builtin_semantics, Purity, ToolCategory, classify_semantically, SemanticClass};
+use crate::tool_semantics::{
+    Purity, SemanticClass, ToolCategory, builtin_semantics, classify_semantically,
+};
 use pipit_provider::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -68,11 +70,7 @@ impl Default for RiskReport {
 pub struct Governor;
 
 impl Governor {
-    pub fn assess_tool_call(
-        &self,
-        call: &ToolCall,
-        confidence: &ConfidenceReport,
-    ) -> RiskReport {
+    pub fn assess_tool_call(&self, call: &ToolCall, confidence: &ConfidenceReport) -> RiskReport {
         let action_class = classify_tool(call);
         let blast_radius: f32 = match action_class {
             ActionClass::ReadOnly => BLAST_RADIUS_READ_ONLY,

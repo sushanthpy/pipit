@@ -36,19 +36,35 @@ impl SmtTranslator {
                 CslType::Bool => "Bool",
                 CslType::Enum(_) => "Int", // Encode enum as int
             };
-            smt.push_str(&format!("; {}\n(declare-const {} {})\n", var.description, var.name, sort));
+            smt.push_str(&format!(
+                "; {}\n(declare-const {} {})\n",
+                var.description, var.name, sort
+            ));
         }
         smt.push('\n');
 
         // Declare uninterpreted functions
         for func in &spec.functions {
-            let param_sorts: Vec<&str> = func.params.iter().map(|t| match t {
-                CslType::Int => "Int", CslType::Bool => "Bool", CslType::Enum(_) => "Int",
-            }).collect();
+            let param_sorts: Vec<&str> = func
+                .params
+                .iter()
+                .map(|t| match t {
+                    CslType::Int => "Int",
+                    CslType::Bool => "Bool",
+                    CslType::Enum(_) => "Int",
+                })
+                .collect();
             let ret_sort = match &func.return_type {
-                CslType::Int => "Int", CslType::Bool => "Bool", CslType::Enum(_) => "Int",
+                CslType::Int => "Int",
+                CslType::Bool => "Bool",
+                CslType::Enum(_) => "Int",
             };
-            smt.push_str(&format!("(declare-fun {} ({}) {})\n", func.name, param_sorts.join(" "), ret_sort));
+            smt.push_str(&format!(
+                "(declare-fun {} ({}) {})\n",
+                func.name,
+                param_sorts.join(" "),
+                ret_sort
+            ));
         }
 
         // Assert constraints
@@ -63,27 +79,47 @@ impl SmtTranslator {
 
     fn constraint_to_smt(c: &CslConstraint) -> String {
         match c {
-            CslConstraint::Linear { terms, comparison, bound } => {
+            CslConstraint::Linear {
+                terms,
+                comparison,
+                bound,
+            } => {
                 let lhs = if terms.len() == 1 {
                     let (coeff, var) = &terms[0];
-                    if *coeff == 1 { var.clone() }
-                    else { format!("(* {} {})", coeff, var) }
+                    if *coeff == 1 {
+                        var.clone()
+                    } else {
+                        format!("(* {} {})", coeff, var)
+                    }
                 } else {
-                    let parts: Vec<String> = terms.iter().map(|(coeff, var)| {
-                        if *coeff == 1 { var.clone() }
-                        else { format!("(* {} {})", coeff, var) }
-                    }).collect();
+                    let parts: Vec<String> = terms
+                        .iter()
+                        .map(|(coeff, var)| {
+                            if *coeff == 1 {
+                                var.clone()
+                            } else {
+                                format!("(* {} {})", coeff, var)
+                            }
+                        })
+                        .collect();
                     format!("(+ {})", parts.join(" "))
                 };
                 let op = match comparison {
-                    CslCmp::Le => "<=", CslCmp::Lt => "<",
-                    CslCmp::Ge => ">=", CslCmp::Gt => ">",
-                    CslCmp::Eq => "=", CslCmp::Ne => "distinct",
+                    CslCmp::Le => "<=",
+                    CslCmp::Lt => "<",
+                    CslCmp::Ge => ">=",
+                    CslCmp::Gt => ">",
+                    CslCmp::Eq => "=",
+                    CslCmp::Ne => "distinct",
                 };
                 format!("({} {} {})", op, lhs, bound)
             }
             CslConstraint::BoolConst { var, value } => {
-                if *value { var.clone() } else { format!("(not {})", var) }
+                if *value {
+                    var.clone()
+                } else {
+                    format!("(not {})", var)
+                }
             }
             CslConstraint::IntEqual { var, value } => format!("(= {} {})", var, value),
             CslConstraint::And(clauses) => {
@@ -96,9 +132,17 @@ impl SmtTranslator {
             }
             CslConstraint::Not(inner) => format!("(not {})", Self::constraint_to_smt(inner)),
             CslConstraint::Implies(p, q) => {
-                format!("(=> {} {})", Self::constraint_to_smt(p), Self::constraint_to_smt(q))
+                format!(
+                    "(=> {} {})",
+                    Self::constraint_to_smt(p),
+                    Self::constraint_to_smt(q)
+                )
             }
-            CslConstraint::FuncApp { function, args, result } => {
+            CslConstraint::FuncApp {
+                function,
+                args,
+                result,
+            } => {
                 format!("(= ({} {}) {})", function, args.join(" "), result)
             }
             CslConstraint::ReviewRequired { constraint, .. } => {
@@ -120,15 +164,20 @@ impl SmtTranslator {
 
         for var in &spec.variables {
             let sort = match &var.var_type {
-                CslType::Int => "Int", CslType::Bool => "Bool", CslType::Enum(_) => "Int",
+                CslType::Int => "Int",
+                CslType::Bool => "Bool",
+                CslType::Enum(_) => "Int",
             };
             smt.push_str(&format!("(declare-const {} {})\n", var.name, sort));
         }
 
         // Assert negation of coverage: ¬(C₁ ∨ C₂ ∨ ... ∨ Cₙ)
         if !spec.constraints.is_empty() {
-            let disjunction: Vec<String> = spec.constraints.iter()
-                .map(Self::constraint_to_smt).collect();
+            let disjunction: Vec<String> = spec
+                .constraints
+                .iter()
+                .map(Self::constraint_to_smt)
+                .collect();
             smt.push_str(&format!("(assert (not (or {})))\n", disjunction.join(" ")));
         }
 
@@ -146,7 +195,9 @@ impl SmtTranslator {
         // Write to temp file and invoke
         let tmp = std::env::temp_dir().join("pipit-verify.smt2");
         if std::fs::write(&tmp, smt_input).is_err() {
-            return SolverResult::Error { message: "Failed to write SMT file".into() };
+            return SolverResult::Error {
+                message: "Failed to write SMT file".into(),
+            };
         }
 
         match Command::new("z3").arg("-smt2").arg(&tmp).output() {
@@ -155,13 +206,21 @@ impl SmtTranslator {
                 let first_line = stdout.lines().next().unwrap_or("");
 
                 match first_line.trim() {
-                    "sat" => SolverResult::Sat { model: stdout.to_string() },
+                    "sat" => SolverResult::Sat {
+                        model: stdout.to_string(),
+                    },
                     "unsat" => SolverResult::Unsat,
-                    "unknown" => SolverResult::Unknown { reason: stdout.to_string() },
-                    _ => SolverResult::Error { message: stdout.to_string() },
+                    "unknown" => SolverResult::Unknown {
+                        reason: stdout.to_string(),
+                    },
+                    _ => SolverResult::Error {
+                        message: stdout.to_string(),
+                    },
                 }
             }
-            Err(e) => SolverResult::Error { message: e.to_string() },
+            Err(e) => SolverResult::Error {
+                message: e.to_string(),
+            },
         }
     }
 }
@@ -197,8 +256,16 @@ mod tests {
     #[test]
     fn test_implies_translation() {
         let c = CslConstraint::Implies(
-            Box::new(CslConstraint::Linear { terms: vec![(1, "x".into())], comparison: CslCmp::Gt, bound: 0 }),
-            Box::new(CslConstraint::Linear { terms: vec![(1, "y".into())], comparison: CslCmp::Gt, bound: 0 }),
+            Box::new(CslConstraint::Linear {
+                terms: vec![(1, "x".into())],
+                comparison: CslCmp::Gt,
+                bound: 0,
+            }),
+            Box::new(CslConstraint::Linear {
+                terms: vec![(1, "y".into())],
+                comparison: CslCmp::Gt,
+                bound: 0,
+            }),
         );
         let smt = SmtTranslator::constraint_to_smt(&c);
         assert!(smt.contains("=>"), "Should contain implication: {}", smt);

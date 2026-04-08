@@ -1,4 +1,3 @@
-
 //! Prompt Cache Optimizer — Strategic cache breakpoint placement (Task 6).
 //!
 //! Anthropic pricing: cache write = 1.25× input, cache read = 0.1× input.
@@ -143,7 +142,8 @@ impl CacheOptimizer {
                 && self.prefix_stability_count >= self.stability_threshold
             {
                 // This section is within the stable prefix — good cache candidate
-                let expected_reuse = estimate_reuse(section.content_type, self.prefix_stability_count);
+                let expected_reuse =
+                    estimate_reuse(section.content_type, self.prefix_stability_count);
 
                 if expected_reuse >= 3 {
                     // Break-even: need ≥3 reuses to justify cache write cost
@@ -210,10 +210,10 @@ fn longest_common_prefix(a: &[u8], b: &[u8]) -> usize {
 /// Estimate reuse count based on content type and historical stability.
 fn estimate_reuse(content_type: CacheContentType, stability_count: u32) -> u32 {
     let base = match content_type {
-        CacheContentType::SystemPrompt => 100,       // Stable for entire session
-        CacheContentType::Memory => 50,               // Changes rarely
-        CacheContentType::ToolDeclarations => 80,     // Stable unless MCP changes
-        CacheContentType::ConversationPrefix => 5,    // Decreasing reuse
+        CacheContentType::SystemPrompt => 100, // Stable for entire session
+        CacheContentType::Memory => 50,        // Changes rarely
+        CacheContentType::ToolDeclarations => 80, // Stable unless MCP changes
+        CacheContentType::ConversationPrefix => 5, // Decreasing reuse
     };
     // Scale by observed stability
     base.min(stability_count * 10)
@@ -270,7 +270,10 @@ mod tests {
         // Third request — stability threshold reached
         let bp3 = optimizer.analyze_request(&sections);
         assert!(!bp3.is_empty());
-        assert_eq!(bp3[0].content_type as u8, CacheContentType::SystemPrompt as u8);
+        assert_eq!(
+            bp3[0].content_type as u8,
+            CacheContentType::SystemPrompt as u8
+        );
     }
 
     #[test]
@@ -279,11 +282,15 @@ mod tests {
         let prev = vec!["bash".into(), "read_file".into(), "write_file".into()];
         let same = vec!["bash".into(), "read_file".into(), "write_file".into()];
         let reordered = vec!["read_file".into(), "bash".into(), "write_file".into()];
-        let added = vec!["bash".into(), "read_file".into(), "write_file".into(), "grep".into()];
+        let added = vec![
+            "bash".into(),
+            "read_file".into(),
+            "write_file".into(),
+            "grep".into(),
+        ];
 
         assert!(!optimizer.would_break_cache(&same, &prev));
         assert!(optimizer.would_break_cache(&reordered, &prev));
         assert!(optimizer.would_break_cache(&added, &prev));
     }
 }
-

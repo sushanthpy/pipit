@@ -1,4 +1,3 @@
-
 //! TOML Permission Rules — User-defined permission policies.
 //!
 //! Rules are loaded from `.pipit/permissions.toml` files (project and global).
@@ -91,7 +90,11 @@ impl PermissionRuleSet {
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!("Failed to read permission rules from {}: {}", path.display(), e);
+                    tracing::warn!(
+                        "Failed to read permission rules from {}: {}",
+                        path.display(),
+                        e
+                    );
                     continue;
                 }
             };
@@ -99,7 +102,11 @@ impl PermissionRuleSet {
             let raw: RawRuleFile = match toml::from_str(&content) {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!("Failed to parse permission rules from {}: {}", path.display(), e);
+                    tracing::warn!(
+                        "Failed to parse permission rules from {}: {}",
+                        path.display(),
+                        e
+                    );
                     continue;
                 }
             };
@@ -149,9 +156,10 @@ impl PermissionRuleSet {
 
             // Check path pattern (if specified)
             if let Some(ref path_matcher) = rule.path_matcher {
-                let any_path_matches = descriptor.paths.iter().any(|p| {
-                    path_matcher.is_match(p.display().to_string().as_str())
-                });
+                let any_path_matches = descriptor
+                    .paths
+                    .iter()
+                    .any(|p| path_matcher.is_match(p.display().to_string().as_str()));
                 if !any_path_matches && !descriptor.paths.is_empty() {
                     continue;
                 }
@@ -192,8 +200,8 @@ fn parse_rule(
     source_file: &std::path::Path,
     index: usize,
 ) -> Result<PermissionRule, String> {
-    let tool_glob = Glob::new(&raw.tool)
-        .map_err(|e| format!("Invalid tool pattern '{}': {}", raw.tool, e))?;
+    let tool_glob =
+        Glob::new(&raw.tool).map_err(|e| format!("Invalid tool pattern '{}': {}", raw.tool, e))?;
 
     let command_matcher = raw
         .command_pattern
@@ -217,11 +225,7 @@ fn parse_rule(
         other => return Err(format!("Unknown decision: {other}")),
     };
 
-    let modes: Vec<PermissionMode> = raw
-        .modes
-        .iter()
-        .filter_map(|m| m.parse().ok())
-        .collect();
+    let modes: Vec<PermissionMode> = raw.modes.iter().filter_map(|m| m.parse().ok()).collect();
 
     Ok(PermissionRule {
         name: raw.name,
@@ -293,4 +297,3 @@ decision = "deny"
         assert_eq!(result2.unwrap().decision, Decision::Deny);
     }
 }
-

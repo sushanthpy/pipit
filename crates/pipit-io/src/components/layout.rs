@@ -4,7 +4,7 @@
 //! and custom structural containers for composing the pipit TUI.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Tabs, Clear, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 
 // ═══════════════════════════════════════════════════════════════════════
 // 37. SplitPane — resizable horizontal split
@@ -17,11 +17,17 @@ pub struct SplitPane {
 
 impl SplitPane {
     pub fn horizontal(ratio: u16) -> Self {
-        Self { ratio: ratio.min(100), direction: Direction::Horizontal }
+        Self {
+            ratio: ratio.min(100),
+            direction: Direction::Horizontal,
+        }
     }
 
     pub fn vertical(ratio: u16) -> Self {
-        Self { ratio: ratio.min(100), direction: Direction::Vertical }
+        Self {
+            ratio: ratio.min(100),
+            direction: Direction::Vertical,
+        }
     }
 
     /// Returns the two areas for left/right (or top/bottom) panes.
@@ -58,7 +64,11 @@ impl Widget for &TabBarView<'_> {
         Tabs::new(titles)
             .select(self.selected)
             .style(Style::default().fg(Color::DarkGray))
-            .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            )
             .divider("│")
             .render(area, buf);
     }
@@ -76,7 +86,11 @@ pub struct ScrollContainer<'a> {
 
 impl<'a> ScrollContainer<'a> {
     pub fn new(content_lines: &'a [Line<'a>], scroll_offset: u16) -> Self {
-        Self { content_lines, scroll_offset, block: None }
+        Self {
+            content_lines,
+            scroll_offset,
+            block: None,
+        }
     }
 
     pub fn block(mut self, block: Block<'a>) -> Self {
@@ -111,7 +125,8 @@ impl Widget for &ScrollContainer<'_> {
         if self.content_lines.len() > visible_height {
             let total = self.content_lines.len() as f64;
             let bar_pos = (start as f64 / total * inner.height as f64) as u16;
-            let bar_height = ((visible_height as f64 / total) * inner.height as f64).max(1.0) as u16;
+            let bar_height =
+                ((visible_height as f64 / total) * inner.height as f64).max(1.0) as u16;
 
             for y in bar_pos..(bar_pos + bar_height).min(inner.height) {
                 let x = inner.x + inner.width - 1;
@@ -137,7 +152,11 @@ pub struct PopupOverlay<'a> {
 
 impl<'a> PopupOverlay<'a> {
     pub fn new(title: &'a str) -> Self {
-        Self { title, width_percent: 60, height_percent: 40 }
+        Self {
+            title,
+            width_percent: 60,
+            height_percent: 40,
+        }
     }
 
     pub fn size(mut self, width: u16, height: u16) -> Self {
@@ -161,7 +180,11 @@ impl<'a> PopupOverlay<'a> {
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 if x < buf.area().width && y < buf.area().height {
-                    buf[(x, y)].set_style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+                    buf[(x, y)].set_style(
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
+                    );
                 }
             }
         }
@@ -174,7 +197,9 @@ impl<'a> PopupOverlay<'a> {
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(
                 format!(" {} ", self.title),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
 
         let inner = block.inner(popup);
@@ -195,7 +220,11 @@ pub struct CollapsibleSection<'a> {
 
 impl<'a> CollapsibleSection<'a> {
     pub fn new(title: &'a str, expanded: bool, content: &'a [Line<'a>]) -> Self {
-        Self { title, expanded, content_lines: content }
+        Self {
+            title,
+            expanded,
+            content_lines: content,
+        }
     }
 }
 
@@ -204,7 +233,12 @@ impl Widget for &CollapsibleSection<'_> {
         let icon = if self.expanded { "▾" } else { "▸" };
         let header = Line::from(vec![
             Span::styled(format!("{} ", icon), Style::default().fg(Color::Cyan)),
-            Span::styled(self.title.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                self.title.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]);
 
         if self.expanded && !self.content_lines.is_empty() {
@@ -230,7 +264,12 @@ pub struct Sidebar<'a> {
 
 impl<'a> Sidebar<'a> {
     pub fn new(title: &'a str, items: &'a [(&'a str, &'a str)]) -> Self {
-        Self { title, items, selected: None, collapsed: false }
+        Self {
+            title,
+            items,
+            selected: None,
+            collapsed: false,
+        }
     }
 
     pub fn selected(mut self, idx: usize) -> Self {
@@ -248,34 +287,43 @@ impl Widget for &Sidebar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if self.collapsed {
             // Only show icons
-            let lines: Vec<Line> = self.items.iter().map(|(icon, _)| {
-                Line::from(Span::styled(
-                    format!(" {} ", icon),
-                    Style::default().fg(Color::DarkGray),
-                ))
-            }).collect();
+            let lines: Vec<Line> = self
+                .items
+                .iter()
+                .map(|(icon, _)| {
+                    Line::from(Span::styled(
+                        format!(" {} ", icon),
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                })
+                .collect();
             Paragraph::new(lines)
                 .block(Block::default().borders(Borders::RIGHT))
                 .render(area, buf);
         } else {
-            let lines: Vec<Line> = self.items.iter().enumerate().map(|(i, (icon, label))| {
-                let style = if Some(i) == self.selected {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                Line::from(vec![
-                    Span::styled(format!(" {} ", icon), style),
-                    Span::styled(label.to_string(), style),
-                ])
-            }).collect();
+            let lines: Vec<Line> = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, (icon, label))| {
+                    let style = if Some(i) == self.selected {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Line::from(vec![
+                        Span::styled(format!(" {} ", icon), style),
+                        Span::styled(label.to_string(), style),
+                    ])
+                })
+                .collect();
 
-            let block = Block::default()
-                .borders(Borders::RIGHT)
-                .title(Span::styled(
-                    format!(" {} ", self.title),
-                    Style::default().fg(Color::Cyan),
-                ));
+            let block = Block::default().borders(Borders::RIGHT).title(Span::styled(
+                format!(" {} ", self.title),
+                Style::default().fg(Color::Cyan),
+            ));
 
             Paragraph::new(lines).block(block).render(area, buf);
         }
@@ -304,7 +352,9 @@ impl Widget for &Breadcrumb<'_> {
                 spans.push(Span::styled(" › ", Style::default().fg(Color::DarkGray)));
             }
             let style = if i == self.segments.len() - 1 {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -325,7 +375,10 @@ pub struct Panel<'a> {
 
 impl<'a> Panel<'a> {
     pub fn new(title: &'a str) -> Self {
-        Self { title, border_color: Color::DarkGray }
+        Self {
+            title,
+            border_color: Color::DarkGray,
+        }
     }
 
     pub fn border_color(mut self, color: Color) -> Self {
@@ -358,7 +411,12 @@ pub struct FloatingWindow<'a> {
 
 impl<'a> FloatingWindow<'a> {
     pub fn new(title: &'a str, content: &'a [Line<'a>]) -> Self {
-        Self { title, content, width: 60, height: 20 }
+        Self {
+            title,
+            content,
+            width: 60,
+            height: 20,
+        }
     }
 
     pub fn size(mut self, w: u16, h: u16) -> Self {
@@ -383,7 +441,9 @@ impl Widget for &FloatingWindow<'_> {
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(
                 format!(" {} ", self.title),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
 
         Paragraph::new(self.content.to_vec())
@@ -404,11 +464,17 @@ pub struct Divider<'a> {
 
 impl<'a> Divider<'a> {
     pub fn horizontal() -> Self {
-        Self { label: None, style: Style::default().fg(Color::DarkGray) }
+        Self {
+            label: None,
+            style: Style::default().fg(Color::DarkGray),
+        }
     }
 
     pub fn with_label(label: &'a str) -> Self {
-        Self { label: Some(label), style: Style::default().fg(Color::DarkGray) }
+        Self {
+            label: Some(label),
+            style: Style::default().fg(Color::DarkGray),
+        }
     }
 }
 
@@ -421,15 +487,15 @@ impl Widget for &Divider<'_> {
 
             let line = Line::from(vec![
                 Span::styled("─".repeat(left_width as usize), self.style),
-                Span::styled(format!(" {} ", label), self.style.add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", label),
+                    self.style.add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("─".repeat(right_width as usize), self.style),
             ]);
             Paragraph::new(vec![line]).render(area, buf);
         } else {
-            let line = Line::from(Span::styled(
-                "─".repeat(area.width as usize),
-                self.style,
-            ));
+            let line = Line::from(Span::styled("─".repeat(area.width as usize), self.style));
             Paragraph::new(vec![line]).render(area, buf);
         }
     }

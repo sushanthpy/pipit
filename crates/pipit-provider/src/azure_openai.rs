@@ -19,8 +19,7 @@
 
 use crate::openai::OpenAiProvider;
 use crate::{
-    ContentEvent, CompletionRequest, LlmProvider, ModelCapabilities,
-    ProviderError, TokenCount,
+    CompletionRequest, ContentEvent, LlmProvider, ModelCapabilities, ProviderError, TokenCount,
 };
 use async_trait::async_trait;
 use futures::Stream;
@@ -47,8 +46,8 @@ impl AzureOpenAiProvider {
             )
         })?;
 
-        let api_version = std::env::var("AZURE_API_VERSION")
-            .unwrap_or_else(|_| "2024-12-01-preview".to_string());
+        let api_version =
+            std::env::var("AZURE_API_VERSION").unwrap_or_else(|_| "2024-12-01-preview".to_string());
 
         // If the user already provided a full deployment URL, use it directly.
         // Otherwise, construct it from endpoint + model (deployment name).

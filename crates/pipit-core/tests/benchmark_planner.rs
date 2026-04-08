@@ -4,7 +4,7 @@
 //! selections for the exact prompts used in E2E benchmarks (Tiers 1-5).
 //! A regression here means benchmark pass rates will drop.
 
-use pipit_core::planner::{is_question_task, Planner, StrategyKind};
+use pipit_core::planner::{Planner, StrategyKind, is_question_task};
 use pipit_core::proof::{ConfidenceReport, EvidenceArtifact, Objective, VerificationKind};
 
 fn selected_strategy(prompt: &str) -> StrategyKind {
@@ -21,24 +21,40 @@ fn selected_strategy(prompt: &str) -> StrategyKind {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn t1_file_creation_gets_minimal_patch() {
-    // Test 1: "Create a helper module" — no fix/test/refactor keywords
-    let s = selected_strategy("Create a Python module string_utils.py with 5 string helper functions");
-    assert_eq!(s, StrategyKind::MinimalPatch, "File creation should use MinimalPatch");
+fn t1_file_creation_gets_greenfield() {
+    // Test 1: "Create a helper module" — no fix/test/refactor keywords, has "create"
+    // This is a greenfield task: building something new from scratch.
+    let s =
+        selected_strategy("Create a Python module string_utils.py with 5 string helper functions");
+    assert_eq!(
+        s,
+        StrategyKind::Greenfield,
+        "File creation should use Greenfield"
+    );
 }
 
 #[test]
 fn t1_bug_fix_gets_minimal_patch() {
     // Test 2: "Fix the bugs" — has "fix" keyword
-    let s = selected_strategy("Fix the 3 bugs in calculator.py: divide-by-zero, power implementation, modulo check");
-    assert_eq!(s, StrategyKind::MinimalPatch, "Bug fix should use MinimalPatch (highest value with 'fix' keyword)");
+    let s = selected_strategy(
+        "Fix the 3 bugs in calculator.py: divide-by-zero, power implementation, modulo check",
+    );
+    assert_eq!(
+        s,
+        StrategyKind::MinimalPatch,
+        "Bug fix should use MinimalPatch (highest value with 'fix' keyword)"
+    );
 }
 
 #[test]
 fn t1_test_generation_gets_characterization_first() {
     // Test 5: "Write tests" — has "test" keyword → CharacterizationFirst
     let s = selected_strategy("Write comprehensive pytest tests for the calculator module");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Test generation should use CharacterizationFirst");
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Test generation should use CharacterizationFirst"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -48,30 +64,53 @@ fn t1_test_generation_gets_characterization_first() {
 #[test]
 fn t2_hidden_test_gets_characterization_first() {
     // Test 9: Discovering hidden edge cases — has "test" keyword
-    let s = selected_strategy("There are hidden failing tests in the pagination module. Find and fix all edge cases. Run the test suite to verify");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Hidden test discovery should use CharacterizationFirst");
+    let s = selected_strategy(
+        "There are hidden failing tests in the pagination module. Find and fix all edge cases. Run the test suite to verify",
+    );
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Hidden test discovery should use CharacterizationFirst"
+    );
 }
 
 #[test]
 fn t2_backward_compat_refactor() {
     // Test 12: "Refactor" + "test" — CharacterizationFirst wins when tests are emphasized
-    let s = selected_strategy("Refactor the internal data layer. All 13 API contract tests must still pass");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Refactor+test emphasis should select CharacterizationFirst");
+    let s = selected_strategy(
+        "Refactor the internal data layer. All 13 API contract tests must still pass",
+    );
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Refactor+test emphasis should select CharacterizationFirst"
+    );
 }
 
 #[test]
 fn t2_pure_refactor_gets_architectural_repair() {
     // Pure refactor without test emphasis
-    let s = selected_strategy("Refactor the architecture of the data access layer for better separation of concerns");
-    assert_eq!(s, StrategyKind::ArchitecturalRepair, "Pure refactor should select ArchitecturalRepair");
+    let s = selected_strategy(
+        "Refactor the architecture of the data access layer for better separation of concerns",
+    );
+    assert_eq!(
+        s,
+        StrategyKind::ArchitecturalRepair,
+        "Pure refactor should select ArchitecturalRepair"
+    );
 }
 
 #[test]
 fn t2_performance_fix() {
     // Test 11: "fix" + "regression" — regression triggers verification_heavy,
     // CharacterizationFirst wins because tests should be run first
-    let s = selected_strategy("Fix the performance regression. Four functions have O(n²) complexity");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Performance regression fix should use CharacterizationFirst");
+    let s =
+        selected_strategy("Fix the performance regression. Four functions have O(n²) complexity");
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Performance regression fix should use CharacterizationFirst"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -81,15 +120,26 @@ fn t2_performance_fix() {
 #[test]
 fn t3_schema_migration_gets_characterization() {
     // Test 17: Schema migration — has "test" in "contract tests"
-    let s = selected_strategy("Migrate the API from V1 to V2 schema. All 12 contract tests must pass");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Schema migration with tests should use CharacterizationFirst");
+    let s =
+        selected_strategy("Migrate the API from V1 to V2 schema. All 12 contract tests must pass");
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Schema migration with tests should use CharacterizationFirst"
+    );
 }
 
 #[test]
 fn t3_minimal_diff_fix() {
     // Test 18: "fix" present
-    let s = selected_strategy("Fix the broken function with the minimal possible diff. Do not modify any other code");
-    assert_eq!(s, StrategyKind::MinimalPatch, "Minimal diff should use MinimalPatch");
+    let s = selected_strategy(
+        "Fix the broken function with the minimal possible diff. Do not modify any other code",
+    );
+    assert_eq!(
+        s,
+        StrategyKind::MinimalPatch,
+        "Minimal diff should use MinimalPatch"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -99,22 +149,35 @@ fn t3_minimal_diff_fix() {
 #[test]
 fn t4_test_repair_gets_characterization() {
     // Test 22: "test" keyword
-    let s = selected_strategy("Fix the broken tests in test_inventory.py. Do not modify inventory.py");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Test repair should use CharacterizationFirst");
+    let s =
+        selected_strategy("Fix the broken tests in test_inventory.py. Do not modify inventory.py");
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Test repair should use CharacterizationFirst"
+    );
 }
 
 #[test]
 fn t4_unicode_bug_fix() {
     // Test 23: "fix" + "bug"
     let s = selected_strategy("Fix all 10 Unicode bugs in the text processing module");
-    assert_eq!(s, StrategyKind::MinimalPatch, "Unicode bug fix should use MinimalPatch");
+    assert_eq!(
+        s,
+        StrategyKind::MinimalPatch,
+        "Unicode bug fix should use MinimalPatch"
+    );
 }
 
 #[test]
 fn t4_regression_bundle_fix() {
     // Test 30: "fix" + "regression" — regression triggers verification_heavy
     let s = selected_strategy("Fix 5 regression bugs across the cart module");
-    assert_eq!(s, StrategyKind::CharacterizationFirst, "Regression bundle should use CharacterizationFirst");
+    assert_eq!(
+        s,
+        StrategyKind::CharacterizationFirst,
+        "Regression bundle should use CharacterizationFirst"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -124,15 +187,25 @@ fn t4_regression_bundle_fix() {
 #[test]
 fn t5_broken_ci_fix() {
     // Test 31: "fix" keyword
-    let s = selected_strategy("Fix the broken CI pipeline. Ignore deprecation warnings and lint noise");
-    assert_eq!(s, StrategyKind::MinimalPatch, "Broken CI fix should use MinimalPatch");
+    let s =
+        selected_strategy("Fix the broken CI pipeline. Ignore deprecation warnings and lint noise");
+    assert_eq!(
+        s,
+        StrategyKind::MinimalPatch,
+        "Broken CI fix should use MinimalPatch"
+    );
 }
 
 #[test]
 fn t5_retry_storm_fix() {
     // Test 37: "fix" keyword
-    let s = selected_strategy("Fix the retry storm causing cascading failures in the payment service");
-    assert_eq!(s, StrategyKind::MinimalPatch, "Retry storm fix should use MinimalPatch");
+    let s =
+        selected_strategy("Fix the retry storm causing cascading failures in the payment service");
+    assert_eq!(
+        s,
+        StrategyKind::MinimalPatch,
+        "Retry storm fix should use MinimalPatch"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -48,9 +48,7 @@ impl LspKind {
         {
             servers.push(Self::Pyright);
         }
-        if root.join("tsconfig.json").exists()
-            || root.join("package.json").exists()
-        {
+        if root.join("tsconfig.json").exists() || root.join("package.json").exists() {
             servers.push(Self::TypescriptLanguageServer);
         }
         if root.join("go.mod").exists() {

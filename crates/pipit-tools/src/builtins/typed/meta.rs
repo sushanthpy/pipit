@@ -118,14 +118,12 @@ impl TypedTool for ConfigAccessTool {
                 };
                 Ok(TypedToolResult::text(format!("{key} = {value}")))
             }
-            ConfigInput::List => {
-                Ok(TypedToolResult::text(format!(
-                    "Configuration:\n  project_root = {}\n  cwd = {}\n  approval_mode = {:?}",
-                    ctx.project_root.display(),
-                    ctx.current_dir().display(),
-                    ctx.approval_mode,
-                )))
-            }
+            ConfigInput::List => Ok(TypedToolResult::text(format!(
+                "Configuration:\n  project_root = {}\n  cwd = {}\n  approval_mode = {:?}",
+                ctx.project_root.display(),
+                ctx.current_dir().display(),
+                ctx.approval_mode,
+            ))),
         }
     }
 }
@@ -179,7 +177,13 @@ impl TypedTool for BriefContextTool {
         ];
 
         // Check for key files
-        for name in &["README.md", "Cargo.toml", "package.json", "pyproject.toml", ".git"] {
+        for name in &[
+            "README.md",
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            ".git",
+        ] {
             if root.join(name).exists() {
                 sections.push(format!("  ✓ {name} exists"));
             }
@@ -202,7 +206,9 @@ pub struct ToolSearchInput {
     pub limit: u32,
 }
 
-fn default_limit() -> u32 { 10 }
+fn default_limit() -> u32 {
+    10
+}
 
 /// BM25 search over ToolCard descriptions.
 pub struct TypedToolSearchTool {
@@ -217,7 +223,9 @@ impl TypedToolSearchTool {
         for card in Self::builtin_cards() {
             index.add(card);
         }
-        Self { index: Arc::new(Mutex::new(index)) }
+        Self {
+            index: Arc::new(Mutex::new(index)),
+        }
     }
 
     fn builtin_cards() -> Vec<ToolCard> {
@@ -303,27 +311,37 @@ impl TypedTool for TypedToolSearchTool {
         _ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<TypedToolResult, ToolError> {
-        let index = self.index.lock().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let index = self
+            .index
+            .lock()
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
         let results = index.search(&input.query, input.limit as usize);
 
         if results.is_empty() {
             return Ok(TypedToolResult::text(format!(
-                "No tools found matching '{}'.", input.query
+                "No tools found matching '{}'.",
+                input.query
             )));
         }
 
-        let formatted: Vec<String> = results.iter().map(|card| {
-            format!(
-                "**{}** — {}\n  When: {}\n  Tags: [{}] | Purity: {:?}",
-                card.name, card.summary, card.when_to_use,
-                card.tags.join(", "),
-                card.purity,
-            )
-        }).collect();
+        let formatted: Vec<String> = results
+            .iter()
+            .map(|card| {
+                format!(
+                    "**{}** — {}\n  When: {}\n  Tags: [{}] | Purity: {:?}",
+                    card.name,
+                    card.summary,
+                    card.when_to_use,
+                    card.tags.join(", "),
+                    card.purity,
+                )
+            })
+            .collect();
 
         Ok(TypedToolResult::text(format!(
             "Found {} tool(s) matching '{}':\n\n{}",
-            results.len(), input.query,
+            results.len(),
+            input.query,
             formatted.join("\n\n")
         )))
     }

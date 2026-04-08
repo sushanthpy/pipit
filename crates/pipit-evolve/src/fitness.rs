@@ -23,7 +23,13 @@ pub struct FitnessVector {
 
 impl FitnessVector {
     pub fn dimensions(&self) -> [f64; 5] {
-        [self.correctness, self.performance, self.complexity, self.diff_size, self.quality]
+        [
+            self.correctness,
+            self.performance,
+            self.complexity,
+            self.diff_size,
+            self.quality,
+        ]
     }
 
     /// Scalar summary (weighted sum). Used for quick ranking, not Pareto analysis.
@@ -73,7 +79,9 @@ impl FitnessEvaluator {
         // Non-dominated sorting
         for i in 0..n {
             for j in 0..n {
-                if i == j { continue; }
+                if i == j {
+                    continue;
+                }
                 if Self::dominates(&variants[j].1, &variants[i].1) {
                     domination_count[i] += 1;
                 }
@@ -85,12 +93,15 @@ impl FitnessEvaluator {
         let mut remaining: Vec<usize> = (0..n).collect();
 
         while !remaining.is_empty() {
-            let front: Vec<usize> = remaining.iter()
+            let front: Vec<usize> = remaining
+                .iter()
                 .filter(|&&i| domination_count[i] == 0)
                 .copied()
                 .collect();
 
-            if front.is_empty() { break; }
+            if front.is_empty() {
+                break;
+            }
 
             for &i in &front {
                 ranks[i] = current_rank;
@@ -110,7 +121,9 @@ impl FitnessEvaluator {
         }
 
         // Build Pareto front (rank 1 points)
-        let points: Vec<ParetoPoint> = variants.iter().enumerate()
+        let points: Vec<ParetoPoint> = variants
+            .iter()
+            .enumerate()
             .map(|(idx, (vid, fitness))| ParetoPoint {
                 variant_id: *vid,
                 fitness: fitness.clone(),
@@ -136,19 +149,27 @@ impl FitnessEvaluator {
     ) -> FitnessVector {
         let correctness = if tests_total > 0 {
             tests_passed as f64 / tests_total as f64
-        } else { 0.5 };
+        } else {
+            0.5
+        };
 
         let performance = if variant_time_ms > 0 {
             (baseline_time_ms as f64 / variant_time_ms as f64).min(5.0)
-        } else { 1.0 };
+        } else {
+            1.0
+        };
 
         let complexity = if variant_complexity > 0 {
             (baseline_complexity as f64 / variant_complexity as f64).min(3.0)
-        } else { 1.0 };
+        } else {
+            1.0
+        };
 
         let diff_size = if max_diff_lines > 0 {
             1.0 - (diff_lines as f64 / max_diff_lines as f64).min(1.0)
-        } else { 1.0 };
+        } else {
+            1.0
+        };
 
         FitnessVector {
             correctness,
@@ -166,8 +187,20 @@ mod tests {
 
     #[test]
     fn test_dominance() {
-        let a = FitnessVector { correctness: 1.0, performance: 0.8, complexity: 0.7, diff_size: 0.9, quality: 0.8 };
-        let b = FitnessVector { correctness: 0.9, performance: 0.7, complexity: 0.6, diff_size: 0.8, quality: 0.7 };
+        let a = FitnessVector {
+            correctness: 1.0,
+            performance: 0.8,
+            complexity: 0.7,
+            diff_size: 0.9,
+            quality: 0.8,
+        };
+        let b = FitnessVector {
+            correctness: 0.9,
+            performance: 0.7,
+            complexity: 0.6,
+            diff_size: 0.8,
+            quality: 0.7,
+        };
         assert!(FitnessEvaluator::dominates(&a, &b));
         assert!(!FitnessEvaluator::dominates(&b, &a));
     }
@@ -175,8 +208,20 @@ mod tests {
     #[test]
     fn test_non_dominated_pair() {
         // A is better on correctness, B is better on performance — neither dominates
-        let a = FitnessVector { correctness: 1.0, performance: 0.5, complexity: 0.7, diff_size: 0.8, quality: 0.7 };
-        let b = FitnessVector { correctness: 0.8, performance: 1.0, complexity: 0.7, diff_size: 0.8, quality: 0.7 };
+        let a = FitnessVector {
+            correctness: 1.0,
+            performance: 0.5,
+            complexity: 0.7,
+            diff_size: 0.8,
+            quality: 0.7,
+        };
+        let b = FitnessVector {
+            correctness: 0.8,
+            performance: 1.0,
+            complexity: 0.7,
+            diff_size: 0.8,
+            quality: 0.7,
+        };
         assert!(!FitnessEvaluator::dominates(&a, &b));
         assert!(!FitnessEvaluator::dominates(&b, &a));
     }
@@ -184,9 +229,36 @@ mod tests {
     #[test]
     fn test_pareto_front() {
         let variants = vec![
-            (0, FitnessVector { correctness: 1.0, performance: 0.5, complexity: 0.7, diff_size: 0.8, quality: 0.7 }),
-            (1, FitnessVector { correctness: 0.8, performance: 1.0, complexity: 0.6, diff_size: 0.9, quality: 0.6 }),
-            (2, FitnessVector { correctness: 0.5, performance: 0.3, complexity: 0.3, diff_size: 0.4, quality: 0.3 }),
+            (
+                0,
+                FitnessVector {
+                    correctness: 1.0,
+                    performance: 0.5,
+                    complexity: 0.7,
+                    diff_size: 0.8,
+                    quality: 0.7,
+                },
+            ),
+            (
+                1,
+                FitnessVector {
+                    correctness: 0.8,
+                    performance: 1.0,
+                    complexity: 0.6,
+                    diff_size: 0.9,
+                    quality: 0.6,
+                },
+            ),
+            (
+                2,
+                FitnessVector {
+                    correctness: 0.5,
+                    performance: 0.3,
+                    complexity: 0.3,
+                    diff_size: 0.4,
+                    quality: 0.3,
+                },
+            ),
         ];
         let front = FitnessEvaluator::pareto_front(&variants);
         // Variants 0 and 1 are non-dominated; variant 2 is dominated by both

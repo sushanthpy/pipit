@@ -284,7 +284,13 @@ mod tests {
         });
         tracker.record_turn(1000, 500, 0.03, false);
         let decision = tracker.record_turn(1000, 500, 0.03, false);
-        assert!(matches!(decision, BudgetDecision::BudgetExceeded { metric: BudgetMetric::Cost, .. }));
+        assert!(matches!(
+            decision,
+            BudgetDecision::BudgetExceeded {
+                metric: BudgetMetric::Cost,
+                ..
+            }
+        ));
     }
 
     #[test]

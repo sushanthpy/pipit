@@ -30,11 +30,7 @@ async fn check_package(ecosystem: &str, name: &str, version: &str) -> Option<Dep
         .build()
         .ok()?;
 
-    let resp = client.post(OSV_API)
-        .json(&body)
-        .send()
-        .await
-        .ok()?;
+    let resp = client.post(OSV_API).json(&body).send().await.ok()?;
 
     if !resp.status().is_success() {
         return None;
@@ -48,9 +44,16 @@ async fn check_package(ecosystem: &str, name: &str, version: &str) -> Option<Dep
     }
 
     let first = &vulns[0];
-    let id = first.get("id").and_then(|i| i.as_str()).unwrap_or("unknown");
-    let summary = first.get("summary").and_then(|s| s.as_str()).unwrap_or("Vulnerability found");
-    let severity_str = first.get("database_specific")
+    let id = first
+        .get("id")
+        .and_then(|i| i.as_str())
+        .unwrap_or("unknown");
+    let summary = first
+        .get("summary")
+        .and_then(|s| s.as_str())
+        .unwrap_or("Vulnerability found");
+    let severity_str = first
+        .get("database_specific")
         .and_then(|d| d.get("severity"))
         .and_then(|s| s.as_str())
         .unwrap_or("MODERATE");

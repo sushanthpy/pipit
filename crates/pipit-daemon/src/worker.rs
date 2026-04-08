@@ -214,7 +214,13 @@ impl WorkerMemory {
     }
 
     /// Update stats with a completed task.
-    pub fn record_completion(&mut self, success: bool, cost_usd: f64, turns: u32, elapsed_secs: f64) {
+    pub fn record_completion(
+        &mut self,
+        success: bool,
+        cost_usd: f64,
+        turns: u32,
+        elapsed_secs: f64,
+    ) {
         self.stats.total_tasks += 1;
         if success {
             self.stats.successful_tasks += 1;
@@ -331,7 +337,11 @@ impl Worker {
             let msg = tokio::time::timeout(idle_timeout, self.rx.recv()).await;
 
             match msg {
-                Ok(Some(WorkerMessage::Task { task_id, prompt, inputs })) => {
+                Ok(Some(WorkerMessage::Task {
+                    task_id,
+                    prompt,
+                    inputs,
+                })) => {
                     self.state = WorkerState::Working;
                     self.current_task = Some(task_id.clone());
 
@@ -370,10 +380,9 @@ impl Worker {
                     );
                     // Steering is handled by the active agent loop if working,
                     // or stored as context for next task if idle.
-                    self.memory.state.insert(
-                        "last_steer".to_string(),
-                        serde_json::Value::String(msg),
-                    );
+                    self.memory
+                        .state
+                        .insert("last_steer".to_string(), serde_json::Value::String(msg));
                 }
                 Ok(Some(WorkerMessage::Ping(reply))) => {
                     let _ = reply.send(self.status());

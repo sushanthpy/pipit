@@ -44,7 +44,10 @@ impl ToolRegistry {
     }
 
     /// Register the subagent tool with a provided executor.
-    pub fn register_subagent(&mut self, executor: Arc<dyn crate::builtins::subagent::SubagentExecutor>) {
+    pub fn register_subagent(
+        &mut self,
+        executor: Arc<dyn crate::builtins::subagent::SubagentExecutor>,
+    ) {
         self.register(Arc::new(crate::builtins::SubagentTool::new(executor)));
     }
 

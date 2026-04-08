@@ -13,7 +13,10 @@ pub fn run() -> Result<()> {
     println!();
 
     if config_path.exists() {
-        println!("  \x1b[90mExisting config:\x1b[0m {}", config_path.display());
+        println!(
+            "  \x1b[90mExisting config:\x1b[0m {}",
+            config_path.display()
+        );
         print!("  Overwrite? [y/N] ");
         io::stdout().flush()?;
         let mut answer = String::new();
@@ -31,8 +34,13 @@ pub fn run() -> Result<()> {
     println!("  \x1b[90m           ollama, groq, cerebras, mistral, xai, openai_compatible\x1b[0m");
     println!();
     let provider_str = prompt_input("  Provider [anthropic]: ")?;
-    let provider_str = if provider_str.is_empty() { "anthropic".to_string() } else { provider_str };
-    let provider_kind: ProviderKind = provider_str.parse()
+    let provider_str = if provider_str.is_empty() {
+        "anthropic".to_string()
+    } else {
+        provider_str
+    };
+    let provider_kind: ProviderKind = provider_str
+        .parse()
         .map_err(|e: String| anyhow::anyhow!("{}", e))?;
     println!();
 
@@ -40,7 +48,11 @@ pub fn run() -> Result<()> {
     let default_model = default_model_for_provider(provider_kind);
     println!("  \x1b[1mModel\x1b[0m");
     let model_str = prompt_input(&format!("  Model [{}]: ", default_model))?;
-    let model = if model_str.is_empty() { default_model.to_string() } else { model_str };
+    let model = if model_str.is_empty() {
+        default_model.to_string()
+    } else {
+        model_str
+    };
     println!();
 
     // Base URL (for compatible/ollama/custom)
@@ -48,7 +60,11 @@ pub fn run() -> Result<()> {
         let default_url = default_base_url(provider_kind);
         println!("  \x1b[1mBase URL\x1b[0m");
         let url = prompt_input(&format!("  Endpoint URL [{}]: ", default_url))?;
-        let url = if url.is_empty() { default_url.to_string() } else { url };
+        let url = if url.is_empty() {
+            default_url.to_string()
+        } else {
+            url
+        };
         println!();
         Some(url)
     } else {
@@ -67,12 +83,19 @@ pub fn run() -> Result<()> {
             println!();
         } else {
             println!("  \x1b[90mEnter key or leave blank to set later.\x1b[0m");
-            println!("  \x1b[90mYou can also use: export {}=<key>\x1b[0m", env_var_for_provider(provider_kind));
+            println!(
+                "  \x1b[90mYou can also use: export {}=<key>\x1b[0m",
+                env_var_for_provider(provider_kind)
+            );
             let key = prompt_input("  API Key: ")?;
             if !key.is_empty() {
                 let mut store = pipit_config::CredentialStore::load();
-                store.set(&provider_kind.to_string(), pipit_config::StoredCredential::ApiKey { api_key: key });
-                store.save()
+                store.set(
+                    &provider_kind.to_string(),
+                    pipit_config::StoredCredential::ApiKey { api_key: key },
+                );
+                store
+                    .save()
                     .map_err(|e| anyhow::anyhow!("Failed to save credentials: {}", e))?;
                 println!("  \x1b[32m✓ Key saved to ~/.pipit/credentials.json\x1b[0m");
             }
@@ -86,8 +109,13 @@ pub fn run() -> Result<()> {
     println!("  \x1b[90m  auto_edit   — auto-apply edits, ask for commands\x1b[0m");
     println!("  \x1b[90m  full_auto   — autonomous, no confirmation needed\x1b[0m");
     let approval_str = prompt_input("  Approval mode [full_auto]: ")?;
-    let approval_str = if approval_str.is_empty() { "full_auto".to_string() } else { approval_str };
-    let approval: ApprovalMode = approval_str.parse()
+    let approval_str = if approval_str.is_empty() {
+        "full_auto".to_string()
+    } else {
+        approval_str
+    };
+    let approval: ApprovalMode = approval_str
+        .parse()
         .map_err(|e: String| anyhow::anyhow!("{}", e))?;
     println!();
 
@@ -95,8 +123,12 @@ pub fn run() -> Result<()> {
     println!("  \x1b[1mMax Turns\x1b[0m");
     println!("  \x1b[90mMax agent turns per prompt (0 = unlimited)\x1b[0m");
     let turns_str = prompt_input("  Max turns [25]: ")?;
-    let max_turns: u32 = if turns_str.is_empty() { 25 } else {
-        turns_str.parse().map_err(|_| anyhow::anyhow!("Invalid number: {}", turns_str))?
+    let max_turns: u32 = if turns_str.is_empty() {
+        25
+    } else {
+        turns_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid number: {}", turns_str))?
     };
     println!();
 
@@ -122,7 +154,10 @@ pub fn run() -> Result<()> {
     pipit_config::write_user_config(&layer)
         .map_err(|e| anyhow::anyhow!("Failed to write config: {}", e))?;
 
-    println!("  \x1b[32m✓ Config saved to {}\x1b[0m", config_path.display());
+    println!(
+        "  \x1b[32m✓ Config saved to {}\x1b[0m",
+        config_path.display()
+    );
     println!();
     println!("  \x1b[1mSummary\x1b[0m");
     println!("  \x1b[90m  Provider:  \x1b[0m {}", provider_kind);
@@ -167,12 +202,13 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
 }
 
 fn needs_base_url(provider: ProviderKind) -> bool {
-    matches!(provider,
+    matches!(
+        provider,
         ProviderKind::OpenAiCompatible
-        | ProviderKind::AnthropicCompatible
-        | ProviderKind::AzureOpenAi
-        | ProviderKind::Vertex
-        | ProviderKind::Ollama
+            | ProviderKind::AnthropicCompatible
+            | ProviderKind::AzureOpenAi
+            | ProviderKind::Vertex
+            | ProviderKind::Ollama
     )
 }
 

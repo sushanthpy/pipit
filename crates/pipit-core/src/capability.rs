@@ -235,11 +235,7 @@ pub struct AuditEntry {
 }
 
 impl PolicyKernel {
-    pub fn new(
-        granted: CapabilitySet,
-        zone: WorkspaceZone,
-        project_root: PathBuf,
-    ) -> Self {
+    pub fn new(granted: CapabilitySet, zone: WorkspaceZone, project_root: PathBuf) -> Self {
         Self {
             granted,
             zone,
@@ -264,15 +260,13 @@ impl PolicyKernel {
     }
 
     /// Create a kernel from an ApprovalMode (backward-compatible).
-    pub fn from_approval_mode(
-        mode: pipit_config::ApprovalMode,
-        project_root: PathBuf,
-    ) -> Self {
+    pub fn from_approval_mode(mode: pipit_config::ApprovalMode, project_root: PathBuf) -> Self {
         let granted = match mode {
             pipit_config::ApprovalMode::Suggest => CapabilitySet::READ_ONLY,
             pipit_config::ApprovalMode::AutoEdit => CapabilitySet::EDIT,
-            pipit_config::ApprovalMode::CommandReview => CapabilitySet::EDIT
-                .grant(Capability::ProcessExec),
+            pipit_config::ApprovalMode::CommandReview => {
+                CapabilitySet::EDIT.grant(Capability::ProcessExec)
+            }
             pipit_config::ApprovalMode::FullAuto => CapabilitySet::FULL_AUTO,
         };
         Self::new(granted, WorkspaceZone::Trusted, project_root)
@@ -371,9 +365,7 @@ impl PolicyKernel {
         };
 
         // 5. Subagent depth check
-        if lineage.depth > 3
-            && request.required.has(Capability::Delegate)
-        {
+        if lineage.depth > 3 && request.required.has(Capability::Delegate) {
             let decision = PolicyDecision::Deny {
                 reason: format!(
                     "Subagent delegation depth {} exceeds maximum (3)",
@@ -412,7 +404,8 @@ impl PolicyKernel {
         lineage: &ExecutionLineage,
     ) -> Vec<PreflightDecision> {
         let mut decisions = Vec::with_capacity(calls.len());
-        let mut path_read_approved: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut path_read_approved: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for call in calls {
             let semantics = crate::tool_semantics::builtin_semantics(&call.tool_name);
@@ -426,9 +419,15 @@ impl PolicyKernel {
 
             let cap_request = CapabilityRequest {
                 required: semantics.required_capabilities,
-                resource_scopes: call.paths.iter()
+                resource_scopes: call
+                    .paths
+                    .iter()
                     .map(|p| ResourceScope::Path(PathBuf::from(p)))
-                    .chain(call.commands.iter().map(|c| ResourceScope::Command(c.clone())))
+                    .chain(
+                        call.commands
+                            .iter()
+                            .map(|c| ResourceScope::Command(c.clone())),
+                    )
                     .collect(),
                 justification: Some(format!("Preflight for '{}'", call.tool_name)),
             };
@@ -467,8 +466,7 @@ impl PolicyKernel {
 
     /// Set a tool-specific capability restriction.
     pub fn restrict_tool(&mut self, tool_name: &str, max_caps: CapabilitySet) {
-        self.tool_overrides
-            .insert(tool_name.to_string(), max_caps);
+        self.tool_overrides.insert(tool_name.to_string(), max_caps);
     }
 
     /// Get the audit log.
@@ -508,11 +506,19 @@ impl PolicyKernel {
 
     /// Block all network tools (daemon: block_network=true).
     pub fn block_network_tools(&mut self) {
-        for tool in &["mcp_search", "fetch_url", "http_request", "web_search", "web_fetch"] {
+        for tool in &[
+            "mcp_search",
+            "fetch_url",
+            "http_request",
+            "web_search",
+            "web_fetch",
+        ] {
             self.deny_tool(tool);
         }
         // Also revoke network capabilities from the grant set
-        self.granted = CapabilitySet(self.granted.0 & !(Capability::NetworkRead as u32 | Capability::NetworkWrite as u32));
+        self.granted = CapabilitySet(
+            self.granted.0 & !(Capability::NetworkRead as u32 | Capability::NetworkWrite as u32),
+        );
     }
 
     /// Set maximum write size in bytes (daemon: max_write_bytes).
@@ -606,6 +612,49 @@ pub struct ExecutionLineage {
     pub depth: u32,
     /// Parent task ID.
     pub parent_id: Option<String>,
+    /// Execution context determines which permission handler to use.
+    pub context: ExecutionContext,
+}
+
+/// Execution context — mirrors the three permission handler contexts
+/// that production multi-agent systems require.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionContext {
+    /// Interactive REPL — user is present, can approve/deny.
+    #[default]
+    Interactive,
+    /// Coordinator — managing worker agents, may auto-approve read-only tools.
+    Coordinator,
+    /// Worker — running inside a subagent, restricted tool set, no user interaction.
+    Worker,
+}
+
+impl ExecutionContext {
+    /// Whether this context supports interactive user prompts.
+    pub fn is_interactive(&self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+
+    /// Whether this context should auto-deny mutating operations without explicit grant.
+    pub fn auto_deny_mutations(&self) -> bool {
+        matches!(self, Self::Worker)
+    }
+
+    /// Default capability set for this context.
+    pub fn default_capabilities(&self) -> CapabilitySet {
+        match self {
+            Self::Interactive => CapabilitySet::ALL,
+            Self::Coordinator => CapabilitySet(
+                Capability::FsRead as u32
+                    | Capability::FsWrite as u32
+                    | Capability::ProcessExec as u32
+                    | Capability::NetworkRead as u32,
+            ),
+            Self::Worker => {
+                CapabilitySet(Capability::FsRead as u32 | Capability::NetworkRead as u32)
+            }
+        }
+    }
 }
 
 /// Simple glob matching (supports * and **).
@@ -699,15 +748,17 @@ impl PermissionRuleStore {
             return Ok(Self::new());
         }
         let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let rules: Vec<PermissionRule> = serde_json::from_str(&content)
-            .map_err(|e| e.to_string())?;
+        let rules: Vec<PermissionRule> =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
         let next_id = rules.len() as u32 + 1;
         Ok(Self { rules, next_id })
     }
 
     /// Save rules to a JSON file (only Always-duration rules).
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        let persistent: Vec<&PermissionRule> = self.rules.iter()
+        let persistent: Vec<&PermissionRule> = self
+            .rules
+            .iter()
             .filter(|r| matches!(r.duration, RuleDuration::Always))
             .collect();
         let json = serde_json::to_string_pretty(&persistent).map_err(|e| e.to_string())?;
@@ -753,7 +804,8 @@ impl PermissionRuleStore {
 
     /// Clear all ThisRun rules (called at session end).
     pub fn clear_run_rules(&mut self) {
-        self.rules.retain(|r| !matches!(r.duration, RuleDuration::ThisRun));
+        self.rules
+            .retain(|r| !matches!(r.duration, RuleDuration::ThisRun));
     }
 
     /// Evaluate rules for a tool call. Returns the first matching rule's decision,
@@ -812,24 +864,20 @@ fn scope_matches(scope: &RuleScope, resources: &[ResourceScope]) -> bool {
             // If no path resources, global scope doesn't restrict
             || resources.iter().all(|r| !matches!(r, ResourceScope::Path(_)))
         }
-        RuleScope::CommandPattern(pattern) => {
-            resources.iter().any(|r| {
-                if let ResourceScope::Command(cmd) = r {
-                    simple_glob_match(pattern, cmd)
-                } else {
-                    false
-                }
-            })
-        }
-        RuleScope::McpServer(server) => {
-            resources.iter().any(|r| {
-                if let ResourceScope::McpServer(s) = r {
-                    s == server
-                } else {
-                    false
-                }
-            })
-        }
+        RuleScope::CommandPattern(pattern) => resources.iter().any(|r| {
+            if let ResourceScope::Command(cmd) = r {
+                simple_glob_match(pattern, cmd)
+            } else {
+                false
+            }
+        }),
+        RuleScope::McpServer(server) => resources.iter().any(|r| {
+            if let ResourceScope::McpServer(s) = r {
+                s == server
+            } else {
+                false
+            }
+        }),
     }
 }
 
@@ -858,8 +906,12 @@ mod tests {
 
     #[test]
     fn capability_set_lattice_operations() {
-        let a = CapabilitySet::EMPTY.grant(Capability::FsRead).grant(Capability::FsWrite);
-        let b = CapabilitySet::EMPTY.grant(Capability::FsRead).grant(Capability::ProcessExec);
+        let a = CapabilitySet::EMPTY
+            .grant(Capability::FsRead)
+            .grant(Capability::FsWrite);
+        let b = CapabilitySet::EMPTY
+            .grant(Capability::FsRead)
+            .grant(Capability::ProcessExec);
 
         // Meet (intersection)
         let meet = a.meet(b);
@@ -889,7 +941,10 @@ mod tests {
             resource_scopes: vec![],
             justification: None,
         };
-        assert_eq!(kernel.evaluate("read_file", &request, &lineage), PolicyDecision::Allow);
+        assert_eq!(
+            kernel.evaluate("read_file", &request, &lineage),
+            PolicyDecision::Allow
+        );
 
         // Write tool should require ask (not in READ_ONLY grant)
         let request = CapabilityRequest {

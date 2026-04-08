@@ -4,10 +4,10 @@ use std::path::PathBuf;
 /// Skill source priority (later wins on name collision).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SkillSource {
-    Builtin,   // bundled in binary
-    User,      // ~/.pipit/skills/
-    Project,   // .pipit/skills/
-    CliDir,    // --add-dir
+    Builtin, // bundled in binary
+    User,    // ~/.pipit/skills/
+    Project, // .pipit/skills/
+    CliDir,  // --add-dir
 }
 
 /// Tier 1 — always in memory. ~100 tokens per skill in system prompt.

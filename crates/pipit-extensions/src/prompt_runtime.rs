@@ -112,7 +112,9 @@ pub async fn execute_prompt_hook(
         return Ok(PromptHookResult {
             decision: HookDecision {
                 allow: true,
-                message: Some(format!("Prompt hook: LLM error {status}, defaulting to allow")),
+                message: Some(format!(
+                    "Prompt hook: LLM error {status}, defaulting to allow"
+                )),
                 transformed_args: None,
                 duration_us: elapsed_us,
             },
@@ -122,24 +124,29 @@ pub async fn execute_prompt_hook(
         });
     }
 
-    let resp_json: serde_json::Value = response.json().await
+    let resp_json: serde_json::Value = response
+        .json()
+        .await
         .map_err(|e| format!("Prompt hook response parse error: {e}"))?;
 
     let content = resp_json
-        .get("choices").and_then(|c| c.get(0))
-        .and_then(|c| c.get("message")).and_then(|m| m.get("content"))
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
         .unwrap_or("allow");
 
-    let tokens_used = resp_json.get("usage")
+    let tokens_used = resp_json
+        .get("usage")
         .and_then(|u| u.get("total_tokens"))
         .and_then(|t| t.as_u64())
         .unwrap_or(0);
 
     // Parse response: look for "deny", "block", "reject" to deny; otherwise allow
     let content_lower = content.to_lowercase();
-    let allow = !content_lower.contains("deny") 
-        && !content_lower.contains("block") 
+    let allow = !content_lower.contains("deny")
+        && !content_lower.contains("block")
         && !content_lower.contains("reject");
 
     Ok(PromptHookResult {
@@ -167,12 +174,19 @@ fn format_hook_prompt(context: &HookContext) -> String {
     }
 
     if let Some(ref args) = context.tool_args {
-        parts.push(format!("Arguments: {}", serde_json::to_string_pretty(args).unwrap_or_default()));
+        parts.push(format!(
+            "Arguments: {}",
+            serde_json::to_string_pretty(args).unwrap_or_default()
+        ));
     }
 
     if let Some(ref result) = context.tool_result {
         let truncated = if result.len() > 2000 {
-            format!("{}... [truncated, {} total chars]", &result[..2000], result.len())
+            format!(
+                "{}... [truncated, {} total chars]",
+                &result[..2000],
+                result.len()
+            )
         } else {
             result.clone()
         };
@@ -232,14 +246,16 @@ pub async fn execute_agent_hook(
     );
 
     // Find pipit binary for subprocess execution
-    let pipit_bin = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("pipit"));
+    let pipit_bin = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("pipit"));
 
     let mut cmd = tokio::process::Command::new(&pipit_bin);
     cmd.arg("--json")
-        .arg("--max-turns").arg(config.max_turns.to_string())
-        .arg("--approval").arg("suggest") // Read-only by default for agent hooks
-        .arg("--root").arg(&context.project_root)
+        .arg("--max-turns")
+        .arg(config.max_turns.to_string())
+        .arg("--approval")
+        .arg("suggest") // Read-only by default for agent hooks
+        .arg("--root")
+        .arg(&context.project_root)
         .arg(&full_task)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -293,7 +309,8 @@ pub async fn execute_agent_hook(
     if response_text.is_empty() {
         // Try parsing stdout as the final result JSON
         if let Ok(result) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-            response_text = result.get("status")
+            response_text = result
+                .get("status")
                 .and_then(|s| s.as_str())
                 .unwrap_or("completed")
                 .to_string();
@@ -314,13 +331,147 @@ pub async fn execute_agent_hook(
     Ok(AgentHookResult {
         decision: HookDecision {
             allow,
-            message: if response_text.is_empty() { None } else { Some(response_text) },
+            message: if response_text.is_empty() {
+                None
+            } else {
+                Some(response_text)
+            },
             transformed_args: None,
             duration_us: elapsed_us,
         },
         turns_used,
         cost_usd: cost,
     })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HTTP HOOK RUNTIME
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct HttpHookConfig {
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub method: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct HttpHookResult {
+    pub decision: HookDecision,
+    pub status_code: u16,
+}
+
+/// Execute an HTTP hook by POSTing the hook context to a URL.
+///
+/// SSRF guard: rejects private/loopback IPs and non-HTTPS URLs in production.
+pub async fn execute_http_hook(
+    config: &HttpHookConfig,
+    context: &HookContext,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<HttpHookResult, String> {
+    let start = Instant::now();
+
+    // SSRF guard: reject obviously dangerous URLs
+    let url_lower = config.url.to_lowercase();
+    if url_lower.contains("169.254.")
+        || url_lower.contains("metadata.google")
+        || url_lower.contains("localhost") && !std::env::var("PIPIT_ALLOW_LOCALHOST_HOOKS").is_ok()
+    {
+        return Err(format!("SSRF guard: blocked URL {}", config.url));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(config.timeout_ms))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|e| format!("HTTP hook client error: {e}"))?;
+
+    let body = serde_json::json!({
+        "event": context.event,
+        "tool_name": context.tool_name,
+        "tool_args": context.tool_args,
+        "tool_result": context.tool_result.as_deref().map(|r| if r.len() > 4000 { &r[..4000] } else { r }),
+        "project_root": context.project_root.display().to_string(),
+        "session_id": context.session_id,
+    });
+
+    // Expand env vars in headers (e.g., "Bearer ${HOOK_TOKEN}")
+    let mut expanded_headers = reqwest::header::HeaderMap::new();
+    for (key, val) in &config.headers {
+        let expanded = expand_env_vars(val);
+        if let (Ok(name), Ok(value)) = (
+            reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+            reqwest::header::HeaderValue::from_str(&expanded),
+        ) {
+            expanded_headers.insert(name, value);
+        }
+    }
+
+    let request_builder = match config.method.to_uppercase().as_str() {
+        "GET" => client.get(&config.url),
+        _ => client.post(&config.url),
+    };
+
+    let response = tokio::select! {
+        r = request_builder
+            .headers(expanded_headers)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send() => {
+            r.map_err(|e| format!("HTTP hook request failed: {e}"))?
+        }
+        _ = cancel.cancelled() => return Err("HTTP hook cancelled".into()),
+    };
+
+    let elapsed_us = start.elapsed().as_micros() as u64;
+    let status_code = response.status().as_u16();
+
+    let resp_text = response.text().await.unwrap_or_default();
+
+    // Parse decision from response
+    let (allow, message) = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+        let allow = json
+            .get("allow")
+            .and_then(|a| a.as_bool())
+            .unwrap_or(status_code < 400);
+        let msg = json
+            .get("message")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
+        (allow, msg)
+    } else {
+        (status_code < 400, Some(resp_text))
+    };
+
+    Ok(HttpHookResult {
+        decision: HookDecision {
+            allow,
+            message,
+            transformed_args: None,
+            duration_us: elapsed_us,
+        },
+        status_code,
+    })
+}
+
+fn expand_env_vars(s: &str) -> String {
+    let mut result = s.to_string();
+    while let Some(start) = result.find("${") {
+        if let Some(end) = result[start..].find('}') {
+            let var_name = &result[start + 2..start + end];
+            let value = std::env::var(var_name).unwrap_or_default();
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                value,
+                &result[start + end + 1..]
+            );
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 #[cfg(test)]

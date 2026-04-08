@@ -7,7 +7,7 @@ use crate::pool::AgentPool;
 use crate::reporter::Reporter;
 use crate::store::DaemonStore;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use pipit_channel::{
     NormalizedTask, TaskReceiver, TaskRecord, TaskStatus, TaskUpdate, TaskUpdateKind,
 };
@@ -37,7 +37,9 @@ impl PartialOrd for PriorityTask {
 impl Ord for PriorityTask {
     fn cmp(&self, other: &Self) -> CmpOrdering {
         // Higher priority first, then earlier submission first
-        self.0.priority.cmp(&other.0.priority)
+        self.0
+            .priority
+            .cmp(&other.0.priority)
             .then_with(|| other.0.submitted_at.cmp(&self.0.submitted_at))
     }
 }
@@ -82,8 +84,7 @@ impl TaskQueue {
     pub async fn submit(&self, task: NormalizedTask) -> Result<TaskRecord> {
         let mut inner = self.inner.lock().await;
 
-        let total = inner.heap.len()
-            + inner.waitlists.values().map(|wl| wl.len()).sum::<usize>();
+        let total = inner.heap.len() + inner.waitlists.values().map(|wl| wl.len()).sum::<usize>();
         if total >= self.max_queue_depth {
             return Err(anyhow!("queue full ({}/{})", total, self.max_queue_depth));
         }
@@ -133,9 +134,10 @@ impl TaskQueue {
         }
 
         if found {
-            self.store.update_task_status(task_id, TaskStatus::Cancelled, |r| {
-                r.completed_at = Some(chrono::Utc::now());
-            })?;
+            self.store
+                .update_task_status(task_id, TaskStatus::Cancelled, |r| {
+                    r.completed_at = Some(chrono::Utc::now());
+                })?;
             tracing::info!(task_id, "pending task cancelled");
             Ok(())
         } else {
@@ -146,9 +148,10 @@ impl TaskQueue {
     pub async fn cancel_running(&self, task_id: &str) -> Result<()> {
         if let Some(record) = self.store.get_task(task_id)? {
             self.pool.cancel_task(&record.project, task_id).await?;
-            self.store.update_task_status(task_id, TaskStatus::Cancelled, |r| {
-                r.completed_at = Some(chrono::Utc::now());
-            })?;
+            self.store
+                .update_task_status(task_id, TaskStatus::Cancelled, |r| {
+                    r.completed_at = Some(chrono::Utc::now());
+                })?;
             Ok(())
         } else {
             Err(anyhow!("task '{}' not found", task_id))
@@ -157,8 +160,7 @@ impl TaskQueue {
 
     pub async fn status(&self) -> QueueStatus {
         let inner = self.inner.lock().await;
-        let pending = inner.heap.len()
-            + inner.waitlists.values().map(|wl| wl.len()).sum::<usize>();
+        let pending = inner.heap.len() + inner.waitlists.values().map(|wl| wl.len()).sum::<usize>();
         QueueStatus {
             pending_count: pending,
             running_count: inner.running.len(),
@@ -241,7 +243,8 @@ impl TaskQueue {
 
                 // Return stashed tasks to their wait-lists
                 for task in stashed {
-                    inner.waitlists
+                    inner
+                        .waitlists
                         .entry(task.project.clone())
                         .or_default()
                         .push_back(task);
@@ -262,10 +265,16 @@ impl TaskQueue {
             let origin = task.origin.clone();
 
             tokio::spawn(async move {
-                let _ = reporter_clone.handle_update(TaskUpdate::new(
-                    task_id.clone(), origin.clone(),
-                    TaskUpdateKind::Started { project: project.clone(), model: String::new() },
-                )).await;
+                let _ = reporter_clone
+                    .handle_update(TaskUpdate::new(
+                        task_id.clone(),
+                        origin.clone(),
+                        TaskUpdateKind::Started {
+                            project: project.clone(),
+                            model: String::new(),
+                        },
+                    ))
+                    .await;
 
                 match pool.execute_task(&task, &store).await {
                     Ok(record) => {
@@ -278,17 +287,26 @@ impl TaskQueue {
                             },
                             TaskStatus::Cancelled => TaskUpdateKind::Cancelled,
                             _ => TaskUpdateKind::Error {
-                                message: record.error.unwrap_or_else(|| "unknown error".to_string()),
+                                message: record
+                                    .error
+                                    .unwrap_or_else(|| "unknown error".to_string()),
                             },
                         };
-                        let _ = reporter_clone.handle_update(TaskUpdate::new(task_id, origin, kind)).await;
+                        let _ = reporter_clone
+                            .handle_update(TaskUpdate::new(task_id, origin, kind))
+                            .await;
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "task execution failed");
-                        let _ = reporter_clone.handle_update(TaskUpdate::new(
-                            task_id.clone(), origin,
-                            TaskUpdateKind::Error { message: e.to_string() },
-                        )).await;
+                        let _ = reporter_clone
+                            .handle_update(TaskUpdate::new(
+                                task_id.clone(),
+                                origin,
+                                TaskUpdateKind::Error {
+                                    message: e.to_string(),
+                                },
+                            ))
+                            .await;
                         let _ = store.update_task_status(&task_id, TaskStatus::Failed, |r| {
                             r.completed_at = Some(chrono::Utc::now());
                             r.error = Some(e.to_string());

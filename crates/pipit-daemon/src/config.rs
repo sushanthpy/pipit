@@ -5,7 +5,7 @@
 //! - `${VAR:-default}` — value or fallback
 //! - `$$` — literal dollar sign
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -99,7 +99,10 @@ impl DaemonConfig {
                 ));
             }
             if schedule.cron.is_empty() {
-                errors.push(format!("schedule '{}': cron expression must not be empty", name));
+                errors.push(format!(
+                    "schedule '{}': cron expression must not be empty",
+                    name
+                ));
             }
             if schedule.prompt.is_empty() {
                 errors.push(format!("schedule '{}': prompt must not be empty", name));
@@ -505,15 +508,21 @@ mod tests {
     #[test]
     fn test_expand_env_vars_basic() {
         // SAFETY: test runs single-threaded; no concurrent env reads
-        unsafe { std::env::set_var("PIPIT_TEST_VAR", "hello"); }
+        unsafe {
+            std::env::set_var("PIPIT_TEST_VAR", "hello");
+        }
         assert_eq!(expand_env_vars("${PIPIT_TEST_VAR}"), "hello");
-        unsafe { std::env::remove_var("PIPIT_TEST_VAR"); }
+        unsafe {
+            std::env::remove_var("PIPIT_TEST_VAR");
+        }
     }
 
     #[test]
     fn test_expand_env_vars_default() {
         // SAFETY: test runs single-threaded; no concurrent env reads
-        unsafe { std::env::remove_var("PIPIT_MISSING_VAR"); }
+        unsafe {
+            std::env::remove_var("PIPIT_MISSING_VAR");
+        }
         assert_eq!(
             expand_env_vars("${PIPIT_MISSING_VAR:-fallback}"),
             "fallback"

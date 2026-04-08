@@ -36,21 +36,25 @@ pub fn default_strategies() -> Vec<Strategy> {
             description: "Smallest possible fix, surgical change".to_string(),
             model: None, // Use current model (typically fast/cheap)
             prompt_prefix: "Apply the MINIMAL, surgical fix. Change as few lines as possible. \
-                            Do not refactor or improve code beyond what's needed.".to_string(),
+                            Do not refactor or improve code beyond what's needed."
+                .to_string(),
         },
         Strategy {
             name: "RootCause".to_string(),
             description: "Deep analysis and root cause fix".to_string(),
             model: None,
-            prompt_prefix: "Analyze the ROOT CAUSE deeply. Read all relevant files, understand the \
-                            architecture, then fix the underlying issue — not just the symptom.".to_string(),
+            prompt_prefix:
+                "Analyze the ROOT CAUSE deeply. Read all relevant files, understand the \
+                            architecture, then fix the underlying issue — not just the symptom."
+                    .to_string(),
         },
         Strategy {
             name: "TestFirst".to_string(),
             description: "Write tests first, then fix to pass".to_string(),
             model: None,
             prompt_prefix: "Use TDD: first write a failing test that reproduces the issue, \
-                            then write the minimal code to make it pass.".to_string(),
+                            then write the minimal code to make it pass."
+                .to_string(),
         },
     ]
 }
@@ -60,12 +64,13 @@ pub fn prepare_worktrees(
     project_root: &Path,
     strategies: &[Strategy],
 ) -> Result<Vec<(Strategy, WorktreeHandle)>, String> {
-    let manager = WorktreeManager::new(project_root)
-        .map_err(|e| format!("Worktree setup failed: {}", e))?;
+    let manager =
+        WorktreeManager::new(project_root).map_err(|e| format!("Worktree setup failed: {}", e))?;
 
     let mut worktrees = Vec::new();
     for strategy in strategies {
-        let handle = manager.create(Some(&strategy.name))
+        let handle = manager
+            .create(Some(&strategy.name))
             .map_err(|e| format!("Failed to create worktree for '{}': {}", strategy.name, e))?;
         worktrees.push((strategy.clone(), handle));
     }

@@ -10,17 +10,19 @@
 //! Stage 3: Replication + Routing (distributed state + policy)
 //! ```
 
-pub mod registry;
-pub mod negotiation;
-pub mod transport;
 pub mod failure;
+pub mod negotiation;
 pub mod partition;
+pub mod registry;
 pub mod replication;
 pub mod routing;
+pub mod transport;
 
+pub use failure::{NodeLiveness, PhiAccrualConfig, PhiAccrualDetector};
+pub use negotiation::{NegotiationProtocol, NegotiationResult, SchemaProposal};
 pub use registry::{AgentCapability, AgentDescriptor, MeshRegistry};
-pub use negotiation::{NegotiationProtocol, SchemaProposal, NegotiationResult};
-pub use transport::{MeshEnvelope, MeshMessageType, MeshTransport, TcpTransport, InProcessTransport};
-pub use failure::{PhiAccrualDetector, PhiAccrualConfig, NodeLiveness};
-pub use replication::{MeshState, GCounter, LWWRegister, ORSet};
-pub use routing::{PolicyRouter, RoutingRequest, RoutingDecision, Tenant, RoutingRule};
+pub use replication::{GCounter, LWWRegister, MeshState, ORSet};
+pub use routing::{PolicyRouter, RoutingDecision, RoutingRequest, RoutingRule, Tenant};
+pub use transport::{
+    InProcessTransport, MeshEnvelope, MeshMessageType, MeshTransport, TcpTransport,
+};

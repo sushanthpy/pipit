@@ -10,10 +10,10 @@
 //! - Transcription backend: sends audio to STT API
 //! - Text delivery: surfaces transcribed text as user input
 
-pub mod vad;
-pub mod transcription;
-pub mod speech_bus;
 pub mod native_capture;
+pub mod speech_bus;
+pub mod transcription;
+pub mod vad;
 
-pub use vad::{VadConfig, VoiceActivityDetector, VadEvent};
 pub use transcription::{TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
+pub use vad::{VadConfig, VadEvent, VoiceActivityDetector};

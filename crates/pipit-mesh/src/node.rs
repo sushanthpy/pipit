@@ -47,11 +47,14 @@ pub struct NodeRegistry {
 
 impl NodeRegistry {
     pub fn new() -> Self {
-        Self { nodes: HashMap::new() }
+        Self {
+            nodes: HashMap::new(),
+        }
     }
 
     pub fn upsert(&mut self, desc: NodeDescriptor) {
-        self.nodes.insert(desc.id.clone(), (desc, NodeStatus::Alive));
+        self.nodes
+            .insert(desc.id.clone(), (desc, NodeStatus::Alive));
     }
 
     pub fn mark_suspect(&mut self, id: &str) {
@@ -67,11 +70,13 @@ impl NodeRegistry {
     }
 
     pub fn evict_dead(&mut self) {
-        self.nodes.retain(|_, (_, status)| *status != NodeStatus::Dead);
+        self.nodes
+            .retain(|_, (_, status)| *status != NodeStatus::Dead);
     }
 
     pub fn alive_nodes(&self) -> Vec<&NodeDescriptor> {
-        self.nodes.values()
+        self.nodes
+            .values()
             .filter(|(_, status)| *status == NodeStatus::Alive)
             .map(|(desc, _)| desc)
             .collect()
@@ -83,10 +88,9 @@ impl NodeRegistry {
 
     /// Find nodes matching a capability query.
     pub fn find_by_capability(&self, required: &[String]) -> Vec<&NodeDescriptor> {
-        self.alive_nodes().into_iter()
-            .filter(|node| {
-                required.iter().all(|cap| node.capabilities.contains(cap))
-            })
+        self.alive_nodes()
+            .into_iter()
+            .filter(|node| required.iter().all(|cap| node.capabilities.contains(cap)))
             .collect()
     }
 
@@ -96,7 +100,8 @@ impl NodeRegistry {
         let cap_match = if required_caps.is_empty() {
             1.0
         } else {
-            let matched = required_caps.iter()
+            let matched = required_caps
+                .iter()
                 .filter(|cap| node.capabilities.contains(cap))
                 .count();
             matched as f64 / required_caps.len() as f64
@@ -159,7 +164,9 @@ impl MeshDaemon {
             loop {
                 interval.tick().await;
                 let reg = registry.read().await;
-                let targets: Vec<SocketAddr> = reg.alive_nodes().iter()
+                let targets: Vec<SocketAddr> = reg
+                    .alive_nodes()
+                    .iter()
                     .filter(|n| n.id != local_desc.id)
                     .map(|n| n.addr)
                     .collect();
@@ -193,7 +200,9 @@ async fn handle_peer(
     use tokio::io::AsyncReadExt;
     let mut buf = vec![0u8; 65536];
     let n = stream.read(&mut buf).await?;
-    if n == 0 { return Ok(()); }
+    if n == 0 {
+        return Ok(());
+    }
 
     let msg: super::swim::SwimMessage = serde_json::from_slice(&buf[..n])?;
     match msg {

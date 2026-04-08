@@ -81,9 +81,7 @@ pub fn spawn_speculative_compaction(
         let dedup_result = crate::dedup::dedup_tool_results(&mut compacted);
 
         // 2. Utility-based eviction if still over budget
-        let current_tokens: u64 = compacted.iter()
-            .map(|m| m.estimated_tokens())
-            .sum();
+        let current_tokens: u64 = compacted.iter().map(|m| m.estimated_tokens()).sum();
 
         let mut total_freed = dedup_result.tokens_freed;
 

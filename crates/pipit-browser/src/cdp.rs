@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// Find the Chrome executable on the system.
 pub fn find_chrome() -> Result<PathBuf, BrowserError> {
@@ -148,7 +148,8 @@ struct CdpError {
     message: String,
 }
 
-type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, BrowserError>>>>>;
+type PendingMap =
+    Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, BrowserError>>>>>;
 type EventTx = mpsc::UnboundedSender<CdpEvent>;
 
 /// A CDP event received from Chrome.
@@ -172,7 +173,9 @@ impl CdpClient {
     pub async fn connect(ws_url: &str) -> Result<Self, BrowserError> {
         let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url)
             .await
-            .map_err(|e| BrowserError::ConnectionFailed(format!("WebSocket connect failed: {}", e)))?;
+            .map_err(|e| {
+                BrowserError::ConnectionFailed(format!("WebSocket connect failed: {}", e))
+            })?;
 
         let (mut ws_write, mut ws_read) = ws_stream.split();
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -286,13 +289,13 @@ impl CdpClient {
                 Ok(None) => {
                     return Err(BrowserError::ConnectionFailed(
                         "Event channel closed".into(),
-                    ))
+                    ));
                 }
                 Err(_) => {
                     return Err(BrowserError::Timeout(format!(
                         "Timed out waiting for event: {}",
                         method
-                    )))
+                    )));
                 }
             }
         }

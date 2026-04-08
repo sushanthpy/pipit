@@ -84,8 +84,14 @@ impl ResourceSignature {
     /// Check if two signatures conflict (cannot run concurrently).
     pub fn conflicts_with(&self, other: &ResourceSignature) -> bool {
         // Process resource conflicts with everything (globally exclusive)
-        let self_has_process = self.accesses.iter().any(|a| matches!(a.resource, Resource::Process));
-        let other_has_process = other.accesses.iter().any(|a| matches!(a.resource, Resource::Process));
+        let self_has_process = self
+            .accesses
+            .iter()
+            .any(|a| matches!(a.resource, Resource::Process));
+        let other_has_process = other
+            .accesses
+            .iter()
+            .any(|a| matches!(a.resource, Resource::Process));
         if self_has_process || other_has_process {
             return true;
         }
@@ -215,9 +221,7 @@ pub fn schedule(calls: &[ToolCall]) -> Vec<ExecutionBatch> {
             assigned[i] = true;
         }
 
-        let all_read_only = batch_indices
-            .iter()
-            .all(|&i| signatures[i].is_read_only());
+        let all_read_only = batch_indices.iter().all(|&i| signatures[i].is_read_only());
 
         batches.push(ExecutionBatch {
             indices: batch_indices,

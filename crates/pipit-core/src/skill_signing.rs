@@ -159,7 +159,8 @@ pub fn validate_bundle(bundle: &SignedBundle) -> BundleValidation {
 
     // Check for missing license
     if bundle.manifest.license.is_empty() || bundle.manifest.license == "UNLICENSED" {
-        violations.push("Bundle has no license — community bundles should have a license".to_string());
+        violations
+            .push("Bundle has no license — community bundles should have a license".to_string());
     }
 
     // Scan skill templates for suspicious patterns
@@ -211,10 +212,7 @@ fn lint_skill_template(template_path: &str) -> Option<Vec<String>> {
 
     // Null byte injection (can bypass filesystem checks)
     if template_path.contains('\0') {
-        warnings.push(format!(
-            "Skill file '{}' contains null byte",
-            template_path
-        ));
+        warnings.push(format!("Skill file '{}' contains null byte", template_path));
     }
 
     // Suspicious extensions that might indicate non-skill content
@@ -237,10 +235,7 @@ fn lint_skill_template(template_path: &str) -> Option<Vec<String>> {
 
 /// Create a signed bundle from a manifest (for authors).
 /// Uses HMAC-SHA256(signing_key, content_hash) for signature.
-pub fn create_signed_bundle(
-    manifest: BundleManifest,
-    signing_key: Option<&str>,
-) -> SignedBundle {
+pub fn create_signed_bundle(manifest: BundleManifest, signing_key: Option<&str>) -> SignedBundle {
     let content_hash = compute_manifest_hash(&manifest);
     let signature = signing_key.map(|key| {
         // HMAC-SHA256: hash(key || content_hash) for tamper detection

@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// OpenTelemetry-compatible span for distributed tracing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +23,11 @@ pub struct OtelSpan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpanStatus { Ok, Error, Unset }
+pub enum SpanStatus {
+    Ok,
+    Error,
+    Unset,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -64,7 +68,8 @@ impl OtelSpan {
     }
 
     pub fn duration_ms(&self) -> Option<u64> {
-        self.end_time_ms.map(|e| e.saturating_sub(self.start_time_ms))
+        self.end_time_ms
+            .map(|e| e.saturating_sub(self.start_time_ms))
     }
 }
 
@@ -94,15 +99,25 @@ impl SessionCounters {
         Self::default()
     }
 
-    pub fn increment_turns(&self) { self.turns.fetch_add(1, Ordering::Relaxed); }
-    pub fn increment_tool_calls(&self) { self.tool_calls.fetch_add(1, Ordering::Relaxed); }
+    pub fn increment_turns(&self) {
+        self.turns.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_tool_calls(&self) {
+        self.tool_calls.fetch_add(1, Ordering::Relaxed);
+    }
     pub fn add_tokens(&self, input: u64, output: u64) {
         self.tokens_input.fetch_add(input, Ordering::Relaxed);
         self.tokens_output.fetch_add(output, Ordering::Relaxed);
     }
-    pub fn increment_loc(&self, lines: u64) { self.lines_of_code.fetch_add(lines, Ordering::Relaxed); }
-    pub fn increment_files(&self) { self.files_modified.fetch_add(1, Ordering::Relaxed); }
-    pub fn increment_commits(&self) { self.commits.fetch_add(1, Ordering::Relaxed); }
+    pub fn increment_loc(&self, lines: u64) {
+        self.lines_of_code.fetch_add(lines, Ordering::Relaxed);
+    }
+    pub fn increment_files(&self) {
+        self.files_modified.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn increment_commits(&self) {
+        self.commits.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// Record a retry attempt. Returns false if budget exhausted (max 15 per session, max 5 consecutive).
     pub fn can_retry(&self) -> bool {
@@ -134,13 +149,34 @@ impl SessionCounters {
     /// Export as OTel-compatible attribute map.
     pub fn as_attributes(&self) -> HashMap<String, SpanValue> {
         let mut attrs = HashMap::new();
-        attrs.insert("session.turns".into(), SpanValue::Int(self.turns.load(Ordering::Relaxed) as i64));
-        attrs.insert("session.tool_calls".into(), SpanValue::Int(self.tool_calls.load(Ordering::Relaxed) as i64));
-        attrs.insert("session.tokens.input".into(), SpanValue::Int(self.tokens_input.load(Ordering::Relaxed) as i64));
-        attrs.insert("session.tokens.output".into(), SpanValue::Int(self.tokens_output.load(Ordering::Relaxed) as i64));
-        attrs.insert("session.cost.usd".into(), SpanValue::Float(self.total_cost()));
-        attrs.insert("session.loc".into(), SpanValue::Int(self.lines_of_code.load(Ordering::Relaxed) as i64));
-        attrs.insert("session.files_modified".into(), SpanValue::Int(self.files_modified.load(Ordering::Relaxed) as i64));
+        attrs.insert(
+            "session.turns".into(),
+            SpanValue::Int(self.turns.load(Ordering::Relaxed) as i64),
+        );
+        attrs.insert(
+            "session.tool_calls".into(),
+            SpanValue::Int(self.tool_calls.load(Ordering::Relaxed) as i64),
+        );
+        attrs.insert(
+            "session.tokens.input".into(),
+            SpanValue::Int(self.tokens_input.load(Ordering::Relaxed) as i64),
+        );
+        attrs.insert(
+            "session.tokens.output".into(),
+            SpanValue::Int(self.tokens_output.load(Ordering::Relaxed) as i64),
+        );
+        attrs.insert(
+            "session.cost.usd".into(),
+            SpanValue::Float(self.total_cost()),
+        );
+        attrs.insert(
+            "session.loc".into(),
+            SpanValue::Int(self.lines_of_code.load(Ordering::Relaxed) as i64),
+        );
+        attrs.insert(
+            "session.files_modified".into(),
+            SpanValue::Int(self.files_modified.load(Ordering::Relaxed) as i64),
+        );
         attrs
     }
 }
@@ -215,8 +251,12 @@ pub trait FeatureFlagPort: Send + Sync {
 pub struct NullFeatureFlagPort;
 
 impl FeatureFlagPort for NullFeatureFlagPort {
-    fn is_enabled(&self, _: &str, _: &HashMap<String, String>) -> bool { false }
-    fn get_value(&self, _: &str, _: &HashMap<String, String>) -> Option<String> { None }
+    fn is_enabled(&self, _: &str, _: &HashMap<String, String>) -> bool {
+        false
+    }
+    fn get_value(&self, _: &str, _: &HashMap<String, String>) -> Option<String> {
+        None
+    }
 }
 
 /// Telemetry export target.
@@ -257,7 +297,10 @@ impl TelemetryFacade {
         OtelSpan::new(&self.session_id, operation)
             .attr("session.id", SpanValue::String(self.session_id.clone()))
             .attr("model.name", SpanValue::String(self.model_name.clone()))
-            .attr("provider.name", SpanValue::String(self.provider_name.clone()))
+            .attr(
+                "provider.name",
+                SpanValue::String(self.provider_name.clone()),
+            )
     }
 
     /// Record a completed span.

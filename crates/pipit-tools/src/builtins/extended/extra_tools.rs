@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolError, ToolResult, ToolDisplay};
+use crate::{Tool, ToolContext, ToolDisplay, ToolError, ToolResult};
 
 // ─── PowerShell Tool ────────────────────────────────────────────────────
 
@@ -15,7 +15,9 @@ pub struct PowerShellTool;
 
 #[async_trait]
 impl Tool for PowerShellTool {
-    fn name(&self) -> &str { "powershell" }
+    fn name(&self) -> &str {
+        "powershell"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -26,13 +28,27 @@ impl Tool for PowerShellTool {
             "required": ["command"]
         })
     }
-    fn description(&self) -> &str { "Execute a PowerShell command. Uses pwsh on macOS/Linux, powershell.exe on Windows." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Execute a PowerShell command. Uses pwsh on macOS/Linux, powershell.exe on Windows."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let command = args.get("command").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let command = args
+            .get("command")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("command required".into()))?;
-        let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(120);
+        let timeout = args
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(120);
 
         let shell = if cfg!(windows) { "powershell" } else { "pwsh" };
 
@@ -41,21 +57,30 @@ impl Tool for PowerShellTool {
             tokio::process::Command::new(shell)
                 .args(["-NoProfile", "-NonInteractive", "-Command", command])
                 .current_dir(ctx.current_dir())
-                .output()
-        ).await
-            .map_err(|_| ToolError::Timeout(timeout))?
-            .map_err(|e| ToolError::ExecutionFailed(format!("PowerShell exec failed: {e}")))?;
+                .output(),
+        )
+        .await
+        .map_err(|_| ToolError::Timeout(timeout))?
+        .map_err(|e| ToolError::ExecutionFailed(format!("PowerShell exec failed: {e}")))?;
 
         let stdout = String::from_utf8_lossy(&result.stdout).to_string();
         let stderr = String::from_utf8_lossy(&result.stderr).to_string();
         let exit_code = result.status.code().unwrap_or(-1);
 
         Ok(ToolResult {
-            content: format!("Exit code: {exit_code}\n\n{stdout}{}",
-                if stderr.is_empty() { String::new() } else { format!("\nSTDERR:\n{stderr}") }),
+            content: format!(
+                "Exit code: {exit_code}\n\n{stdout}{}",
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nSTDERR:\n{stderr}")
+                }
+            ),
             display: Some(ToolDisplay::ShellOutput {
-                command: command.to_string(), stdout: stdout.clone(),
-                stderr: stderr.clone(), exit_code: Some(exit_code),
+                command: command.to_string(),
+                stdout: stdout.clone(),
+                stderr: stderr.clone(),
+                exit_code: Some(exit_code),
             }),
             mutated: true,
             content_bytes: stdout.len() + stderr.len(),
@@ -80,16 +105,27 @@ struct ReplSession {
 }
 
 impl ReplTool {
-    pub fn new() -> Self { Self { sessions: Arc::new(Mutex::new(HashMap::new())) } }
+    pub fn new() -> Self {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
 
     /// Start a persistent REPL subprocess for the given language.
-    async fn start_session(language: &str, cwd: &std::path::Path) -> Result<ReplSession, ToolError> {
+    async fn start_session(
+        language: &str,
+        cwd: &std::path::Path,
+    ) -> Result<ReplSession, ToolError> {
         let (binary, args): (&str, Vec<&str>) = match language {
             "python" => ("python3", vec!["-u", "-i"]),
             "node" => ("node", vec!["-i"]),
             "ruby" => ("ruby", vec!["-e", "require 'irb'; IRB.start"]),
             "lua" => ("lua", vec!["-i"]),
-            _ => return Err(ToolError::InvalidArgs(format!("Unsupported language: {language}"))),
+            _ => {
+                return Err(ToolError::InvalidArgs(format!(
+                    "Unsupported language: {language}"
+                )));
+            }
         };
 
         let mut child = tokio::process::Command::new(binary)
@@ -99,13 +135,21 @@ impl ReplTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to start {language} REPL: {e}")))?;
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("Failed to start {language} REPL: {e}"))
+            })?;
 
-        let stdin = child.stdin.take()
+        let stdin = child
+            .stdin
+            .take()
             .ok_or_else(|| ToolError::ExecutionFailed("No stdin for REPL".into()))?;
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| ToolError::ExecutionFailed("No stdout for REPL".into()))?;
-        let stderr = child.stderr.take()
+        let stderr = child
+            .stderr
+            .take()
             .ok_or_else(|| ToolError::ExecutionFailed("No stderr for REPL".into()))?;
 
         let (output_tx, output_rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -143,7 +187,9 @@ impl ReplTool {
 
 #[async_trait]
 impl Tool for ReplTool {
-    fn name(&self) -> &str { "repl" }
+    fn name(&self) -> &str {
+        "repl"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -155,19 +201,34 @@ impl Tool for ReplTool {
             "required": ["language", "code"]
         })
     }
-    fn description(&self) -> &str { "Execute code in a persistent language REPL. State persists across calls." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Execute code in a persistent language REPL. State persists across calls."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let language = args.get("language").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let language = args
+            .get("language")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("language required".into()))?;
-        let code = args.get("code").and_then(|v| v.as_str())
+        let code = args
+            .get("code")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("code required".into()))?;
         let reset = args.get("reset").and_then(|v| v.as_bool()).unwrap_or(false);
 
         if reset {
             self.sessions.lock().unwrap().remove(language);
-            return Ok(ToolResult::mutating(format!("REPL state reset for {language}")));
+            return Ok(ToolResult::mutating(format!(
+                "REPL state reset for {language}"
+            )));
         }
 
         // Check if session exists; if not, start a persistent subprocess
@@ -177,20 +238,30 @@ impl Tool for ReplTool {
         };
         if needs_session {
             let session = Self::start_session(language, &ctx.current_dir()).await?;
-            self.sessions.lock().unwrap().insert(language.to_string(), session);
+            self.sessions
+                .lock()
+                .unwrap()
+                .insert(language.to_string(), session);
         }
 
         let (stdin_handle, rx_handle, turn_count) = {
             let mut sessions = self.sessions.lock().unwrap();
             let session = sessions.get_mut(language).unwrap();
             session.turn_count += 1;
-            (session.child_stdin.clone(), session.output_rx.clone(), session.turn_count)
+            (
+                session.child_stdin.clone(),
+                session.output_rx.clone(),
+                session.turn_count,
+            )
         };
 
         // Send code + sentinel marker to detect end of output
         let sentinel_cmd = match language {
             "python" => format!("{code}\nprint({sentinel:?})\n", sentinel = REPL_SENTINEL),
-            "node" => format!("{code}\nconsole.log({sentinel:?})\n", sentinel = REPL_SENTINEL),
+            "node" => format!(
+                "{code}\nconsole.log({sentinel:?})\n",
+                sentinel = REPL_SENTINEL
+            ),
             "ruby" => format!("{code}\nputs {sentinel:?}\n", sentinel = REPL_SENTINEL),
             "lua" => format!("{code}\nprint({sentinel:?})\n", sentinel = REPL_SENTINEL),
             _ => format!("{code}\n"),
@@ -199,9 +270,13 @@ impl Tool for ReplTool {
         {
             use tokio::io::AsyncWriteExt;
             let mut stdin = stdin_handle.lock().await;
-            stdin.write_all(sentinel_cmd.as_bytes()).await
+            stdin
+                .write_all(sentinel_cmd.as_bytes())
+                .await
                 .map_err(|e| ToolError::ExecutionFailed(format!("Write to REPL failed: {e}")))?;
-            stdin.flush().await
+            stdin
+                .flush()
+                .await
                 .map_err(|e| ToolError::ExecutionFailed(format!("Flush to REPL failed: {e}")))?;
         }
 
@@ -243,7 +318,9 @@ pub struct SkillTool;
 
 #[async_trait]
 impl Tool for SkillTool {
-    fn name(&self) -> &str { "skill" }
+    fn name(&self) -> &str {
+        "skill"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -254,11 +331,22 @@ impl Tool for SkillTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "Manage pipit skills: list, search, get info, activate/deactivate." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Manage pipit skills: list, search, get info, activate/deactivate."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action required".into()))?;
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -266,16 +354,29 @@ impl Tool for SkillTool {
             "list" => {
                 let skills_dir = ctx.project_root.join(".pipit").join("skills");
                 if !skills_dir.exists() {
-                    return Ok(ToolResult::text("No skills directory. Create .pipit/skills/ to add custom skills."));
+                    return Ok(ToolResult::text(
+                        "No skills directory. Create .pipit/skills/ to add custom skills.",
+                    ));
                 }
                 let entries: Vec<String> = std::fs::read_dir(&skills_dir)
                     .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
                     .flatten()
-                    .filter(|e| e.path().extension().map(|ext| ext == "md" || ext == "toml").unwrap_or(false))
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "md" || ext == "toml")
+                            .unwrap_or(false)
+                    })
                     .map(|e| e.file_name().to_string_lossy().to_string())
                     .collect();
-                if entries.is_empty() { Ok(ToolResult::text("No skills found in .pipit/skills/")) }
-                else { Ok(ToolResult::text(format!("Available skills:\n{}", entries.join("\n")))) }
+                if entries.is_empty() {
+                    Ok(ToolResult::text("No skills found in .pipit/skills/"))
+                } else {
+                    Ok(ToolResult::text(format!(
+                        "Available skills:\n{}",
+                        entries.join("\n")
+                    )))
+                }
             }
             "search" => {
                 let skills_dir = ctx.project_root.join(".pipit").join("skills");
@@ -285,7 +386,9 @@ impl Tool for SkillTool {
 
                 let mut matches = Vec::new();
                 for dir in [&skills_dir, &global_dir] {
-                    if !dir.exists() { continue; }
+                    if !dir.exists() {
+                        continue;
+                    }
                     if let Ok(entries) = std::fs::read_dir(dir) {
                         for entry in entries.flatten() {
                             let name = entry.file_name().to_string_lossy().to_string();
@@ -300,11 +403,16 @@ impl Tool for SkillTool {
                             if name.ends_with(".md") || name.ends_with(".toml") {
                                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                                     if content.to_lowercase().contains(&query_lower) {
-                                        let preview = content.lines()
+                                        let preview = content
+                                            .lines()
                                             .find(|l| l.to_lowercase().contains(&query_lower))
                                             .unwrap_or("")
                                             .trim();
-                                        let preview = if preview.len() > 80 { &preview[..80] } else { preview };
+                                        let preview = if preview.len() > 80 {
+                                            &preview[..80]
+                                        } else {
+                                            preview
+                                        };
                                         matches.push(format!("  {} — {}", name, preview));
                                     }
                                 }
@@ -313,9 +421,14 @@ impl Tool for SkillTool {
                     }
                 }
                 if matches.is_empty() {
-                    Ok(ToolResult::text(format!("No skills matching '{query}' found.")))
+                    Ok(ToolResult::text(format!(
+                        "No skills matching '{query}' found."
+                    )))
                 } else {
-                    Ok(ToolResult::text(format!("Skills matching '{query}':\n{}", matches.join("\n"))))
+                    Ok(ToolResult::text(format!(
+                        "Skills matching '{query}':\n{}",
+                        matches.join("\n")
+                    )))
                 }
             }
             "info" => {
@@ -333,16 +446,25 @@ impl Tool for SkillTool {
                     if path.exists() {
                         let content = std::fs::read_to_string(path)
                             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-                        let truncated = if content.len() > 4000 { &content[..4000] } else { &content };
+                        let truncated = if content.len() > 4000 {
+                            &content[..4000]
+                        } else {
+                            &content
+                        };
                         return Ok(ToolResult::text(format!(
                             "Skill: {query}\nPath: {}\n\n{truncated}",
                             path.display()
                         )));
                     }
                 }
-                Ok(ToolResult::text(format!("Skill '{query}' not found in {}", skills_dir.display())))
+                Ok(ToolResult::text(format!(
+                    "Skill '{query}' not found in {}",
+                    skills_dir.display()
+                )))
             }
-            _ => Ok(ToolResult::text(format!("Skill action '{action}' on '{query}'")))
+            _ => Ok(ToolResult::text(format!(
+                "Skill action '{action}' on '{query}'"
+            ))),
         }
     }
 }
@@ -353,7 +475,9 @@ pub struct LspTool;
 
 #[async_trait]
 impl Tool for LspTool {
-    fn name(&self) -> &str { "lsp" }
+    fn name(&self) -> &str {
+        "lsp"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -365,48 +489,85 @@ impl Tool for LspTool {
             "required": ["action", "file"]
         })
     }
-    fn description(&self) -> &str { "Query language servers for go-to-definition, find-references, diagnostics, type info, rename." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Query language servers for go-to-definition, find-references, diagnostics, type info, rename. Uses real LSP when available, falls back to grep."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("action required".into()))?;
-        let file = args.get("file").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("file required".into()))?;
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("action required".into()))?;
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("file required".into()))?;
         let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
         let column = args.get("column").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
         let file_path = ctx.project_root.join(file);
         if !file_path.exists() {
-            return Err(ToolError::ExecutionFailed(format!("File not found: {file}")));
+            return Err(ToolError::ExecutionFailed(format!(
+                "File not found: {file}"
+            )));
         }
 
+        // Try real LSP first for definition/references/type_info
         match action {
             "definition" | "references" | "type_info" => {
-                // Use grep/ripgrep to find symbol under cursor, then search for definitions/references
-                let file_content = tokio::fs::read_to_string(&file_path).await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read {file}: {e}")))?;
-
-                let target_line = file_content.lines().nth((line - 1) as usize)
-                    .ok_or_else(|| ToolError::InvalidArgs(format!("Line {line} out of range")))?;
-
-                // Extract word at column position
-                let symbol = extract_symbol_at(target_line, column as usize);
-                if symbol.is_empty() {
-                    return Ok(ToolResult::text(format!("No symbol found at {file}:{line}:{column}")));
+                // Attempt real LSP client — O(1) amortized after server init
+                if let Some(result) =
+                    try_lsp_action(action, &file_path, line, column, &ctx.project_root).await
+                {
+                    return Ok(ToolResult::text(result));
                 }
 
-                // Search project for the symbol using grep
+                // Fallback: grep-based symbol search
+                let file_content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to read {file}: {e}"))
+                })?;
+
+                let target_line = file_content
+                    .lines()
+                    .nth((line - 1) as usize)
+                    .ok_or_else(|| ToolError::InvalidArgs(format!("Line {line} out of range")))?;
+
+                let symbol = extract_symbol_at(target_line, column as usize);
+                if symbol.is_empty() {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {file}:{line}:{column}"
+                    )));
+                }
+
                 let search_pattern = if action == "definition" {
-                    // Look for definitions: fn/struct/enum/class/def/const declarations
-                    format!(r"(fn |struct |enum |trait |type |class |def |const |let |var |pub )\b{}\b", regex::escape(&symbol))
+                    format!(
+                        r"(fn |struct |enum |trait |type |class |def |const |let |var |pub )\b{}\b",
+                        regex::escape(&symbol)
+                    )
                 } else {
-                    // All references
                     format!(r"\b{}\b", regex::escape(&symbol))
                 };
 
                 let output = tokio::process::Command::new("grep")
-                    .args(["-rn", "--include=*.rs", "--include=*.py", "--include=*.ts",
-                           "--include=*.js", "--include=*.go", "--include=*.java",
-                           "-E", &search_pattern])
+                    .args([
+                        "-rn",
+                        "--include=*.rs",
+                        "--include=*.py",
+                        "--include=*.ts",
+                        "--include=*.js",
+                        "--include=*.go",
+                        "--include=*.java",
+                        "-E",
+                        &search_pattern,
+                    ])
                     .arg(".")
                     .current_dir(&ctx.project_root)
                     .output()
@@ -417,11 +578,17 @@ impl Tool for LspTool {
                 let results: Vec<&str> = stdout.lines().take(50).collect();
 
                 if results.is_empty() {
-                    Ok(ToolResult::text(format!("No {action} found for `{symbol}` at {file}:{line}:{column}")))
+                    Ok(ToolResult::text(format!(
+                        "No {action} found for `{symbol}` at {file}:{line}:{column}"
+                    )))
                 } else {
                     Ok(ToolResult::text(format!(
                         "{} for `{symbol}` ({} results):\n{}",
-                        if action == "definition" { "Definitions" } else { "References" },
+                        if action == "definition" {
+                            "Definitions"
+                        } else {
+                            "References"
+                        },
                         results.len(),
                         results.join("\n")
                     )))
@@ -435,7 +602,11 @@ impl Tool for LspTool {
                     "py" => ("python3", vec!["-m", "py_compile", file]),
                     "ts" | "tsx" => ("npx", vec!["tsc", "--noEmit", file]),
                     "js" | "jsx" => ("node", vec!["--check", file]),
-                    _ => return Ok(ToolResult::text(format!("No diagnostic support for .{ext} files"))),
+                    _ => {
+                        return Ok(ToolResult::text(format!(
+                            "No diagnostic support for .{ext} files"
+                        )));
+                    }
                 };
 
                 let output = tokio::process::Command::new(cmd)
@@ -443,36 +614,60 @@ impl Tool for LspTool {
                     .current_dir(&ctx.project_root)
                     .output()
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Diagnostic command failed: {e}")))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("Diagnostic command failed: {e}"))
+                    })?;
 
-                let combined = format!("{}{}", 
+                let combined = format!(
+                    "{}{}",
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 );
-                let truncated = if combined.len() > 8000 { &combined[..8000] } else { &combined };
+                let truncated = if combined.len() > 8000 {
+                    &combined[..8000]
+                } else {
+                    &combined
+                };
 
                 Ok(ToolResult::text(format!(
                     "Diagnostics for {file}:\n{}",
-                    if truncated.trim().is_empty() { "No issues found." } else { truncated }
+                    if truncated.trim().is_empty() {
+                        "No issues found."
+                    } else {
+                        truncated
+                    }
                 )))
             }
             "rename" => {
-                let new_name = args.get("new_name").and_then(|v| v.as_str())
+                let new_name = args
+                    .get("new_name")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("new_name required for rename".into()))?;
 
-                let file_content = tokio::fs::read_to_string(&file_path).await
+                let file_content = tokio::fs::read_to_string(&file_path)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read: {e}")))?;
                 let target_line = file_content.lines().nth((line - 1) as usize).unwrap_or("");
                 let symbol = extract_symbol_at(target_line, column as usize);
 
                 if symbol.is_empty() {
-                    return Err(ToolError::InvalidArgs(format!("No symbol at {file}:{line}:{column}")));
+                    return Err(ToolError::InvalidArgs(format!(
+                        "No symbol at {file}:{line}:{column}"
+                    )));
                 }
 
                 // Find all files containing the symbol
                 let output = tokio::process::Command::new("grep")
-                    .args(["-rln", "--include=*.rs", "--include=*.py", "--include=*.ts",
-                           "--include=*.js", "--include=*.go", "-w", &symbol])
+                    .args([
+                        "-rln",
+                        "--include=*.rs",
+                        "--include=*.py",
+                        "--include=*.ts",
+                        "--include=*.js",
+                        "--include=*.go",
+                        "-w",
+                        &symbol,
+                    ])
                     .arg(".")
                     .current_dir(&ctx.project_root)
                     .output()
@@ -498,9 +693,93 @@ impl Tool for LspTool {
                     "Renamed `{symbol}` → `{new_name}` across {file_count} file(s)"
                 )))
             }
-            _ => Err(ToolError::InvalidArgs(format!("Unknown LSP action: {action}")))
+            _ => Err(ToolError::InvalidArgs(format!(
+                "Unknown LSP action: {action}"
+            ))),
         }
     }
+}
+
+/// Try real LSP server for definition/references/type_info.
+/// Returns None if no suitable LSP is available, allowing fallback to grep.
+async fn try_lsp_action(
+    action: &str,
+    file_path: &std::path::Path,
+    line: u32,
+    column: u32,
+    project_root: &std::path::Path,
+) -> Option<String> {
+    use pipit_lsp::LspKind;
+
+    // Detect which LSP server to use based on file extension
+    let ext = file_path.extension()?.to_str()?;
+    let kind = match ext {
+        "rs" => LspKind::RustAnalyzer,
+        "py" => LspKind::Pyright,
+        "ts" | "tsx" | "js" | "jsx" => LspKind::TypescriptLanguageServer,
+        "go" => LspKind::Gopls,
+        _ => return None,
+    };
+
+    // Try to start the LSP client (amortized cost — caller should cache for production)
+    let client = match pipit_lsp::client::LspClient::start(kind, project_root).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(server = kind.binary(), error = %e, "LSP server not available, falling back to grep");
+            return None;
+        }
+    };
+
+    // LSP uses 0-indexed positions
+    let lsp_line = line.saturating_sub(1);
+    let lsp_col = column.saturating_sub(1);
+
+    let result = match action {
+        "definition" => match client.goto_definition(file_path, lsp_line, lsp_col).await {
+            Ok(def) if !def.locations.is_empty() => {
+                let locs: Vec<String> = def
+                    .locations
+                    .iter()
+                    .map(|l| format!("{}:{}:{}", l.file.display(), l.line + 1, l.column + 1))
+                    .collect();
+                Some(format!(
+                    "Definition ({} location(s)):\n{}",
+                    locs.len(),
+                    locs.join("\n")
+                ))
+            }
+            _ => None,
+        },
+        "references" => match client.find_references(file_path, lsp_line, lsp_col).await {
+            Ok(refs) if !refs.locations.is_empty() => {
+                let locs: Vec<String> = refs
+                    .locations
+                    .iter()
+                    .take(50)
+                    .map(|l| format!("{}:{}:{}", l.file.display(), l.line + 1, l.column + 1))
+                    .collect();
+                Some(format!(
+                    "References ({} location(s)):\n{}",
+                    refs.locations.len(),
+                    locs.join("\n")
+                ))
+            }
+            _ => None,
+        },
+        "type_info" => match client.hover(file_path, lsp_line, lsp_col).await {
+            Ok(Some(info)) if !info.type_string.is_empty() => Some(format!(
+                "Type: {}\n{}",
+                info.type_string,
+                info.documentation.unwrap_or_default()
+            )),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    // Shut down the temporary client
+    client.shutdown().await;
+    result
 }
 
 /// Extract the symbol (identifier) at a given column in a line.
@@ -530,7 +809,9 @@ pub struct RemoteTriggerTool;
 
 #[async_trait]
 impl Tool for RemoteTriggerTool {
-    fn name(&self) -> &str { "remote_trigger" }
+    fn name(&self) -> &str {
+        "remote_trigger"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -542,13 +823,31 @@ impl Tool for RemoteTriggerTool {
             "required": ["target", "task"]
         })
     }
-    fn description(&self) -> &str { "Trigger a task on a remote pipit-daemon or agent mesh node." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Trigger a task on a remote pipit-daemon or agent mesh node."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let target = args.get("target").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("target required".into()))?;
-        let task = args.get("task").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("task required".into()))?;
-        let priority = args.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let target = args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("target required".into()))?;
+        let task = args
+            .get("task")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("task required".into()))?;
+        let priority = args
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("normal");
         let project = args.get("project").and_then(|v| v.as_str()).unwrap_or("");
 
         // Build the daemon API URL
@@ -610,11 +909,18 @@ mod tests {
     #[test]
     fn all_tools_have_schemas() {
         let tools: Vec<Box<dyn Tool>> = vec![
-            Box::new(PowerShellTool), Box::new(ReplTool::new()),
-            Box::new(SkillTool), Box::new(LspTool), Box::new(RemoteTriggerTool),
+            Box::new(PowerShellTool),
+            Box::new(ReplTool::new()),
+            Box::new(SkillTool),
+            Box::new(LspTool),
+            Box::new(RemoteTriggerTool),
         ];
         for tool in &tools {
-            assert!(tool.schema().get("properties").is_some(), "Tool {} missing properties", tool.name());
+            assert!(
+                tool.schema().get("properties").is_some(),
+                "Tool {} missing properties",
+                tool.name()
+            );
         }
     }
 }

@@ -245,43 +245,158 @@ impl Default for PartitionMerger {
     }
 }
 
-/// Simple three-way merge for text content.
+/// Three-way merge for text content using diff-based comparison.
+///
+/// Previous implementation compared line-by-line at matching indices,
+/// which produced false conflicts on any insertion or deletion (every
+/// subsequent line shifted and appeared changed). This version uses
+/// LCS-based diffing: compute what each side changed relative to the
+/// base, then merge non-overlapping changes. Overlapping changes where
+/// both sides modified the same base region produce conflict markers.
+///
 /// Returns (merged_content, has_conflict_markers).
 fn three_way_merge(base: &str, ours: &str, theirs: &str) -> (String, bool) {
+    // Fast paths
+    if ours == theirs {
+        return (ours.to_string(), false);
+    }
+    if ours == base {
+        return (theirs.to_string(), false);
+    }
+    if theirs == base {
+        return (ours.to_string(), false);
+    }
+
+    // Compute line-level diffs from base to each side
     let base_lines: Vec<&str> = base.lines().collect();
     let our_lines: Vec<&str> = ours.lines().collect();
     let their_lines: Vec<&str> = theirs.lines().collect();
 
+    // Compute LCS between base and each side to identify changed regions
+    let our_changes = diff_lines(&base_lines, &our_lines);
+    let their_changes = diff_lines(&base_lines, &their_lines);
+
+    // Merge: apply non-conflicting changes from both sides
     let mut merged = Vec::new();
     let mut has_conflicts = false;
-    let max_lines = our_lines.len().max(their_lines.len()).max(base_lines.len());
+    let mut base_idx = 0;
 
-    for i in 0..max_lines {
-        let base_line = base_lines.get(i).copied().unwrap_or("");
-        let our_line = our_lines.get(i).copied().unwrap_or("");
-        let their_line = their_lines.get(i).copied().unwrap_or("");
+    // Walk through base lines and apply changes
+    let max_base = base_lines.len();
+    while base_idx <= max_base {
+        let our_edit = our_changes.iter().find(|c| c.base_start == base_idx);
+        let their_edit = their_changes.iter().find(|c| c.base_start == base_idx);
 
-        if our_line == their_line {
-            // Both agree — use either
-            merged.push(our_line.to_string());
-        } else if our_line == base_line {
-            // We didn't change it, they did — use theirs
-            merged.push(their_line.to_string());
-        } else if their_line == base_line {
-            // They didn't change it, we did — use ours
-            merged.push(our_line.to_string());
-        } else {
-            // Both changed differently — conflict
-            has_conflicts = true;
-            merged.push("<<<<<<< OURS".to_string());
-            merged.push(our_line.to_string());
-            merged.push("=======".to_string());
-            merged.push(their_line.to_string());
-            merged.push(">>>>>>> THEIRS".to_string());
+        match (our_edit, their_edit) {
+            (None, None) => {
+                // No edits at this position — keep base line
+                if base_idx < max_base {
+                    merged.push(base_lines[base_idx].to_string());
+                }
+                base_idx += 1;
+            }
+            (Some(ours), None) => {
+                // Only we changed this region
+                merged.extend(ours.new_lines.iter().cloned());
+                base_idx = ours.base_end;
+            }
+            (None, Some(theirs)) => {
+                // Only they changed this region
+                merged.extend(theirs.new_lines.iter().cloned());
+                base_idx = theirs.base_end;
+            }
+            (Some(ours), Some(theirs)) => {
+                // Both changed the same region
+                if ours.new_lines == theirs.new_lines {
+                    // Same change — no conflict
+                    merged.extend(ours.new_lines.iter().cloned());
+                } else {
+                    // True conflict
+                    has_conflicts = true;
+                    merged.push("<<<<<<< OURS".to_string());
+                    merged.extend(ours.new_lines.iter().cloned());
+                    merged.push("=======".to_string());
+                    merged.extend(theirs.new_lines.iter().cloned());
+                    merged.push(">>>>>>> THEIRS".to_string());
+                }
+                base_idx = ours.base_end.max(theirs.base_end);
+            }
         }
     }
 
     (merged.join("\n"), has_conflicts)
+}
+
+/// A region changed between base and the modified version.
+#[derive(Debug)]
+struct EditRegion {
+    /// Start index in the base (inclusive)
+    base_start: usize,
+    /// End index in the base (exclusive)
+    base_end: usize,
+    /// The replacement lines
+    new_lines: Vec<String>,
+}
+
+/// Compute changed regions between base and modified using a simple
+/// greedy LCS approach. Returns a list of EditRegions.
+fn diff_lines(base: &[&str], modified: &[&str]) -> Vec<EditRegion> {
+    let mut regions = Vec::new();
+    let mut bi = 0;
+    let mut mi = 0;
+
+    while bi < base.len() || mi < modified.len() {
+        if bi < base.len() && mi < modified.len() && base[bi] == modified[mi] {
+            // Lines match — advance both
+            bi += 1;
+            mi += 1;
+        } else {
+            // Mismatch — find where they re-sync
+            let region_start = bi;
+            let mod_start = mi;
+
+            // Look ahead for the next matching line
+            let mut found = false;
+            for look_b in bi..base.len() {
+                for look_m in mi..modified.len() {
+                    if base[look_b] == modified[look_m] {
+                        // Found sync point
+                        regions.push(EditRegion {
+                            base_start: region_start,
+                            base_end: look_b,
+                            new_lines: modified[mod_start..look_m]
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect(),
+                        });
+                        bi = look_b;
+                        mi = look_m;
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+
+            if !found {
+                // No sync point — rest is all changed
+                regions.push(EditRegion {
+                    base_start: region_start,
+                    base_end: base.len(),
+                    new_lines: modified[mod_start..]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                });
+                bi = base.len();
+                mi = modified.len();
+            }
+        }
+    }
+
+    regions
 }
 
 fn current_timestamp() -> u64 {

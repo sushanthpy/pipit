@@ -13,7 +13,7 @@ use crate::events::AgentEvent;
 use crate::governor::RiskReport;
 use crate::proof::{ConfidenceReport, EvidenceArtifact, ProofPacket, RealizedEdit};
 use crate::scheduler::ExecutionBatch;
-use crate::tool_semantics::{classify_semantically, SemanticClass};
+use crate::tool_semantics::{SemanticClass, classify_semantically};
 use pipit_provider::{CompletionRequest, ToolCall, ToolDeclaration};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -223,21 +223,43 @@ pub struct NullExtensionPort;
 
 #[async_trait::async_trait]
 impl ExtensionPort for NullExtensionPort {
-    async fn on_input(&self, _text: &str) -> Result<Option<String>, String> { Ok(None) }
-    async fn on_before_request(&self, _s: &str) -> Result<Option<String>, String> { Ok(None) }
-    async fn on_content_delta(&self, _text: &str) -> Result<(), String> { Ok(()) }
-    async fn on_before_tool(&self, _n: &str, _a: &serde_json::Value) -> Result<Option<serde_json::Value>, String> { Ok(None) }
-    async fn on_after_tool(&self, _n: &str, _r: &str) -> Result<Option<String>, String> { Ok(None) }
+    async fn on_input(&self, _text: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    async fn on_before_request(&self, _s: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    async fn on_content_delta(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn on_before_tool(
+        &self,
+        _n: &str,
+        _a: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(None)
+    }
+    async fn on_after_tool(&self, _n: &str, _r: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 /// No-op VCS port (for non-git projects).
 pub struct NullVcsPort;
 
 impl VcsPort for NullVcsPort {
-    fn head_ref(&self) -> Option<String> { None }
-    fn create_checkpoint(&self, _msg: &str) -> Result<String, String> { Ok("null".to_string()) }
-    fn rollback_to(&self, _r: &str) -> Result<(), String> { Ok(()) }
-    fn diff(&self, _files: &[String]) -> Result<String, String> { Ok(String::new()) }
+    fn head_ref(&self) -> Option<String> {
+        None
+    }
+    fn create_checkpoint(&self, _msg: &str) -> Result<String, String> {
+        Ok("null".to_string())
+    }
+    fn rollback_to(&self, _r: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn diff(&self, _files: &[String]) -> Result<String, String> {
+        Ok(String::new())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -327,7 +349,10 @@ pub struct BatchLifecycleResult {
 
 /// Classify a tool call for the lifecycle funnel.
 /// This is the kernel's single entry point for semantic classification.
-pub fn classify_for_lifecycle(tool_name: &str, args: &serde_json::Value) -> (SemanticClass, SemanticClassLabel) {
+pub fn classify_for_lifecycle(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> (SemanticClass, SemanticClassLabel) {
     let sc = classify_semantically(tool_name, args);
     let label = SemanticClassLabel::from(&sc);
     (sc, label)

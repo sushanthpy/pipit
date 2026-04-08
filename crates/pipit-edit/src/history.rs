@@ -1,5 +1,5 @@
-use crate::{AppliedEdit, EditError};
 use crate::apply::atomic_write;
+use crate::{AppliedEdit, EditError};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 

@@ -12,8 +12,8 @@
 //! - Hot path: The kernel does NOT block tool execution; it records outcomes
 //!   at turn boundaries, not inside the scheduler inner loop (Task 7).
 
-use crate::ledger::{SessionEvent, SessionLedger, SessionState, LedgerError};
-use crate::permission_ledger::{PermissionLedger, PermissionDenialRecord, DenialSource};
+use crate::ledger::{LedgerError, SessionEvent, SessionLedger, SessionState};
+use crate::permission_ledger::{DenialSource, PermissionDenialRecord, PermissionLedger};
 use pipit_context::budget::ContextManager;
 use pipit_context::transcript::{TranscriptWal, WalError};
 use pipit_provider::Message;
@@ -157,7 +157,8 @@ impl SessionKernel {
     /// Record that an assistant response has started.
     pub fn begin_response(&mut self, turn: u32) -> Result<(), SessionKernelError> {
         self.ensure_started()?;
-        self.ledger.append(SessionEvent::AssistantResponseStarted { turn })?;
+        self.ledger
+            .append(SessionEvent::AssistantResponseStarted { turn })?;
         Ok(())
     }
 
@@ -177,11 +178,12 @@ impl SessionKernel {
         }
 
         // Ledger (canonical)
-        self.ledger.append(SessionEvent::AssistantResponseCompleted {
-            text: text.to_string(),
-            thinking: thinking.to_string(),
-            tokens_used,
-        })?;
+        self.ledger
+            .append(SessionEvent::AssistantResponseCompleted {
+                text: text.to_string(),
+                thinking: thinking.to_string(),
+                tokens_used,
+            })?;
 
         Ok(())
     }
@@ -231,7 +233,8 @@ impl SessionKernel {
         })?;
 
         // Permission accumulator (for SDK fanout)
-        self.permissions.record_denial(tool_name, call_id, source, turn);
+        self.permissions
+            .record_denial(tool_name, call_id, source, turn);
 
         Ok(())
     }
@@ -344,8 +347,8 @@ impl SessionKernel {
     /// Create a ledger snapshot for accelerated replay.
     fn create_snapshot(&mut self) -> Result<(), SessionKernelError> {
         let state = self.derived_state();
-        let snapshot_data = serde_json::to_string(&state)
-            .map_err(|e| SessionKernelError::State(e.to_string()))?;
+        let snapshot_data =
+            serde_json::to_string(&state).map_err(|e| SessionKernelError::State(e.to_string()))?;
 
         let seq = self.ledger.current_seq();
         self.ledger.append(SessionEvent::Snapshot {
@@ -567,11 +570,18 @@ mod tests {
         let (mut kernel, _dir) = test_kernel();
         kernel.start("sess-1", "gpt-4", "openai").unwrap();
 
-        kernel.deny_tool(
-            "call-1", "bash", "risky command",
-            DenialSource::GovernorRisk { risk_score: 0.95, threshold: 0.8 },
-            1,
-        ).unwrap();
+        kernel
+            .deny_tool(
+                "call-1",
+                "bash",
+                "risky command",
+                DenialSource::GovernorRisk {
+                    risk_score: 0.95,
+                    threshold: 0.8,
+                },
+                1,
+            )
+            .unwrap();
 
         let denials = kernel.drain_permission_denials();
         assert_eq!(denials.len(), 1);

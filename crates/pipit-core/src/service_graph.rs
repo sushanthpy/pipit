@@ -163,7 +163,8 @@ impl ServiceGraph {
             .collect();
 
         let mut in_degree: HashMap<&str, usize> = enabled.iter().map(|&id| (id, 0)).collect();
-        let mut adj: HashMap<&str, Vec<&str>> = enabled.iter().map(|&id| (id, Vec::new())).collect();
+        let mut adj: HashMap<&str, Vec<&str>> =
+            enabled.iter().map(|&id| (id, Vec::new())).collect();
 
         for &id in &enabled {
             let desc = &self.services[id];

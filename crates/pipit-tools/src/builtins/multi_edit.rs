@@ -122,14 +122,10 @@ impl Tool for MultiEditTool {
         for (i, edit) in edits.iter().enumerate() {
             let search = edit["search"]
                 .as_str()
-                .ok_or_else(|| {
-                    ToolError::InvalidArgs(format!("edit[{}] missing 'search'", i))
-                })?;
+                .ok_or_else(|| ToolError::InvalidArgs(format!("edit[{}] missing 'search'", i)))?;
             let replace = edit["replace"]
                 .as_str()
-                .ok_or_else(|| {
-                    ToolError::InvalidArgs(format!("edit[{}] missing 'replace'", i))
-                })?;
+                .ok_or_else(|| ToolError::InvalidArgs(format!("edit[{}] missing 'replace'", i)))?;
 
             if search.is_empty() {
                 return Err(ToolError::InvalidArgs(format!(
@@ -160,7 +156,10 @@ impl Tool for MultiEditTool {
                             // Find the corresponding position in original content
                             // by counting characters up to the normalized offset
                             let start = find_original_offset(&original_content, norm_start);
-                            let end = find_original_offset(&original_content, norm_start + normalized_search.len());
+                            let end = find_original_offset(
+                                &original_content,
+                                norm_start + normalized_search.len(),
+                            );
                             edit_ops.push(EditOp {
                                 index: i,
                                 start,
@@ -223,13 +222,15 @@ impl Tool for MultiEditTool {
             ToolError::ExecutionFailed("Cannot determine parent directory".to_string())
         })?;
         let temp_path = dir.join(format!(".pipit-multi-edit-{}", std::process::id()));
-        std::fs::write(&temp_path, &result_content).map_err(|e| {
-            ToolError::ExecutionFailed(format!("Failed to write temp file: {}", e))
-        })?;
+        std::fs::write(&temp_path, &result_content)
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write temp file: {}", e)))?;
         std::fs::rename(&temp_path, &abs_path).map_err(|e| {
             // Clean up temp file on failure
             let _ = std::fs::remove_file(&temp_path);
-            ToolError::ExecutionFailed(format!("Failed to atomically replace '{}': {}", path_str, e))
+            ToolError::ExecutionFailed(format!(
+                "Failed to atomically replace '{}': {}",
+                path_str, e
+            ))
         })?;
 
         // Generate diff

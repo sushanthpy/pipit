@@ -26,9 +26,7 @@ pub struct ReplayMessage {
 ///
 /// Returns the replayed messages (for injecting into ContextManager) and
 /// the corresponding EngineEvents (for yielding to the SDK consumer).
-pub fn replay_session(
-    wal_path: &Path,
-) -> Result<(Vec<Message>, Vec<EngineEvent>), WalError> {
+pub fn replay_session(wal_path: &Path) -> Result<(Vec<Message>, Vec<EngineEvent>), WalError> {
     let entries = TranscriptWal::replay(wal_path)?;
     let mut messages = Vec::new();
     let mut events = Vec::new();

@@ -48,14 +48,20 @@ impl TaskComplexitySignals {
 
         Self {
             estimated_files: estimate_file_count(&lower),
-            multi_directory: lower.contains("across") || lower.contains("multiple")
-                || lower.contains("all files") || lower.contains("refactor"),
+            multi_directory: lower.contains("across")
+                || lower.contains("multiple")
+                || lower.contains("all files")
+                || lower.contains("refactor"),
             involves_tests: lower.contains("test") || lower.contains("spec"),
             ambiguity_score: estimate_ambiguity(&lower, words.len()),
-            config_change: lower.contains("config") || lower.contains("schema")
-                || lower.contains("migration") || lower.contains("dependency"),
-            dependency_change: lower.contains("upgrade") || lower.contains("dependency")
-                || lower.contains("package") || lower.contains("install"),
+            config_change: lower.contains("config")
+                || lower.contains("schema")
+                || lower.contains("migration")
+                || lower.contains("dependency"),
+            dependency_change: lower.contains("upgrade")
+                || lower.contains("dependency")
+                || lower.contains("package")
+                || lower.contains("install"),
             request_word_count: words.len() as u32,
         }
     }
@@ -72,10 +78,18 @@ impl TaskComplexitySignals {
             _ => 0.6,
         };
 
-        if self.multi_directory { score += 0.15; }
-        if self.involves_tests { score += 0.05; }
-        if self.config_change { score += 0.1; }
-        if self.dependency_change { score += 0.1; }
+        if self.multi_directory {
+            score += 0.15;
+        }
+        if self.involves_tests {
+            score += 0.05;
+        }
+        if self.config_change {
+            score += 0.1;
+        }
+        if self.dependency_change {
+            score += 0.1;
+        }
         score += self.ambiguity_score * 0.2;
 
         score.min(1.0)
@@ -151,9 +165,15 @@ pub enum PlanResponse {
 
 fn estimate_file_count(text: &str) -> u32 {
     let mut count = 0u32;
-    if text.contains("all files") || text.contains("across the project") { count += 5; }
-    if text.contains("refactor") { count += 3; }
-    if text.contains("rename") { count += 2; }
+    if text.contains("all files") || text.contains("across the project") {
+        count += 5;
+    }
+    if text.contains("refactor") {
+        count += 3;
+    }
+    if text.contains("rename") {
+        count += 2;
+    }
     // Count explicit file references
     count += text.matches(".rs").count() as u32;
     count += text.matches(".py").count() as u32;
@@ -166,13 +186,21 @@ fn estimate_file_count(text: &str) -> u32 {
 fn estimate_ambiguity(text: &str, word_count: usize) -> f32 {
     let mut score = 0.0f32;
     // Short requests might be too vague
-    if word_count < 5 { score += 0.3; }
+    if word_count < 5 {
+        score += 0.3;
+    }
     // Questions embedded in task
-    if text.contains('?') { score += 0.2; }
+    if text.contains('?') {
+        score += 0.2;
+    }
     // "maybe", "or", "either" signal uncertainty
-    if text.contains("maybe") || text.contains("or ") || text.contains("either") { score += 0.2; }
+    if text.contains("maybe") || text.contains("or ") || text.contains("either") {
+        score += 0.2;
+    }
     // Very long requests may be ambiguous
-    if word_count > 100 { score += 0.1; }
+    if word_count > 100 {
+        score += 0.1;
+    }
     score.min(1.0)
 }
 
@@ -190,10 +218,13 @@ mod tests {
     #[test]
     fn complex_task_requires_plan() {
         let signals = TaskComplexitySignals::from_prompt(
-            "refactor all files across the project to use the new API pattern"
+            "refactor all files across the project to use the new API pattern",
         );
         let decision = decide_plan_gate(&signals, 500, None);
-        assert!(matches!(decision, PlanGateDecision::RequirePlan | PlanGateDecision::SuggestPlan));
+        assert!(matches!(
+            decision,
+            PlanGateDecision::RequirePlan | PlanGateDecision::SuggestPlan
+        ));
     }
 
     #[test]
@@ -207,7 +238,7 @@ mod tests {
     fn complexity_scoring() {
         let simple = TaskComplexitySignals::from_prompt("fix bug in foo.rs");
         let complex = TaskComplexitySignals::from_prompt(
-            "refactor all config files across multiple directories and update tests"
+            "refactor all config files across multiple directories and update tests",
         );
         assert!(complex.complexity_score() > simple.complexity_score());
     }

@@ -95,7 +95,12 @@ impl UserUniverse {
         self.archetypes.last().unwrap()
     }
 
-    fn generate_session<R: Rng>(&self, archetype: &UserArchetype, max_steps: usize, rng: &mut R) -> UserSession {
+    fn generate_session<R: Rng>(
+        &self,
+        archetype: &UserArchetype,
+        max_steps: usize,
+        rng: &mut R,
+    ) -> UserSession {
         let mut steps = Vec::new();
         let mut current_state = archetype.states.first().cloned().unwrap_or_default();
         let mut timestamp = 0u64;
@@ -141,13 +146,30 @@ impl UserUniverse {
 
     fn power_user() -> UserArchetype {
         let states = vec!["home", "search", "product", "cart", "checkout", "done"]
-            .into_iter().map(String::from).collect();
+            .into_iter()
+            .map(String::from)
+            .collect();
         let mut q = HashMap::new();
-        q.insert("home".into(), HashMap::from([("search".into(), 0.8), ("browse".into(), 0.5)]));
-        q.insert("search".into(), HashMap::from([("select".into(), 0.9), ("refine".into(), 0.6)]));
-        q.insert("product".into(), HashMap::from([("add_cart".into(), 0.85), ("back".into(), 0.2)]));
-        q.insert("cart".into(), HashMap::from([("checkout".into(), 0.9), ("remove".into(), 0.1)]));
-        q.insert("checkout".into(), HashMap::from([("pay".into(), 0.95), ("abandon".into(), 0.05)]));
+        q.insert(
+            "home".into(),
+            HashMap::from([("search".into(), 0.8), ("browse".into(), 0.5)]),
+        );
+        q.insert(
+            "search".into(),
+            HashMap::from([("select".into(), 0.9), ("refine".into(), 0.6)]),
+        );
+        q.insert(
+            "product".into(),
+            HashMap::from([("add_cart".into(), 0.85), ("back".into(), 0.2)]),
+        );
+        q.insert(
+            "cart".into(),
+            HashMap::from([("checkout".into(), 0.9), ("remove".into(), 0.1)]),
+        );
+        q.insert(
+            "checkout".into(),
+            HashMap::from([("pay".into(), 0.95), ("abandon".into(), 0.05)]),
+        );
 
         UserArchetype {
             name: "power_user".into(),
@@ -161,12 +183,26 @@ impl UserUniverse {
 
     fn casual_user() -> UserArchetype {
         let states = vec!["home", "browse", "product", "cart", "checkout", "done"]
-            .into_iter().map(String::from).collect();
+            .into_iter()
+            .map(String::from)
+            .collect();
         let mut q = HashMap::new();
-        q.insert("home".into(), HashMap::from([("browse".into(), 0.7), ("search".into(), 0.3)]));
-        q.insert("browse".into(), HashMap::from([("select".into(), 0.5), ("browse".into(), 0.4)]));
-        q.insert("product".into(), HashMap::from([("add_cart".into(), 0.4), ("back".into(), 0.6)]));
-        q.insert("cart".into(), HashMap::from([("checkout".into(), 0.5), ("abandon".into(), 0.4)]));
+        q.insert(
+            "home".into(),
+            HashMap::from([("browse".into(), 0.7), ("search".into(), 0.3)]),
+        );
+        q.insert(
+            "browse".into(),
+            HashMap::from([("select".into(), 0.5), ("browse".into(), 0.4)]),
+        );
+        q.insert(
+            "product".into(),
+            HashMap::from([("add_cart".into(), 0.4), ("back".into(), 0.6)]),
+        );
+        q.insert(
+            "cart".into(),
+            HashMap::from([("checkout".into(), 0.5), ("abandon".into(), 0.4)]),
+        );
 
         UserArchetype {
             name: "casual_user".into(),
@@ -180,11 +216,22 @@ impl UserUniverse {
 
     fn confused_user() -> UserArchetype {
         let states = vec!["home", "search", "product", "help", "cart", "done"]
-            .into_iter().map(String::from).collect();
+            .into_iter()
+            .map(String::from)
+            .collect();
         let mut q = HashMap::new();
-        q.insert("home".into(), HashMap::from([("search".into(), 0.3), ("help".into(), 0.7)]));
-        q.insert("search".into(), HashMap::from([("back".into(), 0.5), ("select".into(), 0.3)]));
-        q.insert("product".into(), HashMap::from([("back".into(), 0.6), ("help".into(), 0.4)]));
+        q.insert(
+            "home".into(),
+            HashMap::from([("search".into(), 0.3), ("help".into(), 0.7)]),
+        );
+        q.insert(
+            "search".into(),
+            HashMap::from([("back".into(), 0.5), ("select".into(), 0.3)]),
+        );
+        q.insert(
+            "product".into(),
+            HashMap::from([("back".into(), 0.6), ("help".into(), 0.4)]),
+        );
 
         UserArchetype {
             name: "confused_user".into(),
@@ -198,11 +245,22 @@ impl UserUniverse {
 
     fn adversarial_user() -> UserArchetype {
         let states = vec!["home", "search", "product", "cart", "error"]
-            .into_iter().map(String::from).collect();
+            .into_iter()
+            .map(String::from)
+            .collect();
         let mut q = HashMap::new();
-        q.insert("home".into(), HashMap::from([("inject".into(), 0.8), ("search".into(), 0.2)]));
-        q.insert("search".into(), HashMap::from([("inject".into(), 0.7), ("boundary".into(), 0.6)]));
-        q.insert("product".into(), HashMap::from([("tamper".into(), 0.8), ("boundary".into(), 0.5)]));
+        q.insert(
+            "home".into(),
+            HashMap::from([("inject".into(), 0.8), ("search".into(), 0.2)]),
+        );
+        q.insert(
+            "search".into(),
+            HashMap::from([("inject".into(), 0.7), ("boundary".into(), 0.6)]),
+        );
+        q.insert(
+            "product".into(),
+            HashMap::from([("tamper".into(), 0.8), ("boundary".into(), 0.5)]),
+        );
 
         UserArchetype {
             name: "adversarial_user".into(),
@@ -235,9 +293,10 @@ fn select_action<R: Rng>(archetype: &UserArchetype, state: &str, rng: &mut R) ->
     let max_q = actions.values().cloned().fold(f64::NEG_INFINITY, f64::max);
 
     // Compute Boltzmann probabilities (numerically stable)
-    let probs: Vec<(&String, f64)> = actions.iter().map(|(a, q)| {
-        (a, ((q - max_q) / tau).exp())
-    }).collect();
+    let probs: Vec<(&String, f64)> = actions
+        .iter()
+        .map(|(a, q)| (a, ((q - max_q) / tau).exp()))
+        .collect();
 
     let total: f64 = probs.iter().map(|(_, p)| p).sum();
     let mut r = rng.gen_range(0.0..1.0) * total;
@@ -249,10 +308,18 @@ fn select_action<R: Rng>(archetype: &UserArchetype, state: &str, rng: &mut R) ->
         }
     }
 
-    probs.last().map(|(a, _)| (*a).clone()).unwrap_or_else(|| "exit".to_string())
+    probs
+        .last()
+        .map(|(a, _)| (*a).clone())
+        .unwrap_or_else(|| "exit".to_string())
 }
 
-fn transition<R: Rng>(archetype: &UserArchetype, _state: &str, action: &str, _rng: &mut R) -> Option<String> {
+fn transition<R: Rng>(
+    archetype: &UserArchetype,
+    _state: &str,
+    action: &str,
+    _rng: &mut R,
+) -> Option<String> {
     // Simple state machine: action name determines next state
     match action {
         "search" => Some("search".into()),
@@ -281,9 +348,18 @@ mod tests {
         let sessions = universe.generate_sessions(100, 20);
         assert_eq!(sessions.len(), 100);
 
-        let completed = sessions.iter().filter(|s| matches!(s.outcome, SessionOutcome::Completed)).count();
-        let abandoned = sessions.iter().filter(|s| matches!(s.outcome, SessionOutcome::Abandoned)).count();
-        let errors = sessions.iter().filter(|s| matches!(s.outcome, SessionOutcome::Error)).count();
+        let completed = sessions
+            .iter()
+            .filter(|s| matches!(s.outcome, SessionOutcome::Completed))
+            .count();
+        let abandoned = sessions
+            .iter()
+            .filter(|s| matches!(s.outcome, SessionOutcome::Abandoned))
+            .count();
+        let errors = sessions
+            .iter()
+            .filter(|s| matches!(s.outcome, SessionOutcome::Error))
+            .count();
 
         assert!(completed + abandoned + errors == 100);
         assert!(completed > 0, "Should have some completions");
@@ -303,6 +379,10 @@ mod tests {
 
         // With τ=0.5 and Q(pay)=0.95 >> Q(abandon)=0.05, "pay" should dominate
         let pay_count = action_counts.get("pay").copied().unwrap_or(0);
-        assert!(pay_count > 80, "pay should dominate at low τ: got {}/100", pay_count);
+        assert!(
+            pay_count > 80,
+            "pay should dominate at low τ: got {}/100",
+            pay_count
+        );
     }
 }

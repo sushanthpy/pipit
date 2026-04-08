@@ -220,18 +220,14 @@ impl PolicyStore {
 
     /// Check if a tool call is covered by a standing scoped grant.
     /// Returns true if any grant matches. O(m) in number of grants for this tool.
-    pub fn has_standing_grant(
-        &self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> bool {
+    pub fn has_standing_grant(&self, tool_name: &str, args: &serde_json::Value) -> bool {
         let Some(grants) = self.grants.get(tool_name) else {
             return false;
         };
 
-        grants.iter().any(|grant| {
-            grant.constraints.iter().all(|c| match_constraint(c, args))
-        })
+        grants
+            .iter()
+            .any(|grant| grant.constraints.iter().all(|c| match_constraint(c, args)))
     }
 
     /// Get pending permission requests.
@@ -241,7 +237,10 @@ impl PolicyStore {
 
     /// Get all scoped grants for a tool.
     pub fn grants_for_tool(&self, tool_name: &str) -> &[ScopedGrant] {
-        self.grants.get(tool_name).map(|v| v.as_slice()).unwrap_or(&[])
+        self.grants
+            .get(tool_name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Expire all pending requests (e.g., on session end).
@@ -257,7 +256,9 @@ impl PolicyStore {
     pub fn replay_event(&mut self, event: &crate::ledger::SessionEvent) {
         match event {
             crate::ledger::SessionEvent::ToolCallProposed {
-                call_id, tool_name, args,
+                call_id,
+                tool_name,
+                args,
             } => {
                 self.request_permission(call_id, tool_name, args);
             }
@@ -291,12 +292,11 @@ fn match_constraint(constraint: &GrantConstraint, args: &serde_json::Value) -> b
                 .map(|v| v == expected)
                 .unwrap_or(false)
         }
-        ConstraintKind::StartsWith(prefix) => {
-            args.pointer(&constraint.field)
-                .and_then(|v| v.as_str())
-                .map(|v| v.starts_with(prefix))
-                .unwrap_or(false)
-        }
+        ConstraintKind::StartsWith(prefix) => args
+            .pointer(&constraint.field)
+            .and_then(|v| v.as_str())
+            .map(|v| v.starts_with(prefix))
+            .unwrap_or(false),
     }
 }
 
@@ -323,7 +323,10 @@ mod tests {
         assert_eq!(store.pending_requests().len(), 0);
 
         let req = &store.requests["call-1"];
-        assert!(matches!(req.state, PermissionState::Approved { permanent: false }));
+        assert!(matches!(
+            req.state,
+            PermissionState::Approved { permanent: false }
+        ));
     }
 
     #[test]

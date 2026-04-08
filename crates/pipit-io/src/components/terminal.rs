@@ -4,7 +4,7 @@
 //! completion popups, and other terminal-specific widgets.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, List, ListItem, Table, Row, Cell, Clear, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
 
 // ═══════════════════════════════════════════════════════════════════════
 // 75. EmbeddedTerminal — pseudoterminal widget for live subprocess output
@@ -18,7 +18,11 @@ pub struct EmbeddedTerminal<'a> {
 
 impl<'a> EmbeddedTerminal<'a> {
     pub fn new(output: &'a [u8]) -> Self {
-        Self { output, title: "terminal", scroll_offset: 0 }
+        Self {
+            output,
+            title: "terminal",
+            scroll_offset: 0,
+        }
     }
 
     pub fn title(mut self, title: &'a str) -> Self {
@@ -35,7 +39,9 @@ impl<'a> EmbeddedTerminal<'a> {
 impl Widget for &EmbeddedTerminal<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use ansi_to_tui::IntoText;
-        let text = self.output.into_text()
+        let text = self
+            .output
+            .into_text()
             .unwrap_or_else(|_| Text::raw(String::from_utf8_lossy(self.output).to_string()));
 
         let block = Block::default()
@@ -72,7 +78,11 @@ pub struct CommandHistory<'a> {
 
 impl<'a> CommandHistory<'a> {
     pub fn new(entries: &'a [CommandHistoryEntry]) -> Self {
-        Self { entries, selected: None, filter: None }
+        Self {
+            entries,
+            selected: None,
+            filter: None,
+        }
     }
 
     pub fn selected(mut self, idx: usize) -> Self {
@@ -88,17 +98,19 @@ impl<'a> CommandHistory<'a> {
 
 impl Widget for &CommandHistory<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.entries.iter().enumerate()
-            .filter(|(_, entry)| {
-                self.filter.map_or(true, |f| entry.command.contains(f))
-            })
+        let items: Vec<ListItem> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| self.filter.map_or(true, |f| entry.command.contains(f)))
             .map(|(i, entry)| {
                 let exit_style = match entry.exit_code {
                     Some(0) => Style::default().fg(Color::Green),
                     Some(_) => Style::default().fg(Color::Red),
                     None => Style::default().fg(Color::DarkGray),
                 };
-                let exit_text = entry.exit_code
+                let exit_text = entry
+                    .exit_code
                     .map(|c| format!("[{}]", c))
                     .unwrap_or_else(|| "[-]".to_string());
 
@@ -111,14 +123,15 @@ impl Widget for &CommandHistory<'_> {
                 ListItem::new(Line::from(vec![
                     Span::styled(exit_text, exit_style),
                     Span::styled(format!(" {} ", entry.command), style),
-                    Span::styled(entry.timestamp.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        entry.timestamp.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]))
             })
             .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" history ");
+        let block = Block::default().borders(Borders::ALL).title(" history ");
 
         super::render_widget(List::new(items).block(block), area, buf);
     }
@@ -137,7 +150,12 @@ pub struct CompletionPopup<'a> {
 
 impl<'a> CompletionPopup<'a> {
     pub fn new(items: &'a [String], selected: usize) -> Self {
-        Self { items, selected, anchor_x: 0, anchor_y: 0 }
+        Self {
+            items,
+            selected,
+            anchor_x: 0,
+            anchor_y: 0,
+        }
     }
 
     pub fn anchor(mut self, x: u16, y: u16) -> Self {
@@ -165,14 +183,21 @@ impl Widget for &CompletionPopup<'_> {
 
         Clear.render(popup, buf);
 
-        let items: Vec<ListItem> = self.items.iter().enumerate().map(|(i, item)| {
-            let style = if i == self.selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Span::styled(format!(" {} ", item), style))
-        }).collect();
+        let items: Vec<ListItem> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let style = if i == self.selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Span::styled(format!(" {} ", item), style))
+            })
+            .collect();
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -216,21 +241,42 @@ impl Widget for &KeybindingOverlay<'_> {
 
         Clear.render(popup, buf);
 
-        let widths = [Constraint::Length(12), Constraint::Min(15), Constraint::Length(10)];
-        let rows: Vec<Row> = self.bindings.iter().map(|(key, action, ctx)| {
-            Row::new(vec![
-                Cell::from(Span::styled(key.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
-                Cell::from(Span::styled(action.to_string(), Style::default().fg(Color::White))),
-                Cell::from(Span::styled(ctx.to_string(), Style::default().fg(Color::DarkGray))),
-            ])
-        }).collect();
+        let widths = [
+            Constraint::Length(12),
+            Constraint::Min(15),
+            Constraint::Length(10),
+        ];
+        let rows: Vec<Row> = self
+            .bindings
+            .iter()
+            .map(|(key, action, ctx)| {
+                Row::new(vec![
+                    Cell::from(Span::styled(
+                        key.to_string(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Cell::from(Span::styled(
+                        action.to_string(),
+                        Style::default().fg(Color::White),
+                    )),
+                    Cell::from(Span::styled(
+                        ctx.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ])
+            })
+            .collect();
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(
                 " Keybindings ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ));
 
         super::render_widget(Table::new(rows, widths).block(block), popup, buf);
@@ -249,7 +295,11 @@ pub struct VoiceIndicator {
 
 impl VoiceIndicator {
     pub fn new(active: bool, level: f32, frame: u64) -> Self {
-        Self { active, level: level.clamp(0.0, 1.0), frame }
+        Self {
+            active,
+            level: level.clamp(0.0, 1.0),
+            frame,
+        }
     }
 }
 
@@ -259,7 +309,8 @@ impl Widget for &VoiceIndicator {
             Paragraph::new(Span::styled(
                 " 🎤 off ",
                 Style::default().fg(Color::DarkGray),
-            )).render(area, buf);
+            ))
+            .render(area, buf);
             return;
         }
 
@@ -272,6 +323,7 @@ impl Widget for &VoiceIndicator {
             Span::styled(format!(" {} ", pulse), Style::default().fg(Color::Red)),
             Span::styled("🎤 ", Style::default().fg(Color::White)),
             Span::styled(bar_chars, Style::default().fg(Color::Green)),
-        ])).render(area, buf);
+        ]))
+        .render(area, buf);
     }
 }

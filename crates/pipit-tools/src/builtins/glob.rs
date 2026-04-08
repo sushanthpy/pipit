@@ -58,9 +58,7 @@ impl Tool for GlobTool {
             if !path.is_file() {
                 continue;
             }
-            let rel = path
-                .strip_prefix(&ctx.project_root)
-                .unwrap_or(path);
+            let rel = path.strip_prefix(&ctx.project_root).unwrap_or(path);
 
             if glob.is_match(rel) {
                 matches.push(rel.display().to_string());

@@ -1,5 +1,5 @@
-use crate::{AppliedEdit, DiffHunk, DiffLine, EditError, EditFormat, EditOp};
 use crate::apply::atomic_write;
+use crate::{AppliedEdit, DiffHunk, DiffLine, EditError, EditFormat, EditOp};
 use std::path::{Path, PathBuf};
 
 /// Unified diff format — preferred by GPT-4 and some other models.

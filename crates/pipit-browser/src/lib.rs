@@ -9,10 +9,10 @@
 //! Chrome must be started with `--remote-debugging-port=9222`.
 
 pub mod cdp;
+pub mod extension_bridge;
 pub mod tools;
 pub mod twin;
 pub mod visual_diff;
-pub mod extension_bridge;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

@@ -64,10 +64,7 @@ impl LazyToolIndex {
             // Build inverted index from name + description words
             let text = format!("{} {}", name, description).to_lowercase();
             for word in tokenize(&text) {
-                self.inverted
-                    .entry(word)
-                    .or_default()
-                    .push(idx);
+                self.inverted.entry(word).or_default().push(idx);
             }
 
             self.entries.push(entry);
@@ -102,11 +99,7 @@ impl LazyToolIndex {
 
             for qt in &query_tokens {
                 let tf = doc_tokens.iter().filter(|t| t == &qt).count() as f64;
-                let df = self
-                    .inverted
-                    .get(qt.as_str())
-                    .map(|v| v.len())
-                    .unwrap_or(0) as f64;
+                let df = self.inverted.get(qt.as_str()).map(|v| v.len()).unwrap_or(0) as f64;
 
                 if df == 0.0 {
                     continue;
@@ -127,11 +120,7 @@ impl LazyToolIndex {
 
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let top_indices: Vec<usize> = scores
-            .iter()
-            .take(top_k)
-            .map(|(idx, _)| *idx)
-            .collect();
+        let top_indices: Vec<usize> = scores.iter().take(top_k).map(|(idx, _)| *idx).collect();
 
         // Update hit counts
         for &idx in &top_indices {
@@ -139,10 +128,7 @@ impl LazyToolIndex {
         }
 
         // Return references
-        top_indices
-            .iter()
-            .map(|&idx| &self.entries[idx])
-            .collect()
+        top_indices.iter().map(|&idx| &self.entries[idx]).collect()
     }
 
     /// Look up a tool by exact name.
@@ -164,10 +150,7 @@ impl LazyToolIndex {
 
     /// List all tools for a specific server.
     pub fn tools_for_server(&self, server: &str) -> Vec<&ToolIndexEntry> {
-        self.entries
-            .iter()
-            .filter(|e| e.server == server)
-            .collect()
+        self.entries.iter().filter(|e| e.server == server).collect()
     }
 }
 
@@ -188,9 +171,17 @@ fn tokenize(text: &str) -> Vec<String> {
 /// Infer a tool category from its name and description.
 fn infer_category(name: &str, description: &str) -> Option<String> {
     let text = format!("{} {}", name, description).to_lowercase();
-    if text.contains("read") || text.contains("get") || text.contains("list") || text.contains("search") {
+    if text.contains("read")
+        || text.contains("get")
+        || text.contains("list")
+        || text.contains("search")
+    {
         Some("read".to_string())
-    } else if text.contains("write") || text.contains("create") || text.contains("update") || text.contains("edit") {
+    } else if text.contains("write")
+        || text.contains("create")
+        || text.contains("update")
+        || text.contains("edit")
+    {
         Some("write".to_string())
     } else if text.contains("delete") || text.contains("remove") {
         Some("delete".to_string())
@@ -208,12 +199,27 @@ mod tests {
     #[test]
     fn index_and_search() {
         let mut index = LazyToolIndex::new();
-        index.index_server("github", &[
-            ("create_issue".to_string(), "Create a new GitHub issue".to_string()),
-            ("list_repos".to_string(), "List repositories for a user".to_string()),
-            ("get_pull_request".to_string(), "Get details of a pull request".to_string()),
-            ("create_pull_request".to_string(), "Create a new pull request".to_string()),
-        ]);
+        index.index_server(
+            "github",
+            &[
+                (
+                    "create_issue".to_string(),
+                    "Create a new GitHub issue".to_string(),
+                ),
+                (
+                    "list_repos".to_string(),
+                    "List repositories for a user".to_string(),
+                ),
+                (
+                    "get_pull_request".to_string(),
+                    "Get details of a pull request".to_string(),
+                ),
+                (
+                    "create_pull_request".to_string(),
+                    "Create a new pull request".to_string(),
+                ),
+            ],
+        );
 
         assert_eq!(index.total_tools(), 4);
 
@@ -226,17 +232,27 @@ mod tests {
 
     #[test]
     fn category_inference() {
-        assert_eq!(infer_category("read_file", "Read a file"), Some("read".to_string()));
-        assert_eq!(infer_category("create_issue", "Create issue"), Some("write".to_string()));
-        assert_eq!(infer_category("delete_branch", "Delete a branch"), Some("delete".to_string()));
+        assert_eq!(
+            infer_category("read_file", "Read a file"),
+            Some("read".to_string())
+        );
+        assert_eq!(
+            infer_category("create_issue", "Create issue"),
+            Some("write".to_string())
+        );
+        assert_eq!(
+            infer_category("delete_branch", "Delete a branch"),
+            Some("delete".to_string())
+        );
     }
 
     #[test]
     fn exact_lookup() {
         let mut index = LazyToolIndex::new();
-        index.index_server("test", &[
-            ("my_tool".to_string(), "Does something".to_string()),
-        ]);
+        index.index_server(
+            "test",
+            &[("my_tool".to_string(), "Does something".to_string())],
+        );
         assert!(index.get_by_name("my_tool").is_some());
         assert!(index.get_by_name("nonexistent").is_none());
     }

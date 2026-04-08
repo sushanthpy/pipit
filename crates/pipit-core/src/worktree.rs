@@ -76,12 +76,11 @@ impl WorktreeHandle {
 
 /// Policy function for worktree promotion.
 /// Returns Ok(()) if the changes satisfy policy, Err with reason if not.
-pub type PromotionPolicy = Box<dyn Fn(&WorktreeHandle, &[String]) -> Result<(), String> + Send + Sync>;
+pub type PromotionPolicy =
+    Box<dyn Fn(&WorktreeHandle, &[String]) -> Result<(), String> + Send + Sync>;
 
 /// Default promotion policy: reject protected path modifications.
-pub fn default_promotion_policy(
-    protected_paths: Vec<String>,
-) -> PromotionPolicy {
+pub fn default_promotion_policy(protected_paths: Vec<String>) -> PromotionPolicy {
     Box::new(move |_handle, files_changed| {
         for file in files_changed {
             for protected in &protected_paths {
@@ -214,8 +213,7 @@ impl WorktreeManager {
         }
 
         let files_changed = handle.changed_files()?;
-        policy(handle, &files_changed)
-            .map_err(WorktreeError::PolicyFailed)?;
+        policy(handle, &files_changed).map_err(WorktreeError::PolicyFailed)?;
 
         handle.state = PromotionState::PolicyChecked;
         Ok(files_changed)
@@ -223,10 +221,7 @@ impl WorktreeManager {
 
     /// Transition: PolicyChecked → DryRunMerged
     /// Stage, commit, and perform a dry-run merge to detect conflicts.
-    pub fn dry_run_merge(
-        &self,
-        handle: &mut WorktreeHandle,
-    ) -> Result<(), WorktreeError> {
+    pub fn dry_run_merge(&self, handle: &mut WorktreeHandle) -> Result<(), WorktreeError> {
         if handle.state != PromotionState::PolicyChecked {
             return Err(WorktreeError::InvalidTransition {
                 from: handle.state,
@@ -241,7 +236,11 @@ impl WorktreeManager {
             .output()?;
 
         let _ = Command::new("git")
-            .args(&["commit", "-m", &format!("pipit: work from {}", handle.branch)])
+            .args(&[
+                "commit",
+                "-m",
+                &format!("pipit: work from {}", handle.branch),
+            ])
             .current_dir(&handle.path)
             .output()?;
 
@@ -273,10 +272,7 @@ impl WorktreeManager {
 
     /// Transition: DryRunMerged → Committed
     /// Perform the actual merge.
-    pub fn commit_merge(
-        &self,
-        handle: &mut WorktreeHandle,
-    ) -> Result<MergeResult, WorktreeError> {
+    pub fn commit_merge(&self, handle: &mut WorktreeHandle) -> Result<MergeResult, WorktreeError> {
         if handle.state != PromotionState::DryRunMerged {
             return Err(WorktreeError::InvalidTransition {
                 from: handle.state,
@@ -296,8 +292,13 @@ impl WorktreeManager {
 
         // Actual merge
         let merge = Command::new("git")
-            .args(&["merge", "--no-ff", &handle.branch, "-m",
-                   &format!("Merge pipit agent work from {}", handle.branch)])
+            .args(&[
+                "merge",
+                "--no-ff",
+                &handle.branch,
+                "-m",
+                &format!("Merge pipit agent work from {}", handle.branch),
+            ])
             .current_dir(&self.repo_root)
             .output()?;
 
@@ -350,7 +351,10 @@ impl WorktreeManager {
 
     /// Legacy merge_and_cleanup — kept for backward compatibility.
     /// Uses the FSM internally but presents the old API.
-    pub fn merge_and_cleanup(&self, mut handle: WorktreeHandle) -> Result<MergeResult, WorktreeError> {
+    pub fn merge_and_cleanup(
+        &self,
+        mut handle: WorktreeHandle,
+    ) -> Result<MergeResult, WorktreeError> {
         // Check if there are any changes
         let status = Command::new("git")
             .args(&["status", "--porcelain"])
@@ -380,7 +384,11 @@ impl WorktreeManager {
             .output()?;
 
         let _ = Command::new("git")
-            .args(&["commit", "-m", &format!("pipit: work from {}", handle.branch)])
+            .args(&[
+                "commit",
+                "-m",
+                &format!("pipit: work from {}", handle.branch),
+            ])
             .current_dir(&handle.path)
             .output()?;
 
@@ -397,8 +405,13 @@ impl WorktreeManager {
 
         // Merge into the current branch of the main worktree
         let merge = Command::new("git")
-            .args(&["merge", "--no-ff", &handle.branch, "-m",
-                   &format!("Merge pipit agent work from {}", handle.branch)])
+            .args(&[
+                "merge",
+                "--no-ff",
+                &handle.branch,
+                "-m",
+                &format!("Merge pipit agent work from {}", handle.branch),
+            ])
             .current_dir(&self.repo_root)
             .output()?;
 

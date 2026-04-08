@@ -307,21 +307,17 @@ impl P2Estimator {
 
                 // Parabolic formula
                 let qi = self.q[i]
-                    + sign
-                        / (self.n[i + 1] - self.n[i - 1])
-                        * ((self.n[i] - self.n[i - 1] + sign)
-                            * (self.q[i + 1] - self.q[i])
+                    + sign / (self.n[i + 1] - self.n[i - 1])
+                        * ((self.n[i] - self.n[i - 1] + sign) * (self.q[i + 1] - self.q[i])
                             / (self.n[i + 1] - self.n[i])
-                            + (self.n[i + 1] - self.n[i] - sign)
-                                * (self.q[i] - self.q[i - 1])
+                            + (self.n[i + 1] - self.n[i] - sign) * (self.q[i] - self.q[i - 1])
                                 / (self.n[i] - self.n[i - 1]));
 
                 if qi > self.q[i - 1] && qi < self.q[i + 1] {
                     self.q[i] = qi;
                 } else {
                     // Linear formula as fallback
-                    self.q[i] += sign
-                        * (self.q[(i as isize + sign as isize) as usize] - self.q[i])
+                    self.q[i] += sign * (self.q[(i as isize + sign as isize) as usize] - self.q[i])
                         / (self.n[(i as isize + sign as isize) as usize] - self.n[i]);
                 }
                 self.n[i] += sign;

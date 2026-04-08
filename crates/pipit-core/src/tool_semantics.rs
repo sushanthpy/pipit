@@ -249,7 +249,10 @@ pub enum SemanticClass {
     /// Delegate to a subagent.
     Delegate { task: String },
     /// Invoke an external API/MCP server.
-    External { server: Option<String>, tool: String },
+    External {
+        server: Option<String>,
+        tool: String,
+    },
     /// Pure computation (no side effects, no I/O).
     Pure,
 }
@@ -257,57 +260,56 @@ pub enum SemanticClass {
 /// Derive the canonical semantic class from a tool name and its arguments.
 /// This is the single derivation point — governor, evidence, scheduler,
 /// and policy all consume this same descriptor.
-pub fn classify_semantically(
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> SemanticClass {
+pub fn classify_semantically(tool_name: &str, args: &serde_json::Value) -> SemanticClass {
     let semantics = builtin_semantics(tool_name);
-    let path = args.get("path").and_then(|v| v.as_str()).map(str::to_string);
-    let command = args.get("command").and_then(|v| v.as_str()).map(str::to_string);
-    let task = args.get("task").and_then(|v| v.as_str()).map(str::to_string);
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let command = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let task = args
+        .get("task")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     match (semantics.category, semantics.purity) {
-        (ToolCategory::FileSystem, Purity::Pure | Purity::Idempotent) => {
-            SemanticClass::Read {
-                paths: path.into_iter().collect(),
-            }
-        }
-        (ToolCategory::Search, _) => {
-            SemanticClass::Search {
-                query: args.get("pattern").and_then(|v| v.as_str()).map(str::to_string)
-                    .or(command),
-            }
-        }
-        (ToolCategory::Edit, _) | (ToolCategory::FileSystem, Purity::Mutating | Purity::Destructive) => {
+        (ToolCategory::FileSystem, Purity::Pure | Purity::Idempotent) => SemanticClass::Read {
+            paths: path.into_iter().collect(),
+        },
+        (ToolCategory::Search, _) => SemanticClass::Search {
+            query: args
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or(command),
+        },
+        (ToolCategory::Edit, _)
+        | (ToolCategory::FileSystem, Purity::Mutating | Purity::Destructive) => {
             SemanticClass::Edit {
                 paths: path.into_iter().collect(),
             }
         }
-        (ToolCategory::Shell, _) => {
-            SemanticClass::Exec {
-                command: command.unwrap_or_default(),
-            }
-        }
-        (ToolCategory::Delegation, _) => {
-            SemanticClass::Delegate {
-                task: task.unwrap_or_default(),
-            }
-        }
-        (ToolCategory::External, _) => {
-            SemanticClass::External {
-                server: None,
-                tool: tool_name.to_string(),
-            }
-        }
-        (ToolCategory::Analysis | ToolCategory::Verification, Purity::Pure | Purity::Idempotent) => {
-            SemanticClass::Pure
-        }
-        _ => {
-            SemanticClass::External {
-                server: None,
-                tool: tool_name.to_string(),
-            }
-        }
+        (ToolCategory::Shell, _) => SemanticClass::Exec {
+            command: command.unwrap_or_default(),
+        },
+        (ToolCategory::Delegation, _) => SemanticClass::Delegate {
+            task: task.unwrap_or_default(),
+        },
+        (ToolCategory::External, _) => SemanticClass::External {
+            server: None,
+            tool: tool_name.to_string(),
+        },
+        (
+            ToolCategory::Analysis | ToolCategory::Verification,
+            Purity::Pure | Purity::Idempotent,
+        ) => SemanticClass::Pure,
+        _ => SemanticClass::External {
+            server: None,
+            tool: tool_name.to_string(),
+        },
     }
 }
 
@@ -336,6 +338,9 @@ mod tests {
         assert_eq!(builtin_semantics("read_file").purity, Purity::Pure);
         assert_eq!(builtin_semantics("edit_file").purity, Purity::Mutating);
         assert_eq!(builtin_semantics("bash").purity, Purity::Destructive);
-        assert_eq!(builtin_semantics("subagent").category, ToolCategory::Delegation);
+        assert_eq!(
+            builtin_semantics("subagent").category,
+            ToolCategory::Delegation
+        );
     }
 }

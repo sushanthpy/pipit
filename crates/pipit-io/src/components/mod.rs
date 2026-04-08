@@ -19,64 +19,58 @@ pub(crate) fn render_widget<W: ratatui::widgets::Widget>(widget: W, area: Rect, 
     ratatui::widgets::Widget::render(widget, area, buf);
 }
 
-pub mod text;
-pub mod input;
-pub mod feedback;
-pub mod layout;
-pub mod data;
 pub mod agent;
-pub mod terminal;
+pub mod data;
 pub mod effects;
+pub mod feedback;
+pub mod input;
+pub mod layout;
+pub mod terminal;
+pub mod text;
 
 // ── Re-exports for ergonomic use ────────────────────────────────────────
 
 // Text display (1-12)
 pub use text::{
-    MarkdownView, CodeBlock, DiffView, TextWrap, BigTextView, AnsiText,
-    JsonTreeView, ErrorDisplay, HelpText, ThinkingBlock, Citation,
+    AnsiText, BigTextView, Citation, CodeBlock, DiffView, ErrorDisplay, HelpText, JsonTreeView,
+    MarkdownView, TextWrap, ThinkingBlock,
 };
 
 // Input controls (13-22)
 pub use input::{
-    CommandInput, SingleLineInput, ConfirmPrompt, SelectPrompt,
-    SearchInput, PasswordInput, PathInput, ModelSelector,
+    CommandInput, ConfirmPrompt, ModelSelector, PasswordInput, PathInput, SearchInput,
+    SelectPrompt, SingleLineInput,
 };
 
 // Feedback & status (23-36)
 pub use feedback::{
-    AnimatedSpinner, SpinnerStyle, ProgressBar, TokenCounter, CostDisplay,
-    StatusBar as ComponentStatusBar, SkeletonLoader, StreamingIndicator,
-    ToolRunning, PermissionPrompt, ModeIndicator, VerificationBadge,
-    BranchIndicator,
+    AnimatedSpinner, BranchIndicator, CostDisplay, ModeIndicator, PermissionPrompt, ProgressBar,
+    SkeletonLoader, SpinnerStyle, StatusBar as ComponentStatusBar, StreamingIndicator,
+    TokenCounter, ToolRunning, VerificationBadge,
 };
 
 // Layout & structure (37-48)
 pub use layout::{
-    SplitPane, TabBarView, ScrollContainer, PopupOverlay,
-    CollapsibleSection, Sidebar, Breadcrumb, Panel, FloatingWindow,
-    Divider, Grid,
+    Breadcrumb, CollapsibleSection, Divider, FloatingWindow, Grid, Panel, PopupOverlay,
+    ScrollContainer, Sidebar, SplitPane, TabBarView,
 };
 
 // Data display (49-62)
 pub use data::{
-    DataTable, FileTree, VirtualList, KeyValueTable, SparklineView,
-    DepGraph, TimelineView, MetricCard, Badge,
+    Badge, DataTable, DepGraph, FileTree, KeyValueTable, MetricCard, SparklineView, TimelineView,
+    VirtualList,
 };
 
 // Agent-specific (63-74)
 pub use agent::{
-    ToolCallDisplay, AgentOutput, ToolApprovalCard, FileEditPreview,
-    TaskListView, TodoListView, MemoryView, SessionSummary,
-    AgentTree, SkillBrowser, McpServerStatus,
+    AgentOutput, AgentTree, FileEditPreview, McpServerStatus, MemoryView, SessionSummary,
+    SkillBrowser, TaskListView, TodoListView, ToolApprovalCard, ToolCallDisplay,
 };
 
 // Terminal integration (75-80)
 pub use terminal::{
-    EmbeddedTerminal, CommandHistory, CompletionPopup,
-    KeybindingOverlay, VoiceIndicator,
+    CommandHistory, CompletionPopup, EmbeddedTerminal, KeybindingOverlay, VoiceIndicator,
 };
 
 // Effects (81-86)
-pub use effects::{
-    Theme, FadeTransition, SlideTransition, PulseHighlight,
-};
+pub use effects::{FadeTransition, PulseHighlight, SlideTransition, Theme};

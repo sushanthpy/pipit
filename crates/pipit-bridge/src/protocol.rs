@@ -131,10 +131,7 @@ pub enum BridgeEvent {
         tokens_freed: u64,
     },
     /// Error occurred.
-    Error {
-        message: String,
-        recoverable: bool,
-    },
+    Error { message: String, recoverable: bool },
     /// Agent finished processing.
     Done {
         turns: u32,

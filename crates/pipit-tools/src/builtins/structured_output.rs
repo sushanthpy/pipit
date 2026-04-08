@@ -119,8 +119,8 @@ fn validate_recursive(value: &Value, schema: &Value, path: &str, errors: &mut Ve
         };
 
         // "number" accepts "integer" as well
-        let type_matches = actual_type == expected_type
-            || (expected_type == "number" && actual_type == "integer");
+        let type_matches =
+            actual_type == expected_type || (expected_type == "number" && actual_type == "integer");
 
         if !type_matches {
             errors.push(format!(

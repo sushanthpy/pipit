@@ -5,6 +5,53 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// Transcript entry for a subagent invocation, persisted for session resume.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SubagentTranscript {
+    pub id: String,
+    pub parent_session_id: String,
+    pub task: String,
+    pub allowed_tools: Vec<String>,
+    pub isolated: bool,
+    pub output: String,
+    pub started_at: String,
+    pub duration_ms: u64,
+    pub merge_contract: Option<MergeContractData>,
+}
+
+impl SubagentTranscript {
+    /// Persist this transcript to disk in the session directory.
+    pub fn persist(&self, session_dir: &std::path::Path) -> Result<(), String> {
+        let subagent_dir = session_dir.join("subagents");
+        std::fs::create_dir_all(&subagent_dir)
+            .map_err(|e| format!("Failed to create subagent dir: {e}"))?;
+        let path = subagent_dir.join(format!("{}.json", self.id));
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| format!("Serialize error: {e}"))?;
+        std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))?;
+        Ok(())
+    }
+
+    /// Load all subagent transcripts from a session directory.
+    pub fn load_all(session_dir: &std::path::Path) -> Vec<Self> {
+        let dir = session_dir.join("subagents");
+        let mut transcripts = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(transcript) = serde_json::from_str::<Self>(&content) {
+                            transcripts.push(transcript);
+                        }
+                    }
+                }
+            }
+        }
+        transcripts.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        transcripts
+    }
+}
+
 /// Callback for subagent execution, provided by the application layer
 /// to break the pipit-tools → pipit-core circular dependency.
 #[async_trait]
@@ -29,7 +76,9 @@ pub trait SubagentExecutor: Send + Sync {
         cancel: CancellationToken,
     ) -> Result<IsolatedResult, String> {
         // Default: fall back to non-isolated execution
-        let result = self.run_subagent(task, context, allowed_tools, project_root, cancel).await?;
+        let result = self
+            .run_subagent(task, context, allowed_tools, project_root, cancel)
+            .await?;
         Ok(IsolatedResult {
             output: result,
             worktree_path: None,
@@ -77,7 +126,9 @@ impl SubagentTool {
 
 #[async_trait]
 impl Tool for SubagentTool {
-    fn name(&self) -> &str { "subagent" }
+    fn name(&self) -> &str {
+        "subagent"
+    }
 
     fn schema(&self) -> Value {
         serde_json::json!({
@@ -126,22 +177,37 @@ impl Tool for SubagentTool {
 
         let allowed_tools: Vec<String> = args["tools"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_else(|| vec![
-                "read_file".into(), "grep".into(), "glob".into(), "list_directory".into(),
-            ]);
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                vec![
+                    "read_file".into(),
+                    "grep".into(),
+                    "glob".into(),
+                    "list_directory".into(),
+                ]
+            });
 
         let isolated = args["isolated"].as_bool().unwrap_or(false);
 
+        let start = std::time::Instant::now();
+
         if isolated {
             // Worktree-isolated execution
-            match self.executor.run_subagent_isolated(
-                task.clone(),
-                context_info,
-                allowed_tools,
-                ctx.project_root.clone(),
-                cancel,
-            ).await {
+            match self
+                .executor
+                .run_subagent_isolated(
+                    task.clone(),
+                    context_info,
+                    allowed_tools.clone(),
+                    ctx.project_root.clone(),
+                    cancel,
+                )
+                .await
+            {
                 Ok(result) => {
                     let mut output = result.output.clone();
                     if let Some(ref branch) = result.branch_name {
@@ -149,7 +215,8 @@ impl Tool for SubagentTool {
                     }
                     if let Some(ref diff) = result.diff {
                         if !diff.is_empty() {
-                            output.push_str(&format!("\n[Changes: {} lines]", diff.lines().count()));
+                            output
+                                .push_str(&format!("\n[Changes: {} lines]", diff.lines().count()));
                         }
                     }
                     // Enforce structured merge contract — no merge without valid contract
@@ -185,23 +252,49 @@ impl Tool for SubagentTool {
                         // Legacy path: merge_ready=true but no contract → blocked
                         output.push_str(
                             "\n[MERGE BLOCKED — no structured merge contract. \
-                             Isolated branches must produce a MergeContract to merge.]"
+                             Isolated branches must produce a MergeContract to merge.]",
                         );
                     }
                     Ok(ToolResult::text(output))
                 }
-                Err(e) => Ok(ToolResult::error(format!("Isolated subagent failed: {}", e))),
+                Err(e) => Ok(ToolResult::error(format!(
+                    "Isolated subagent failed: {}",
+                    e
+                ))),
             }
         } else {
             // Standard non-isolated execution
-            match self.executor.run_subagent(
-                task.clone(),
-                context_info,
-                allowed_tools,
-                ctx.project_root.clone(),
-                cancel,
-            ).await {
-                Ok(result) => Ok(ToolResult::text(result)),
+            match self
+                .executor
+                .run_subagent(
+                    task.clone(),
+                    context_info,
+                    allowed_tools.clone(),
+                    ctx.project_root.clone(),
+                    cancel,
+                )
+                .await
+            {
+                Ok(result) => {
+                    // Persist transcript for session resume
+                    let transcript = SubagentTranscript {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        parent_session_id: String::new(),
+                        task: task.clone(),
+                        allowed_tools: allowed_tools.clone(),
+                        isolated: false,
+                        output: result.clone(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        merge_contract: None,
+                    };
+                    // Best-effort persistence — don't fail the tool call if persistence fails
+                    let session_dir = ctx.project_root.join(".pipit").join("sessions");
+                    if let Err(e) = transcript.persist(&session_dir) {
+                        tracing::debug!("Subagent transcript persist failed: {}", e);
+                    }
+                    Ok(ToolResult::text(result))
+                }
                 Err(e) => Ok(ToolResult::error(format!("Subagent failed: {}", e))),
             }
         }

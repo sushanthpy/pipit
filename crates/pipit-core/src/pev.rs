@@ -102,8 +102,15 @@ impl std::str::FromStr for AgentMode {
             "balanced" | "b" | "default" => Ok(AgentMode::Balanced),
             "guarded" | "g" | "strict" => Ok(AgentMode::Guarded),
             "custom" | "c" => Ok(AgentMode::Custom),
+            // Context mode aliases (Claude Code / ECC compatibility):
+            //   dev      → balanced (plan + execute, standard dev workflow)
+            //   review   → guarded  (thorough, verify-heavy, read-first)
+            //   research → fast     (exploration, Q&A, no mutation overhead)
+            "dev" | "development" => Ok(AgentMode::Balanced),
+            "review" | "code-review" | "pr" => Ok(AgentMode::Guarded),
+            "research" | "explore" | "read" => Ok(AgentMode::Fast),
             _ => Err(format!(
-                "Unknown mode: '{}'. Available: fast, balanced, guarded, custom",
+                "Unknown mode: '{}'. Available: fast, balanced, guarded, custom, dev, review, research",
                 s
             )),
         }
@@ -480,8 +487,7 @@ You MUST respond with ONLY a JSON object matching this exact schema:
 
 /// Build the system prompt for the Executor role.
 pub fn executor_system_prompt(plan: &PlanSpec) -> String {
-    let plan_json =
-        serde_json::to_string_pretty(plan).unwrap_or_else(|_| format!("{:?}", plan));
+    let plan_json = serde_json::to_string_pretty(plan).unwrap_or_else(|_| format!("{:?}", plan));
     format!(
         r#"You are an execution agent. You must implement the following plan using the available tools.
 
@@ -562,14 +568,16 @@ You MUST respond with ONLY a JSON object matching this exact schema:
 }
 
 /// Build the user prompt for the Verifier with execution evidence.
-pub fn verifier_evidence_prompt(
-    exec_result: &ExecutionResult,
-    diff: &str,
-) -> String {
+pub fn verifier_evidence_prompt(exec_result: &ExecutionResult, diff: &str) -> String {
     let edits = exec_result
         .realized_edits
         .iter()
-        .map(|e| format!("  - {}: {} (+{} -{} lines)", e.path, e.description, e.lines_added, e.lines_removed))
+        .map(|e| {
+            format!(
+                "  - {}: {} (+{} -{} lines)",
+                e.path, e.description, e.lines_added, e.lines_removed
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let commands = exec_result
@@ -657,9 +665,5 @@ impl Finding {
 }
 
 fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }

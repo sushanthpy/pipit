@@ -123,7 +123,10 @@ impl VerificationPolicy {
     /// Uses cost-gated policy: C_v < p * R_e.
     pub fn should_verify(&self, trigger: VerificationTrigger) -> bool {
         // Explicit always triggers
-        if matches!(trigger, VerificationTrigger::Explicit | VerificationTrigger::PreCommit) {
+        if matches!(
+            trigger,
+            VerificationTrigger::Explicit | VerificationTrigger::PreCommit
+        ) {
             return true;
         }
 

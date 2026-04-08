@@ -1,5 +1,5 @@
 use crate::{
-    ContentEvent, CompletionRequest, LlmProvider, ModelCapabilities, PreferredFormat,
+    CompletionRequest, ContentEvent, LlmProvider, ModelCapabilities, PreferredFormat,
     ProviderError, StopReason, TokenCount, UsageMetadata,
 };
 use async_trait::async_trait;
@@ -76,7 +76,9 @@ impl GoogleProvider {
                         .content
                         .iter()
                         .find_map(|b| match b {
-                            crate::ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                            crate::ContentBlock::ToolResult { content, .. } => {
+                                Some(content.clone())
+                            }
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -146,7 +148,11 @@ impl GoogleProvider {
                         parts.push(serde_json::json!({"text": text}));
                     }
                 }
-                crate::ContentBlock::ToolCall { call_id: _, name, args } => {
+                crate::ContentBlock::ToolCall {
+                    call_id: _,
+                    name,
+                    args,
+                } => {
                     parts.push(serde_json::json!({
                         "functionCall": {
                             "name": name,
@@ -156,8 +162,7 @@ impl GoogleProvider {
                 }
                 crate::ContentBlock::Image { media_type, data } => {
                     use base64::Engine;
-                    let encoded =
-                        base64::engine::general_purpose::STANDARD.encode(data);
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(data);
                     parts.push(serde_json::json!({
                         "inlineData": {
                             "mimeType": media_type,
@@ -214,9 +219,7 @@ impl LlmProvider for GoogleProvider {
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
             return match status.as_u16() {
-                401 | 403 => Err(ProviderError::AuthFailed {
-                    message: body_text,
-                }),
+                401 | 403 => Err(ProviderError::AuthFailed { message: body_text }),
                 429 => Err(ProviderError::RateLimited {
                     retry_after_ms: None,
                 }),
@@ -239,10 +242,7 @@ impl LlmProvider for GoogleProvider {
         Ok(Box::pin(event_stream))
     }
 
-    async fn count_tokens(
-        &self,
-        messages: &[crate::Message],
-    ) -> Result<TokenCount, ProviderError> {
+    async fn count_tokens(&self, messages: &[crate::Message]) -> Result<TokenCount, ProviderError> {
         let (mut bytes, mut words) = (0usize, 0usize);
         for m in messages {
             for b in &m.content {
@@ -300,10 +300,7 @@ fn parse_gemini_chunk(data: &str) -> (Vec<ContentEvent>, Option<UsageMetadata>) 
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let args = fc
-                                .get("args")
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null);
+                            let args = fc.get("args").cloned().unwrap_or(serde_json::Value::Null);
                             events.push(ContentEvent::ToolCallComplete {
                                 call_id: name.clone(),
                                 tool_name: name,
@@ -323,10 +320,7 @@ fn parse_gemini_chunk(data: &str) -> (Vec<ContentEvent>, Option<UsageMetadata>) 
             }
 
             // Finish reason
-            if let Some(reason) = candidate
-                .get("finishReason")
-                .and_then(|r| r.as_str())
-            {
+            if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
                 let stop = match reason {
                     "STOP" => StopReason::EndTurn,
                     "MAX_TOKENS" => StopReason::MaxTokens,
@@ -356,9 +350,7 @@ fn parse_gemini_chunk(data: &str) -> (Vec<ContentEvent>, Option<UsageMetadata>) 
                 .get("candidatesTokenCount")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
-            cache_read_tokens: meta
-                .get("cachedContentTokenCount")
-                .and_then(|v| v.as_u64()),
+            cache_read_tokens: meta.get("cachedContentTokenCount").and_then(|v| v.as_u64()),
             cache_creation_tokens: None,
         };
         usage_out = Some(u);

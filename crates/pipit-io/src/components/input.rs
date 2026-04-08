@@ -4,7 +4,7 @@
 //! interactive user input in the pipit TUI.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, List, ListItem, ListState, Clear};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 // ═══════════════════════════════════════════════════════════════════════
 // 13. CommandInput — multi-line input (wraps tui-textarea)
@@ -61,7 +61,11 @@ impl Widget for &CommandInput<'_> {
                     let before = &line[..self.cursor_col.min(line.len())];
                     let cursor_char = line.chars().nth(self.cursor_col).unwrap_or(' ');
                     let after_start = self.cursor_col + cursor_char.len_utf8();
-                    let after = if after_start <= line.len() { &line[after_start..] } else { "" };
+                    let after = if after_start <= line.len() {
+                        &line[after_start..]
+                    } else {
+                        ""
+                    };
 
                     lines.push(Line::from(vec![
                         Span::raw(before.to_string()),
@@ -107,7 +111,12 @@ pub struct SingleLineInput<'a> {
 
 impl<'a> SingleLineInput<'a> {
     pub fn new(value: &'a str, cursor: usize) -> Self {
-        Self { value, cursor, label: "", masked: false }
+        Self {
+            value,
+            cursor,
+            label: "",
+            masked: false,
+        }
     }
 
     pub fn label(mut self, label: &'a str) -> Self {
@@ -132,7 +141,11 @@ impl Widget for &SingleLineInput<'_> {
         let before = &display_val[..self.cursor.min(display_val.len())];
         let cursor_char = display_val.chars().nth(self.cursor).unwrap_or(' ');
         let after_pos = self.cursor + cursor_char.len_utf8();
-        let after = if after_pos <= display_val.len() { &display_val[after_pos..] } else { "" };
+        let after = if after_pos <= display_val.len() {
+            &display_val[after_pos..]
+        } else {
+            ""
+        };
 
         let mut spans = Vec::new();
         if !self.label.is_empty() {
@@ -142,7 +155,10 @@ impl Widget for &SingleLineInput<'_> {
             ));
         }
         spans.push(Span::raw(before.to_string()));
-        spans.push(Span::styled(cursor_char.to_string(), Style::default().add_modifier(Modifier::REVERSED)));
+        spans.push(Span::styled(
+            cursor_char.to_string(),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
         spans.push(Span::raw(after.to_string()));
 
         Paragraph::new(Line::from(spans)).render(area, buf);
@@ -161,7 +177,11 @@ pub struct ConfirmPrompt<'a> {
 
 impl<'a> ConfirmPrompt<'a> {
     pub fn new(message: &'a str) -> Self {
-        Self { message, selected: false, default_yes: false }
+        Self {
+            message,
+            selected: false,
+            default_yes: false,
+        }
     }
 
     pub fn default_yes(mut self) -> Self {
@@ -174,12 +194,16 @@ impl<'a> ConfirmPrompt<'a> {
 impl Widget for &ConfirmPrompt<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let yes_style = if self.selected {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
             Style::default().fg(Color::DarkGray)
         };
         let no_style = if !self.selected {
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -215,7 +239,11 @@ pub struct SelectPrompt<'a> {
 
 impl<'a> SelectPrompt<'a> {
     pub fn new(title: &'a str, options: &'a [&'a str]) -> Self {
-        Self { title, options, selected: 0 }
+        Self {
+            title,
+            options,
+            selected: 0,
+        }
     }
 
     pub fn selected(mut self, idx: usize) -> Self {
@@ -226,15 +254,22 @@ impl<'a> SelectPrompt<'a> {
 
 impl Widget for &SelectPrompt<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.options.iter().enumerate().map(|(i, opt)| {
-            let marker = if i == self.selected { "▸ " } else { "  " };
-            let style = if i == self.selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            ListItem::new(Span::styled(format!("{}{}", marker, opt), style))
-        }).collect();
+        let items: Vec<ListItem> = self
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, opt)| {
+                let marker = if i == self.selected { "▸ " } else { "  " };
+                let style = if i == self.selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Span::styled(format!("{}{}", marker, opt), style))
+            })
+            .collect();
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -244,9 +279,7 @@ impl Widget for &SelectPrompt<'_> {
                 Style::default().fg(Color::Cyan),
             ));
 
-        super::render_widget(List::new(items)
-            .block(block)
-            , area, buf);
+        super::render_widget(List::new(items).block(block), area, buf);
     }
 }
 
@@ -263,7 +296,12 @@ pub struct SearchInput<'a> {
 
 impl<'a> SearchInput<'a> {
     pub fn new(query: &'a str, cursor: usize) -> Self {
-        Self { query, cursor, result_count: None, current_match: None }
+        Self {
+            query,
+            cursor,
+            result_count: None,
+            current_match: None,
+        }
     }
 
     pub fn results(mut self, count: usize, current: usize) -> Self {
@@ -275,14 +313,15 @@ impl<'a> SearchInput<'a> {
 
 impl Widget for &SearchInput<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut spans = vec![
-            Span::styled("🔍 ", Style::default().fg(Color::Yellow)),
-        ];
+        let mut spans = vec![Span::styled("🔍 ", Style::default().fg(Color::Yellow))];
 
         let before = &self.query[..self.cursor.min(self.query.len())];
         let after = &self.query[self.cursor.min(self.query.len())..];
         spans.push(Span::raw(before.to_string()));
-        spans.push(Span::styled("▎", Style::default().add_modifier(Modifier::SLOW_BLINK)));
+        spans.push(Span::styled(
+            "▎",
+            Style::default().add_modifier(Modifier::SLOW_BLINK),
+        ));
         spans.push(Span::raw(after.to_string()));
 
         if let (Some(count), Some(current)) = (self.result_count, self.current_match) {
@@ -308,7 +347,11 @@ pub struct PasswordInput<'a> {
 
 impl<'a> PasswordInput<'a> {
     pub fn new(value: &'a str, cursor: usize) -> Self {
-        Self { value, cursor, label: "Password" }
+        Self {
+            value,
+            cursor,
+            label: "Password",
+        }
     }
 
     pub fn label(mut self, label: &'a str) -> Self {
@@ -370,19 +413,30 @@ impl Widget for &PathInput<'_> {
 
             Clear.render(popup_area, buf);
 
-            let items: Vec<ListItem> = self.completions.iter().enumerate().map(|(i, c)| {
-                let style = if Some(i) == self.completion_selected {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(Span::styled(c.clone(), style))
-            }).collect();
+            let items: Vec<ListItem> = self
+                .completions
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if Some(i) == self.completion_selected {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(Span::styled(c.clone(), style))
+                })
+                .collect();
 
             super::render_widget(
-                List::new(items)
-                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray))),
-                popup_area, buf,
+                List::new(items).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                ),
+                popup_area,
+                buf,
             );
         }
     }
@@ -399,7 +453,10 @@ pub struct ModelSelector<'a> {
 
 impl<'a> ModelSelector<'a> {
     pub fn new(models: &'a [(&'a str, &'a str)]) -> Self {
-        Self { models, selected: 0 }
+        Self {
+            models,
+            selected: 0,
+        }
     }
 
     pub fn selected(mut self, idx: usize) -> Self {
@@ -410,18 +467,25 @@ impl<'a> ModelSelector<'a> {
 
 impl Widget for &ModelSelector<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.models.iter().enumerate().map(|(i, (id, desc))| {
-            let marker = if i == self.selected { "▸ " } else { "  " };
-            let style = if i == self.selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{}{}", marker, id), style),
-                Span::styled(format!("  {}", desc), Style::default().fg(Color::DarkGray)),
-            ]))
-        }).collect();
+        let items: Vec<ListItem> = self
+            .models
+            .iter()
+            .enumerate()
+            .map(|(i, (id, desc))| {
+                let marker = if i == self.selected { "▸ " } else { "  " };
+                let style = if i == self.selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{}{}", marker, id), style),
+                    Span::styled(format!("  {}", desc), Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
 
         let block = Block::default()
             .borders(Borders::ALL)

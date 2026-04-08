@@ -18,28 +18,64 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum BridgeCommand {
-    Navigate { url: String },
-    Screenshot { selector: Option<String>, full_page: bool },
-    Click { selector: String },
-    Type { selector: String, text: String },
-    Evaluate { expression: String },
+    Navigate {
+        url: String,
+    },
+    Screenshot {
+        selector: Option<String>,
+        full_page: bool,
+    },
+    Click {
+        selector: String,
+    },
+    Type {
+        selector: String,
+        text: String,
+    },
+    Evaluate {
+        expression: String,
+    },
     GetConsole,
     GetNetwork,
     GetAccessibilityTree,
-    RunLighthouse { url: String, categories: Vec<String> },
-    UploadFile { selector: String, file_path: String },
+    RunLighthouse {
+        url: String,
+        categories: Vec<String>,
+    },
+    UploadFile {
+        selector: String,
+        file_path: String,
+    },
     GetPageText,
-    WaitForSelector { selector: String, timeout_ms: u64 },
+    WaitForSelector {
+        selector: String,
+        timeout_ms: u64,
+    },
 }
 
 /// Bridge message from extension → agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum BridgeResponse {
-    Success { command_id: String, data: serde_json::Value },
-    Error { command_id: String, error: String },
-    Attachment { command_id: String, mime_type: String, data_base64: String, filename: Option<String> },
-    Heartbeat { tab_id: u32, url: String, title: String },
+    Success {
+        command_id: String,
+        data: serde_json::Value,
+    },
+    Error {
+        command_id: String,
+        error: String,
+    },
+    Attachment {
+        command_id: String,
+        mime_type: String,
+        data_base64: String,
+        filename: Option<String>,
+    },
+    Heartbeat {
+        tab_id: u32,
+        url: String,
+        title: String,
+    },
 }
 
 /// Attachment extracted from a bridge response.
@@ -53,11 +89,22 @@ pub struct BrowserAttachment {
 }
 
 impl BrowserAttachment {
-    pub fn from_base64(mime_type: &str, data_base64: &str, filename: Option<String>) -> Result<Self, String> {
+    pub fn from_base64(
+        mime_type: &str,
+        data_base64: &str,
+        filename: Option<String>,
+    ) -> Result<Self, String> {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD
-            .decode(data_base64).map_err(|e| format!("Base64 decode failed: {e}"))?;
-        Ok(Self { mime_type: mime_type.to_string(), data, filename, width: None, height: None })
+            .decode(data_base64)
+            .map_err(|e| format!("Base64 decode failed: {e}"))?;
+        Ok(Self {
+            mime_type: mime_type.to_string(),
+            data,
+            filename,
+            width: None,
+            height: None,
+        })
     }
 
     pub fn to_base64(&self) -> String {
@@ -107,10 +154,18 @@ pub struct BrowserTabState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsoleEntry { pub level: String, pub message: String, pub timestamp: String }
+pub struct ConsoleEntry {
+    pub level: String,
+    pub message: String,
+    pub timestamp: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FailedRequestEntry { pub url: String, pub status: u16, pub method: String }
+pub struct FailedRequestEntry {
+    pub url: String,
+    pub status: u16,
+    pub method: String,
+}
 
 // ─── Browser Tool Implementations ───────────────────────────────────────
 
@@ -154,7 +209,9 @@ pub struct BrowserNavigateTool;
 
 #[async_trait]
 impl Tool for BrowserNavigateTool {
-    fn name(&self) -> &str { "browser_navigate" }
+    fn name(&self) -> &str {
+        "browser_navigate"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -165,11 +222,22 @@ impl Tool for BrowserNavigateTool {
             "required": ["url"]
         })
     }
-    fn description(&self) -> &str { "Navigate the browser to a URL and return page info." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Navigate the browser to a URL and return page info."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let url = args.get("url").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("url required".into()))?;
         let wait_for = args.get("wait_for").and_then(|v| v.as_str());
 
@@ -217,7 +285,12 @@ impl Tool for BrowserNavigateTool {
             .await
             .ok();
         let title = title_result
-            .and_then(|r| r.get("result")?.get("value")?.as_str().map(|s| s.to_string()))
+            .and_then(|r| {
+                r.get("result")?
+                    .get("value")?
+                    .as_str()
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_default();
 
         let frame_id = nav_result
@@ -236,7 +309,9 @@ pub struct BrowserScreenshotTool;
 
 #[async_trait]
 impl Tool for BrowserScreenshotTool {
-    fn name(&self) -> &str { "browser_screenshot" }
+    fn name(&self) -> &str {
+        "browser_screenshot"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -246,12 +321,24 @@ impl Tool for BrowserScreenshotTool {
             }
         })
     }
-    fn description(&self) -> &str { "Take a screenshot of the current page or element. Returns base64 PNG." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Take a screenshot of the current page or element. Returns base64 PNG."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
         let selector = args.get("selector").and_then(|v| v.as_str());
-        let full_page = args.get("full_page").and_then(|v| v.as_bool()).unwrap_or(false);
+        let full_page = args
+            .get("full_page")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let client = get_cdp_client().await?;
 
@@ -268,7 +355,10 @@ impl Tool for BrowserScreenshotTool {
                 sel = serde_json::to_string(sel).unwrap_or_default()
             );
             let eval_result = client
-                .send_command("Runtime.evaluate", serde_json::json!({"expression": js, "returnByValue": true}))
+                .send_command(
+                    "Runtime.evaluate",
+                    serde_json::json!({"expression": js, "returnByValue": true}),
+                )
                 .await
                 .map_err(|e| ToolError::ExecutionFailed(format!("Element lookup failed: {e}")))?;
             if let Some(value) = eval_result.get("result").and_then(|r| r.get("value")) {
@@ -301,17 +391,16 @@ impl Tool for BrowserScreenshotTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Screenshot failed: {e}")))?;
 
-        let data_b64 = result
-            .get("data")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let data_b64 = result.get("data").and_then(|v| v.as_str()).unwrap_or("");
 
         let byte_len = data_b64.len() * 3 / 4; // approximate decoded size
         Ok(ToolResult {
             content: format!(
                 "Screenshot captured ({:.1}KB PNG{}{})\n[base64 data: {} chars]",
                 byte_len as f64 / 1024.0,
-                selector.map(|s| format!(", selector: {s}")).unwrap_or_default(),
+                selector
+                    .map(|s| format!(", selector: {s}"))
+                    .unwrap_or_default(),
                 if full_page { ", full page" } else { "" },
                 data_b64.len()
             ),
@@ -327,14 +416,28 @@ pub struct BrowserClickTool;
 
 #[async_trait]
 impl Tool for BrowserClickTool {
-    fn name(&self) -> &str { "browser_click" }
+    fn name(&self) -> &str {
+        "browser_click"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]})
     }
-    fn description(&self) -> &str { "Click an element in the browser by CSS selector." }
-    fn is_mutating(&self) -> bool { true }
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let sel = args.get("selector").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("selector required".into()))?;
+    fn description(&self) -> &str {
+        "Click an element in the browser by CSS selector."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let sel = args
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("selector required".into()))?;
 
         let client = get_cdp_client().await?;
 
@@ -354,11 +457,17 @@ impl Tool for BrowserClickTool {
         );
 
         let result = client
-            .send_command("Runtime.evaluate", serde_json::json!({"expression": js, "returnByValue": true}))
+            .send_command(
+                "Runtime.evaluate",
+                serde_json::json!({"expression": js, "returnByValue": true}),
+            )
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Click failed: {e}")))?;
 
-        let value = result.get("result").and_then(|r| r.get("value")).cloned()
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .cloned()
             .unwrap_or(serde_json::Value::Null);
 
         if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
@@ -368,8 +477,12 @@ impl Tool for BrowserClickTool {
         let tag = value.get("tag").and_then(|v| v.as_str()).unwrap_or("?");
         let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
         Ok(ToolResult::mutating(format!(
-            "Clicked <{tag}> at selector '{sel}'{}", 
-            if text.is_empty() { String::new() } else { format!(" (text: \"{text}\")") }
+            "Clicked <{tag}> at selector '{sel}'{}",
+            if text.is_empty() {
+                String::new()
+            } else {
+                format!(" (text: \"{text}\")")
+            }
         )))
     }
 }
@@ -379,15 +492,32 @@ pub struct BrowserTypeTool;
 
 #[async_trait]
 impl Tool for BrowserTypeTool {
-    fn name(&self) -> &str { "browser_type" }
+    fn name(&self) -> &str {
+        "browser_type"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {"selector": {"type": "string"}, "text": {"type": "string"}}, "required": ["selector", "text"]})
     }
-    fn description(&self) -> &str { "Type text into a form field in the browser." }
-    fn is_mutating(&self) -> bool { true }
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let sel = args.get("selector").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("selector required".into()))?;
-        let text = args.get("text").and_then(|v| v.as_str()).ok_or_else(|| ToolError::InvalidArgs("text required".into()))?;
+    fn description(&self) -> &str {
+        "Type text into a form field in the browser."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let sel = args
+            .get("selector")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("selector required".into()))?;
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs("text required".into()))?;
 
         let client = get_cdp_client().await?;
 
@@ -408,11 +538,17 @@ impl Tool for BrowserTypeTool {
         );
 
         let result = client
-            .send_command("Runtime.evaluate", serde_json::json!({"expression": js, "returnByValue": true}))
+            .send_command(
+                "Runtime.evaluate",
+                serde_json::json!({"expression": js, "returnByValue": true}),
+            )
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Type failed: {e}")))?;
 
-        let value = result.get("result").and_then(|r| r.get("value")).cloned()
+        let value = result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .cloned()
             .unwrap_or(serde_json::Value::Null);
 
         if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
@@ -428,11 +564,24 @@ pub struct BrowserConsoleTool;
 
 #[async_trait]
 impl Tool for BrowserConsoleTool {
-    fn name(&self) -> &str { "browser_console" }
-    fn schema(&self) -> Value { serde_json::json!({"type": "object", "properties": {}}) }
-    fn description(&self) -> &str { "Get recent browser console messages (errors, warnings, logs)." }
-    fn is_mutating(&self) -> bool { false }
-    async fn execute(&self, _args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    fn name(&self) -> &str {
+        "browser_console"
+    }
+    fn schema(&self) -> Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+    fn description(&self) -> &str {
+        "Get recent browser console messages (errors, warnings, logs)."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
         let client = get_cdp_client().await?;
 
         // Collect console messages by evaluating a helper that captures them
@@ -453,7 +602,10 @@ impl Tool for BrowserConsoleTool {
         })()"#;
 
         let result = client
-            .send_command("Runtime.evaluate", serde_json::json!({"expression": js, "returnByValue": true}))
+            .send_command(
+                "Runtime.evaluate",
+                serde_json::json!({"expression": js, "returnByValue": true}),
+            )
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Console capture failed: {e}")))?;
 
@@ -461,12 +613,19 @@ impl Tool for BrowserConsoleTool {
 
         match messages {
             Some(serde_json::Value::Array(msgs)) if !msgs.is_empty() => {
-                let formatted: Vec<String> = msgs.iter().map(|m| {
-                    let level = m.get("level").and_then(|v| v.as_str()).unwrap_or("log");
-                    let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    format!("[{level}] {text}")
-                }).collect();
-                Ok(ToolResult::text(format!("Console messages ({} entries):\n{}", formatted.len(), formatted.join("\n"))))
+                let formatted: Vec<String> = msgs
+                    .iter()
+                    .map(|m| {
+                        let level = m.get("level").and_then(|v| v.as_str()).unwrap_or("log");
+                        let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        format!("[{level}] {text}")
+                    })
+                    .collect();
+                Ok(ToolResult::text(format!(
+                    "Console messages ({} entries):\n{}",
+                    formatted.len(),
+                    formatted.join("\n")
+                )))
             }
             _ => Ok(ToolResult::text("No console messages captured.")),
         }
@@ -478,11 +637,24 @@ pub struct BrowserNetworkTool;
 
 #[async_trait]
 impl Tool for BrowserNetworkTool {
-    fn name(&self) -> &str { "browser_network" }
-    fn schema(&self) -> Value { serde_json::json!({"type": "object", "properties": {}}) }
-    fn description(&self) -> &str { "Get failed network requests from the browser." }
-    fn is_mutating(&self) -> bool { false }
-    async fn execute(&self, _args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    fn name(&self) -> &str {
+        "browser_network"
+    }
+    fn schema(&self) -> Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+    fn description(&self) -> &str {
+        "Get failed network requests from the browser."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
         let client = get_cdp_client().await?;
 
         // Capture failed requests via Performance API
@@ -504,7 +676,10 @@ impl Tool for BrowserNetworkTool {
         })()"#;
 
         let result = client
-            .send_command("Runtime.evaluate", serde_json::json!({"expression": js, "returnByValue": true}))
+            .send_command(
+                "Runtime.evaluate",
+                serde_json::json!({"expression": js, "returnByValue": true}),
+            )
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Network capture failed: {e}")))?;
 
@@ -512,8 +687,16 @@ impl Tool for BrowserNetworkTool {
 
         match value {
             Some(v) => {
-                let failed = v.get("failed").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0);
-                let suspicious = v.get("suspicious").and_then(|f| f.as_array()).map(|a| a.len()).unwrap_or(0);
+                let failed = v
+                    .get("failed")
+                    .and_then(|f| f.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let suspicious = v
+                    .get("suspicious")
+                    .and_then(|f| f.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
                 let details = serde_json::to_string_pretty(v).unwrap_or_default();
                 Ok(ToolResult::text(format!(
                     "Network status: {failed} failed requests, {suspicious} suspicious entries\n{details}"
@@ -552,15 +735,20 @@ mod tests {
     #[test]
     fn token_estimation() {
         let att = BrowserAttachment {
-            mime_type: "image/png".into(), data: vec![0; 1000],
-            filename: None, width: Some(1920), height: Some(1080),
+            mime_type: "image/png".into(),
+            data: vec![0; 1000],
+            filename: None,
+            width: Some(1920),
+            height: Some(1080),
         };
         assert!(att.estimated_tokens() > 2000); // 1920*1080/750 ≈ 2764
     }
 
     #[test]
     fn bridge_command_serialization() {
-        let cmd = BridgeCommand::Navigate { url: "https://example.com".into() };
+        let cmd = BridgeCommand::Navigate {
+            url: "https://example.com".into(),
+        };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("Navigate"));
     }

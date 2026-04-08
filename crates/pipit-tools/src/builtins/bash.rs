@@ -1,4 +1,4 @@
-use crate::{Tool, ToolContext, ToolError, ToolResult, ToolDisplay};
+use crate::{Tool, ToolContext, ToolDisplay, ToolError, ToolResult};
 use async_trait::async_trait;
 use pipit_config::ApprovalMode;
 use serde_json::Value;
@@ -59,29 +59,38 @@ impl Tool for BashTool {
         let cmd_lower = cmd_normalized.to_lowercase();
 
         const DANGEROUS_PATTERNS: &[&str] = &[
-            "rm -rf /", "rm -rf /*", "rm -r -f /", "rm --recursive --force /",
-            "mkfs", "dd if=", ":(){", "> /dev/sd", "> /dev/nvm",
-            "chmod -R 000 /", "find / -delete",
+            "rm -rf /",
+            "rm -rf /*",
+            "rm -r -f /",
+            "rm --recursive --force /",
+            "mkfs",
+            "dd if=",
+            ":(){",
+            "> /dev/sd",
+            "> /dev/nvm",
+            "chmod -R 000 /",
+            "find / -delete",
         ];
         for d in DANGEROUS_PATTERNS {
             if cmd_lower.contains(d) {
                 return Err(ToolError::PermissionDenied(format!(
-                    "Blocked dangerous command pattern: {}", d
+                    "Blocked dangerous command pattern: {}",
+                    d
                 )));
             }
         }
 
         // Block known destructive binaries even when invoked via absolute path
-        const BLOCKED_BINARIES: &[&str] = &[
-            "mkfs", "fdisk", "parted", "wipefs",
-        ];
+        const BLOCKED_BINARIES: &[&str] = &["mkfs", "fdisk", "parted", "wipefs"];
         for bin in BLOCKED_BINARIES {
             // Match /usr/sbin/mkfs, /sbin/mkfs, etc.
-            if cmd_lower.split_whitespace().any(|tok| {
-                tok == *bin || tok.ends_with(&format!("/{}", bin))
-            }) {
+            if cmd_lower
+                .split_whitespace()
+                .any(|tok| tok == *bin || tok.ends_with(&format!("/{}", bin)))
+            {
                 return Err(ToolError::PermissionDenied(format!(
-                    "Blocked dangerous binary: {}", bin
+                    "Blocked dangerous binary: {}",
+                    bin
                 )));
             }
         }
@@ -100,7 +109,9 @@ impl Tool for BashTool {
         // Validate sed -i commands to prevent unintended file destruction.
         if cmd_lower.contains("sed") && (command.contains("-i") || command.contains("--in-place")) {
             if let Err(msg) = validate_sed_expression(command) {
-                return Err(ToolError::PermissionDenied(format!("sed validation: {msg}")));
+                return Err(ToolError::PermissionDenied(format!(
+                    "sed validation: {msg}"
+                )));
             }
         }
 
@@ -161,11 +172,7 @@ impl Tool for BashTool {
             let resolved = match target.canonicalize() {
                 Ok(p) => p,
                 Err(e) => {
-                    return Ok(ToolResult::text(format!(
-                        "cd: {}: {}",
-                        target.display(),
-                        e
-                    )));
+                    return Ok(ToolResult::text(format!("cd: {}: {}", target.display(), e)));
                 }
             };
 
@@ -202,14 +209,16 @@ impl Tool for BashTool {
         let sandbox_config = super::sandbox::load_sandbox_config(&ctx.project_root);
         if let Err(reason) = super::sandbox::check_binary_allowlist(command, &sandbox_config) {
             return Err(ToolError::PermissionDenied(format!(
-                "Binary allowlist violation: {}", reason
+                "Binary allowlist violation: {}",
+                reason
             )));
         }
 
         // Layer 3: Kernel isolation — sandbox via bwrap/seatbelt for syscall-level enforcement.
         //   The lexical filter is demoted to an early reject layer.
         //   Real control is sandbox + capability policy.
-        let mut child_cmd = super::sandbox::sandboxed_command(command, &effective_cwd, &sandbox_config);
+        let mut child_cmd =
+            super::sandbox::sandboxed_command(command, &effective_cwd, &sandbox_config);
         child_cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -314,7 +323,17 @@ impl Tool for BashTool {
             return Ok(tool_result);
         }
 
-        let mut result = ToolResult::mutating(output);
+        // Classify the command as read-only or mutating based on the leading
+        // binary.  Read-only commands (ls, cat, echo, grep, find, which, …)
+        // should NOT inflate the mutation counters in the adaptive budget and
+        // proof state, because they don't change any files.
+        let is_read_only = is_read_only_command(trimmed_cmd);
+
+        let mut result = if is_read_only {
+            ToolResult::text(output)
+        } else {
+            ToolResult::mutating(output)
+        };
         result.display = Some(ToolDisplay::ShellOutput {
             command: command.to_string(),
             stdout: stdout_truncated,
@@ -340,7 +359,9 @@ fn normalize_command(cmd: &str) -> String {
     // Expand $'\xHH' hex escapes (commonly used to smuggle characters)
     while let Some(start) = s.find("$'\\x") {
         if let Some(end) = s[start..].find('\'').and_then(|first_quote| {
-            s[start + first_quote + 1..].find('\'').map(|q| start + first_quote + 1 + q)
+            s[start + first_quote + 1..]
+                .find('\'')
+                .map(|q| start + first_quote + 1 + q)
         }) {
             // We found a $'...' block; try to decode hex escapes inside it
             let inner = &s[start + 2..end + 1]; // includes surrounding quotes
@@ -393,17 +414,19 @@ fn decode_dollar_quotes(s: &str) -> String {
 /// - Missing target file (sed -i without file arg)
 fn validate_sed_expression(command: &str) -> Result<(), String> {
     let parts: Vec<&str> = command.split_whitespace().collect();
-    
+
     // Find the sed command and flags
     let sed_idx = parts.iter().position(|p| p.ends_with("sed") || *p == "sed");
-    if sed_idx.is_none() { return Ok(()); }
+    if sed_idx.is_none() {
+        return Ok(());
+    }
     let sed_idx = sed_idx.unwrap();
-    
+
     let mut has_in_place = false;
     let mut has_expression = false;
     let mut has_file = false;
     let mut expression = String::new();
-    
+
     let mut i = sed_idx + 1;
     while i < parts.len() {
         let part = parts[i];
@@ -427,11 +450,11 @@ fn validate_sed_expression(command: &str) -> Result<(), String> {
         }
         i += 1;
     }
-    
+
     if has_in_place && !has_file {
         return Err("sed -i without target file".to_string());
     }
-    
+
     // Check the expression for dangerous patterns
     if !expression.is_empty() {
         let expr_lower = expression.to_lowercase();
@@ -446,10 +469,10 @@ fn validate_sed_expression(command: &str) -> Result<(), String> {
                 let inner = &rest[2..];
                 // Find replacement section
                 if let Some(pos) = inner.find(delim) {
-                    let replacement = &inner[pos+1..];
+                    let replacement = &inner[pos + 1..];
                     if let Some(end) = replacement.find(delim) {
                         let repl = &replacement[..end];
-                        let flags = &replacement[end+1..].trim_end_matches('\'');
+                        let flags = &replacement[end + 1..].trim_end_matches('\'');
                         if repl.is_empty() && flags.contains('g') {
                             // Check if pattern matches everything
                             let pattern = &inner[..pos];
@@ -462,8 +485,133 @@ fn validate_sed_expression(command: &str) -> Result<(), String> {
             }
         }
     }
-    
+
     Ok(())
+}
+
+/// Heuristic: determine if a shell command is read-only based on the leading
+/// binary or pipeline structure.
+///
+/// Commands like `ls`, `cat`, `grep`, `find`, `echo`, `which`, `env`, `pwd`,
+/// `head`, `tail`, `wc`, `sort`, `diff`, `file`, `stat`, `du`, `df`, `uname`,
+/// `whoami`, `date`, `hostname`, `id`, `printenv`, `type`, `test`, `[`, `true`,
+/// `false`, `tree`, `rg`, `fd`, `bat`, `jq`, `yq`, `less`, `more`, `man`,
+/// `cargo check`, `cargo test --no-run`, `npm test`, `python -c ...` (no file writes)
+/// are classified as read-only.
+///
+/// Pipelines are read-only only if ALL stages are read-only.
+///
+/// When in doubt, classify as mutating — false negatives are safer than false positives.
+fn is_read_only_command(cmd: &str) -> bool {
+    // Shell redirects (>, >>, 2>) are always mutating regardless of the binary
+    if cmd.contains('>') {
+        return false;
+    }
+
+    const READ_ONLY_BINARIES: &[&str] = &[
+        "ls",
+        "cat",
+        "echo",
+        "grep",
+        "egrep",
+        "fgrep",
+        "find",
+        "which",
+        "env",
+        "pwd",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "diff",
+        "file",
+        "stat",
+        "du",
+        "df",
+        "uname",
+        "whoami",
+        "date",
+        "hostname",
+        "id",
+        "printenv",
+        "type",
+        "test",
+        "[",
+        "true",
+        "false",
+        "tree",
+        "rg",
+        "fd",
+        "bat",
+        "jq",
+        "yq",
+        "less",
+        "more",
+        "man",
+        "readlink",
+        "basename",
+        "dirname",
+        "realpath",
+        "sha256sum",
+        "md5sum",
+        "command",
+        "help",
+        "cal",
+        "uptime",
+        "ps",
+        "top",
+        "htop",
+        "lsof",
+        "netstat",
+        "ss",
+        "curl",
+        "wget", // curl/wget without -o are read-only (print to stdout)
+        "git log",
+        "git status",
+        "git diff",
+        "git show",
+        "git branch",
+        "git remote",
+        "git tag",
+        "git rev-parse",
+        "git ls-files",
+        "cargo check",
+        "cargo clippy",
+        "cargo doc",
+        "npm ls",
+        "npm list",
+        "npm outdated",
+        "npm view",
+        "node -e",
+        "node -p",
+        "python3 -c",
+        "python -c",
+    ];
+
+    // Split on pipes and check each stage
+    let stages: Vec<&str> = cmd.split('|').collect();
+    stages.iter().all(|stage| {
+        let trimmed = stage.trim();
+        // Strip leading env vars (KEY=val cmd ...)
+        let without_env = trimmed
+            .split_whitespace()
+            .skip_while(|tok| tok.contains('=') && !tok.starts_with('-'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let effective = without_env.trim();
+
+        READ_ONLY_BINARIES.iter().any(|bin| {
+            // Multi-word binaries (e.g. "git log") need prefix match
+            if bin.contains(' ') {
+                effective.starts_with(bin)
+            } else {
+                // Single binary: first token matches exactly, or is an absolute path ending in /bin
+                let first_token = effective.split_whitespace().next().unwrap_or("");
+                first_token == *bin || first_token.ends_with(&format!("/{}", bin))
+            }
+        })
+    })
 }
 
 #[cfg(test)]
@@ -497,5 +645,47 @@ mod tests {
             }
             Err(e) => panic!("expected Ok with error info, got Err: {:?}", e),
         }
+    }
+
+    #[test]
+    fn read_only_classification() {
+        // Clearly read-only
+        assert!(is_read_only_command("ls -la"));
+        assert!(is_read_only_command("cat foo.txt"));
+        assert!(is_read_only_command("grep -r TODO src/"));
+        assert!(is_read_only_command("echo hello"));
+        assert!(is_read_only_command("git log --oneline -10"));
+        assert!(is_read_only_command("git status"));
+        assert!(is_read_only_command("cargo check"));
+        assert!(is_read_only_command("wc -l src/*.rs"));
+        assert!(is_read_only_command("find . -name '*.rs'"));
+        assert!(is_read_only_command("rg TODO"));
+        assert!(is_read_only_command("head -20 main.rs"));
+        assert!(is_read_only_command("python3 -c 'print(1+1)'"));
+
+        // Read-only pipeline
+        assert!(is_read_only_command("cat foo.txt | grep bar | wc -l"));
+
+        // Absolute paths to read-only binaries
+        assert!(is_read_only_command("/usr/bin/ls -la"));
+        assert!(is_read_only_command("/usr/bin/grep foo bar"));
+
+        // With env vars
+        assert!(is_read_only_command("LANG=C sort file.txt"));
+
+        // Clearly mutating
+        assert!(!is_read_only_command("cargo build"));
+        assert!(!is_read_only_command("npm install"));
+        assert!(!is_read_only_command("mkdir -p src/new"));
+        assert!(!is_read_only_command("rm foo.txt"));
+        assert!(!is_read_only_command("cp a.txt b.txt"));
+        assert!(!is_read_only_command("mv a.txt b.txt"));
+        assert!(!is_read_only_command("touch new.txt"));
+        assert!(!is_read_only_command("sed -i 's/foo/bar/' file.txt"));
+        assert!(!is_read_only_command("git commit -m 'msg'"));
+
+        // Pipelines with a mutating stage
+        assert!(!is_read_only_command("echo hello > out.txt"));
+        assert!(!is_read_only_command("cat foo | tee bar.txt"));
     }
 }

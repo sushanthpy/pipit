@@ -302,7 +302,10 @@ impl FromStr for ApprovalMode {
             "auto_edit" | "autoedit" | "edit" | "edit_review" => Ok(Self::AutoEdit),
             "command_review" | "commandreview" | "cmd" | "cmd_review" => Ok(Self::CommandReview),
             "full_auto" | "fullauto" | "yolo" | "full" | "full_access" => Ok(Self::FullAuto),
-            _ => Err(format!("Unknown approval mode: {}. Use: plan, edit, cmd, full", s)),
+            _ => Err(format!(
+                "Unknown approval mode: {}. Use: plan, edit, cmd, full",
+                s
+            )),
         }
     }
 }

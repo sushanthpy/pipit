@@ -43,11 +43,15 @@ pub fn parse_folded_stacks(input: &str) -> ProfileReport {
 
     for line in input.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
 
         // Format: func_a;func_b;func_c 42
         let parts: Vec<&str> = line.rsplitn(2, ' ').collect();
-        if parts.len() != 2 { continue; }
+        if parts.len() != 2 {
+            continue;
+        }
 
         let count: u64 = match parts[0].parse() {
             Ok(n) => n,
@@ -61,10 +65,12 @@ pub fn parse_folded_stacks(input: &str) -> ProfileReport {
 
             // Track caller/callee relationships
             for i in 0..stack.len() - 1 {
-                callee_map.entry(stack[i].to_string())
+                callee_map
+                    .entry(stack[i].to_string())
                     .or_default()
                     .push(stack[i + 1].to_string());
-                caller_map.entry(stack[i + 1].to_string())
+                caller_map
+                    .entry(stack[i + 1].to_string())
                     .or_default()
                     .push(stack[i].to_string());
             }
@@ -72,9 +78,14 @@ pub fn parse_folded_stacks(input: &str) -> ProfileReport {
     }
 
     // Build sorted hot function list
-    let mut hot_functions: Vec<HotFunction> = function_samples.iter()
+    let mut hot_functions: Vec<HotFunction> = function_samples
+        .iter()
         .map(|(name, &samples)| {
-            let percentage = if total_samples > 0 { (samples as f64 / total_samples as f64) * 100.0 } else { 0.0 };
+            let percentage = if total_samples > 0 {
+                (samples as f64 / total_samples as f64) * 100.0
+            } else {
+                0.0
+            };
             HotFunction {
                 name: name.clone(),
                 module: name.split("::").next().map(String::from),
@@ -113,9 +124,12 @@ impl ProfileReport {
     /// Get methods consuming the top P% of samples.
     pub fn top_by_percentage(&self, threshold_pct: f64) -> Vec<&HotFunction> {
         let mut cumulative = 0.0;
-        self.hot_functions.iter()
+        self.hot_functions
+            .iter()
             .take_while(|f| {
-                if cumulative >= threshold_pct { return false; }
+                if cumulative >= threshold_pct {
+                    return false;
+                }
                 cumulative += f.percentage;
                 true
             })
@@ -127,8 +141,13 @@ impl ProfileReport {
         let mut summary = format!("Profile Summary ({} total samples)\n\n", self.total_samples);
         summary.push_str("Top functions by CPU time:\n");
         for (i, func) in self.hot_functions.iter().take(top_k).enumerate() {
-            summary.push_str(&format!("  {}. {} — {:.1}% ({} samples)\n",
-                i + 1, func.name, func.percentage, func.samples));
+            summary.push_str(&format!(
+                "  {}. {} — {:.1}% ({} samples)\n",
+                i + 1,
+                func.name,
+                func.percentage,
+                func.samples
+            ));
         }
         summary
     }

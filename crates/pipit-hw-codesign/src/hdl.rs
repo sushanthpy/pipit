@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HdlLanguage { Verilog, Vhdl, SystemVerilog }
+pub enum HdlLanguage {
+    Verilog,
+    Vhdl,
+    SystemVerilog,
+}
 
 /// An HDL module description.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +32,11 @@ pub struct HdlPort {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum PortDirection { Input, Output, Inout }
+pub enum PortDirection {
+    Input,
+    Output,
+    Inout,
+}
 
 /// Validation result from iverilog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,12 +69,16 @@ pub fn validate_verilog(source: &str) -> ValidationResult {
     match output {
         Ok(result) => {
             let stderr = String::from_utf8_lossy(&result.stderr);
-            let errors: Vec<String> = stderr.lines()
+            let errors: Vec<String> = stderr
+                .lines()
                 .filter(|l| l.contains("error"))
-                .map(String::from).collect();
-            let warnings: Vec<String> = stderr.lines()
+                .map(String::from)
+                .collect();
+            let warnings: Vec<String> = stderr
+                .lines()
                 .filter(|l| l.contains("warning"))
-                .map(String::from).collect();
+                .map(String::from)
+                .collect();
 
             ValidationResult {
                 valid: result.status.success(),
@@ -93,7 +105,11 @@ pub fn generate_verilog_template(module: &HdlModule) -> String {
             PortDirection::Output => "output",
             PortDirection::Inout => "inout",
         };
-        let width = if port.width > 1 { format!(" [{}: 0]", port.width - 1) } else { String::new() };
+        let width = if port.width > 1 {
+            format!(" [{}: 0]", port.width - 1)
+        } else {
+            String::new()
+        };
         let comma = if i < module.ports.len() - 1 { "," } else { "" };
         v.push_str(&format!("    {}{} {}{}\n", dir, width, port.name, comma));
     }
@@ -111,9 +127,21 @@ mod tests {
             name: "adder".into(),
             language: HdlLanguage::Verilog,
             ports: vec![
-                HdlPort { name: "a".into(), direction: PortDirection::Input, width: 8 },
-                HdlPort { name: "b".into(), direction: PortDirection::Input, width: 8 },
-                HdlPort { name: "sum".into(), direction: PortDirection::Output, width: 9 },
+                HdlPort {
+                    name: "a".into(),
+                    direction: PortDirection::Input,
+                    width: 8,
+                },
+                HdlPort {
+                    name: "b".into(),
+                    direction: PortDirection::Input,
+                    width: 8,
+                },
+                HdlPort {
+                    name: "sum".into(),
+                    direction: PortDirection::Output,
+                    width: 9,
+                },
             ],
             source: String::new(),
             testbench: None,

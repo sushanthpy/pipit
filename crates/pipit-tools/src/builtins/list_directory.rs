@@ -65,9 +65,7 @@ impl Tool for ListDirectoryTool {
             if path == abs_path {
                 continue;
             }
-            let rel = path
-                .strip_prefix(&ctx.project_root)
-                .unwrap_or(path);
+            let rel = path.strip_prefix(&ctx.project_root).unwrap_or(path);
             let suffix = if path.is_dir() { "/" } else { "" };
             entries.push(format!("{}{}", rel.display(), suffix));
         }

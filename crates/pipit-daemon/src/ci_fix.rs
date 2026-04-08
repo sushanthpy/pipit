@@ -44,16 +44,25 @@ pub struct CiFixResult {
 /// Classify the CI failure type from the log.
 pub fn classify_failure(log: &str) -> FailureKind {
     let lower = log.to_lowercase();
-    if lower.contains("cargo build") || lower.contains("tsc") || lower.contains("compile error")
-        || lower.contains("build failed") || lower.contains("cannot find")
+    if lower.contains("cargo build")
+        || lower.contains("tsc")
+        || lower.contains("compile error")
+        || lower.contains("build failed")
+        || lower.contains("cannot find")
     {
         FailureKind::Build
-    } else if lower.contains("cargo test") || lower.contains("jest") || lower.contains("pytest")
-        || lower.contains("test failed") || lower.contains("assertion failed")
+    } else if lower.contains("cargo test")
+        || lower.contains("jest")
+        || lower.contains("pytest")
+        || lower.contains("test failed")
+        || lower.contains("assertion failed")
     {
         FailureKind::Test
-    } else if lower.contains("clippy") || lower.contains("eslint") || lower.contains("pylint")
-        || lower.contains("lint") || lower.contains("warning")
+    } else if lower.contains("clippy")
+        || lower.contains("eslint")
+        || lower.contains("pylint")
+        || lower.contains("lint")
+        || lower.contains("warning")
     {
         FailureKind::Lint
     } else if lower.contains("deploy") || lower.contains("docker") || lower.contains("kubectl") {
@@ -78,37 +87,47 @@ pub enum FailureKind {
 impl FailureKind {
     /// Generate the agent prompt for fixing this type of failure.
     pub fn fix_prompt(&self, log: &str) -> String {
-        let truncated = if log.len() > 4000 { &log[log.len()-4000..] } else { log };
+        let truncated = if log.len() > 4000 {
+            &log[log.len() - 4000..]
+        } else {
+            log
+        };
         match self {
             Self::Build => format!(
                 "The CI build is failing. Fix the compilation errors.\n\n\
                  Build log (last 4000 chars):\n```\n{}\n```\n\n\
                  Steps:\n1. Read the error messages\n2. Fix each error\n3. Verify with a build command\n\
-                 Make minimal, surgical fixes only.", truncated
+                 Make minimal, surgical fixes only.",
+                truncated
             ),
             Self::Test => format!(
                 "CI tests are failing. Fix the test failures.\n\n\
                  Test log (last 4000 chars):\n```\n{}\n```\n\n\
                  Steps:\n1. Identify which tests failed and why\n2. Fix the implementation (not the tests, unless they're wrong)\n\
-                 3. Re-run failing tests to verify", truncated
+                 3. Re-run failing tests to verify",
+                truncated
             ),
             Self::Lint => format!(
                 "CI linting is failing. Fix the lint errors.\n\n\
                  Lint log (last 4000 chars):\n```\n{}\n```\n\n\
-                 Fix all lint violations. Do not disable rules.", truncated
+                 Fix all lint violations. Do not disable rules.",
+                truncated
             ),
             Self::TypeCheck => format!(
                 "CI type checking is failing. Fix the type errors.\n\n\
-                 Type check log (last 4000 chars):\n```\n{}\n```", truncated
+                 Type check log (last 4000 chars):\n```\n{}\n```",
+                truncated
             ),
             Self::Deploy => format!(
                 "CI deployment is failing. Analyze the deployment error.\n\n\
                  Deploy log (last 4000 chars):\n```\n{}\n```\n\n\
-                 Fix any configuration or code issues causing the deploy failure.", truncated
+                 Fix any configuration or code issues causing the deploy failure.",
+                truncated
             ),
             Self::Unknown => format!(
                 "CI pipeline is failing. Analyze and fix.\n\n\
-                 Log (last 4000 chars):\n```\n{}\n```", truncated
+                 Log (last 4000 chars):\n```\n{}\n```",
+                truncated
             ),
         }
     }
@@ -119,11 +138,19 @@ pub fn prepare_fix_worktree(
     repo_root: &std::path::Path,
     branch: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let worktree_dir = repo_root.join(".pipit").join("ci-fix").join(branch.replace('/', "-"));
+    let worktree_dir = repo_root
+        .join(".pipit")
+        .join("ci-fix")
+        .join(branch.replace('/', "-"));
     let _ = std::fs::create_dir_all(worktree_dir.parent().unwrap_or(repo_root));
 
     let output = std::process::Command::new("git")
-        .args(["worktree", "add", worktree_dir.to_str().unwrap_or("."), branch])
+        .args([
+            "worktree",
+            "add",
+            worktree_dir.to_str().unwrap_or("."),
+            branch,
+        ])
         .current_dir(repo_root)
         .output()
         .map_err(|e| format!("git worktree add failed: {}", e))?;
@@ -165,7 +192,9 @@ pub fn commit_and_push_fix(
         .output()
         .map_err(|e| e.to_string())?;
 
-    let sha = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
 
     // Push
     let push = std::process::Command::new("git")
@@ -175,7 +204,10 @@ pub fn commit_and_push_fix(
         .map_err(|e| e.to_string())?;
 
     if !push.status.success() {
-        return Err(format!("Push failed: {}", String::from_utf8_lossy(&push.stderr)));
+        return Err(format!(
+            "Push failed: {}",
+            String::from_utf8_lossy(&push.stderr)
+        ));
     }
 
     Ok(sha)
@@ -187,16 +219,25 @@ mod tests {
 
     #[test]
     fn test_classify_build_failure() {
-        assert_eq!(classify_failure("error[E0308]: mismatched types\ncargo build failed"), FailureKind::Build);
+        assert_eq!(
+            classify_failure("error[E0308]: mismatched types\ncargo build failed"),
+            FailureKind::Build
+        );
     }
 
     #[test]
     fn test_classify_test_failure() {
-        assert_eq!(classify_failure("test result: FAILED. 3 passed; 1 failed\ncargo test"), FailureKind::Test);
+        assert_eq!(
+            classify_failure("test result: FAILED. 3 passed; 1 failed\ncargo test"),
+            FailureKind::Test
+        );
     }
 
     #[test]
     fn test_classify_lint_failure() {
-        assert_eq!(classify_failure("eslint found 5 errors\nlint step failed"), FailureKind::Lint);
+        assert_eq!(
+            classify_failure("eslint found 5 errors\nlint step failed"),
+            FailureKind::Lint
+        );
     }
 }

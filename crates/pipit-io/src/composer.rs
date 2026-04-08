@@ -22,11 +22,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -291,7 +291,10 @@ impl Composer {
         // Completion popup active: intercept Tab, Up/Down, Esc, Enter
         if self.completion.active {
             match key.code {
-                KeyCode::Tab => { self.accept_completion(); return true; }
+                KeyCode::Tab => {
+                    self.accept_completion();
+                    return true;
+                }
                 KeyCode::Enter => {
                     self.accept_completion();
                     // For slash commands, auto-submit after accepting completion
@@ -307,9 +310,18 @@ impl Composer {
                     }
                     return true;
                 }
-                KeyCode::Down => { self.completion.select_next(); return true; }
-                KeyCode::Up => { self.completion.select_prev(); return true; }
-                KeyCode::Esc => { self.completion.clear(); return true; }
+                KeyCode::Down => {
+                    self.completion.select_next();
+                    return true;
+                }
+                KeyCode::Up => {
+                    self.completion.select_prev();
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.completion.clear();
+                    return true;
+                }
                 _ => {} // fall through
             }
         }
@@ -455,7 +467,11 @@ impl Composer {
                 self.completion.clear();
                 true
             }
-            KeyCode::Home => { self.cursor_col = 0; self.completion.clear(); true }
+            KeyCode::Home => {
+                self.cursor_col = 0;
+                self.completion.clear();
+                true
+            }
             KeyCode::End => {
                 self.cursor_col = self.lines[self.cursor_row].chars().count();
                 self.completion.clear();
@@ -562,10 +578,16 @@ impl Composer {
     fn move_word_left(&mut self) {
         let line = &self.lines[self.cursor_row];
         let chars: Vec<char> = line.chars().collect();
-        if self.cursor_col == 0 { return; }
+        if self.cursor_col == 0 {
+            return;
+        }
         let mut i = self.cursor_col - 1;
-        while i > 0 && chars[i].is_whitespace() { i -= 1; }
-        while i > 0 && !chars[i - 1].is_whitespace() { i -= 1; }
+        while i > 0 && chars[i].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
         self.cursor_col = i;
         self.completion.clear();
     }
@@ -574,21 +596,33 @@ impl Composer {
         let line = &self.lines[self.cursor_row];
         let chars: Vec<char> = line.chars().collect();
         let len = chars.len();
-        if self.cursor_col >= len { return; }
+        if self.cursor_col >= len {
+            return;
+        }
         let mut i = self.cursor_col;
-        while i < len && !chars[i].is_whitespace() { i += 1; }
-        while i < len && chars[i].is_whitespace() { i += 1; }
+        while i < len && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
         self.cursor_col = i;
         self.completion.clear();
     }
 
     fn delete_word_left(&mut self) {
         let chars: Vec<char> = self.lines[self.cursor_row].chars().collect();
-        if self.cursor_col == 0 { return; }
+        if self.cursor_col == 0 {
+            return;
+        }
         let end = self.cursor_col;
         let mut i = end - 1;
-        while i > 0 && chars[i].is_whitespace() { i -= 1; }
-        while i > 0 && !chars[i - 1].is_whitespace() { i -= 1; }
+        while i > 0 && chars[i].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
         let start_byte = char_to_byte(&self.lines[self.cursor_row], i);
         let end_byte = char_to_byte(&self.lines[self.cursor_row], end);
         self.lines[self.cursor_row].drain(start_byte..end_byte);
@@ -598,12 +632,18 @@ impl Composer {
     // ── History ─────────────────────────────────────────────────────────
 
     fn history_prev(&mut self) {
-        if self.history.is_empty() { return; }
+        if self.history.is_empty() {
+            return;
+        }
         if self.history_cursor.is_none() {
             self.stashed_input = Some(self.text());
             self.history_cursor = Some(self.history.len() - 1);
         } else if let Some(idx) = self.history_cursor {
-            if idx > 0 { self.history_cursor = Some(idx - 1); } else { return; }
+            if idx > 0 {
+                self.history_cursor = Some(idx - 1);
+            } else {
+                return;
+            }
         }
         if let Some(idx) = self.history_cursor {
             if let Some(entry) = self.history.get(idx).cloned() {
@@ -636,7 +676,9 @@ impl Composer {
         } else {
             text.lines().map(|l| l.to_string()).collect()
         };
-        if self.lines.is_empty() { self.lines.push(String::new()); }
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
         self.cursor_row = self.lines.len() - 1;
         self.cursor_col = self.lines[self.cursor_row].chars().count();
     }
@@ -678,7 +720,8 @@ impl Composer {
         // Git branch completion for /switch and /branch arguments
         if candidates.is_empty() && self.cursor_row == 0 {
             let full_line = &self.lines[0];
-            let needs_branch = full_line.starts_with("/switch ") || full_line.starts_with("/branch ");
+            let needs_branch =
+                full_line.starts_with("/switch ") || full_line.starts_with("/branch ");
             if needs_branch {
                 if let Ok(output) = std::process::Command::new("git")
                     .args(["branch", "--no-color", "-a"])
@@ -729,7 +772,10 @@ impl Composer {
             let prefix = &token[1..].to_lowercase();
             for cmd in self.shell_history.iter().rev() {
                 if cmd.to_lowercase().starts_with(prefix) {
-                    if !candidates.iter().any(|c| c.insert_text == format!("!{}", cmd)) {
+                    if !candidates
+                        .iter()
+                        .any(|c| c.insert_text == format!("!{}", cmd))
+                    {
                         candidates.push(CompletionItem {
                             insert_text: format!("!{}", cmd),
                             description: "history".to_string(),
@@ -737,7 +783,9 @@ impl Composer {
                         });
                     }
                 }
-                if candidates.len() >= 8 { break; }
+                if candidates.len() >= 8 {
+                    break;
+                }
             }
         }
 
@@ -833,7 +881,9 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
         let mut spans = Vec::new();
         spans.push(Span::styled(" ", Style::default()));
         for (i, att) in composer.attachments.iter().enumerate() {
-            if i > 0 { spans.push(Span::styled("  ", Style::default())); }
+            if i > 0 {
+                spans.push(Span::styled("  ", Style::default()));
+            }
             let chip_style = match att.kind {
                 AttachmentKind::File => Style::default().fg(Color::Cyan),
                 AttachmentKind::Image => Style::default().fg(Color::Magenta),
@@ -857,7 +907,10 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(" input ", Style::default().fg(Color::DarkGray)));
+        .title(Span::styled(
+            " input ",
+            Style::default().fg(Color::DarkGray),
+        ));
     let inner = input_block.inner(input_area);
     frame.render_widget(input_block, input_area);
 
@@ -867,7 +920,12 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
 
     for (row_idx, line) in composer.lines.iter().enumerate() {
         let prefix = if row_idx == 0 {
-            Span::styled(prompt, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+            Span::styled(
+                prompt,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::styled("     ", Style::default())
         };
@@ -893,10 +951,15 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
             let display_col = char_to_display_col(line, composer.cursor_col);
             let cursor_x = inner.x + prompt_width as u16 + display_col as u16;
             let cursor_y = inner.y + row_idx as u16;
-            frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), cursor_y));
+            frame.set_cursor_position((
+                cursor_x.min(inner.x + inner.width.saturating_sub(1)),
+                cursor_y,
+            ));
         }
 
-        if row_idx as u16 + 1 >= inner.height { break; }
+        if row_idx as u16 + 1 >= inner.height {
+            break;
+        }
     }
 
     // Hint bar
@@ -909,7 +972,10 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
         " /help · @file · !shell · Ctrl-J newline · Esc cancel · Ctrl-C quit"
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint_text, Style::default().fg(Color::DarkGray)))),
+        Paragraph::new(Line::from(Span::styled(
+            hint_text,
+            Style::default().fg(Color::DarkGray),
+        ))),
         Rect::new(area.x, hint_y, area.width, 1),
     );
 }
@@ -917,9 +983,15 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
 /// Draw the completion popup as an overlay above the input area.
 pub fn draw_completion_popup(frame: &mut Frame, composer_area: Rect, composer: &Composer) {
     let completion = &composer.completion;
-    if !completion.active || completion.candidates.is_empty() { return; }
+    if !completion.active || completion.candidates.is_empty() {
+        return;
+    }
 
-    let attachment_rows = if composer.attachments.is_empty() { 0 } else { 1 };
+    let attachment_rows = if composer.attachments.is_empty() {
+        0
+    } else {
+        1
+    };
     let input_box_y = composer_area.y + attachment_rows;
     let input_inner_x = composer_area.x + 1;
     let input_inner_width = composer_area.width.saturating_sub(2);
@@ -954,7 +1026,10 @@ pub fn draw_completion_popup(frame: &mut Frame, composer_area: Rect, composer: &
     for (i, candidate) in completion.candidates.iter().take(max_visible).enumerate() {
         let is_selected = i == completion.selected;
         let style = if is_selected {
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
@@ -979,7 +1054,11 @@ pub fn draw_completion_popup(frame: &mut Frame, composer_area: Rect, composer: &
 
 /// Calculate how many rows the composer needs.
 pub fn composer_height(composer: &Composer) -> u16 {
-    let attachment_row = if composer.attachments.is_empty() { 0 } else { 1 };
+    let attachment_row = if composer.attachments.is_empty() {
+        0
+    } else {
+        1
+    };
     let input_rows = composer.lines.len().min(4) as u16;
     let hint_row = 1;
     attachment_row + input_rows + hint_row + 2
@@ -1007,9 +1086,13 @@ fn format_file_size(path: &Path) -> String {
     match std::fs::metadata(path) {
         Ok(m) => {
             let size = m.len();
-            if size < 1024 { format!("{}B", size) }
-            else if size < 1024 * 1024 { format!("{:.1}KB", size as f64 / 1024.0) }
-            else { format!("{:.1}MB", size as f64 / (1024.0 * 1024.0)) }
+            if size < 1024 {
+                format!("{}B", size)
+            } else if size < 1024 * 1024 {
+                format!("{:.1}KB", size as f64 / 1024.0)
+            } else {
+                format!("{:.1}MB", size as f64 / (1024.0 * 1024.0))
+            }
         }
         Err(_) => String::new(),
     }
@@ -1072,11 +1155,21 @@ mod tests {
     use crossterm::event::KeyEventState;
 
     fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
     }
 
     fn key_ctrl(code: KeyCode) -> KeyEvent {
-        KeyEvent { code, modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
     }
 
     fn make_composer() -> Composer {
@@ -1152,7 +1245,9 @@ mod tests {
     #[test]
     fn ctrl_u_kills_to_start() {
         let mut c = make_composer();
-        for ch in "hello world".chars() { c.handle_key(key(KeyCode::Char(ch))); }
+        for ch in "hello world".chars() {
+            c.handle_key(key(KeyCode::Char(ch)));
+        }
         c.cursor_col = 5;
         c.handle_key(key_ctrl(KeyCode::Char('u')));
         assert_eq!(c.text(), " world");
@@ -1162,7 +1257,9 @@ mod tests {
     #[test]
     fn word_navigation() {
         let mut c = make_composer();
-        for ch in "foo bar baz".chars() { c.handle_key(key(KeyCode::Char(ch))); }
+        for ch in "foo bar baz".chars() {
+            c.handle_key(key(KeyCode::Char(ch)));
+        }
         c.handle_key(key_ctrl(KeyCode::Left));
         assert_eq!(c.cursor_col, 8);
         c.handle_key(key_ctrl(KeyCode::Left));
@@ -1177,7 +1274,12 @@ mod tests {
         c.handle_key(key(KeyCode::Char('l')));
         assert!(c.completion.active);
         assert!(c.completion.candidates.len() >= 2);
-        assert!(c.completion.candidates.iter().any(|c| c.insert_text == "/plan"));
+        assert!(
+            c.completion
+                .candidates
+                .iter()
+                .any(|c| c.insert_text == "/plan")
+        );
     }
 
     #[test]
@@ -1195,7 +1297,9 @@ mod tests {
     #[test]
     fn attachments_from_at_mention() {
         let mut c = make_composer();
-        for ch in "@src/main.rs fix it".chars() { c.handle_key(key(KeyCode::Char(ch))); }
+        for ch in "@src/main.rs fix it".chars() {
+            c.handle_key(key(KeyCode::Char(ch)));
+        }
         c.handle_key(key(KeyCode::Enter));
         let submitted = c.submitted.as_ref().unwrap();
         assert_eq!(submitted.attachments.len(), 1);

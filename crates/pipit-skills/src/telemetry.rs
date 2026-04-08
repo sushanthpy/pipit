@@ -266,9 +266,15 @@ mod tests {
             store_path: PathBuf::from("/tmp/test.jsonl"),
         };
 
-        store.records.push(make_record("code-review", true, 0.10, 5000));
-        store.records.push(make_record("code-review", true, 0.15, 8000));
-        store.records.push(make_record("code-review", false, 0.20, 12000));
+        store
+            .records
+            .push(make_record("code-review", true, 0.10, 5000));
+        store
+            .records
+            .push(make_record("code-review", true, 0.15, 8000));
+        store
+            .records
+            .push(make_record("code-review", false, 0.20, 12000));
         store.records.push(make_record("lint", true, 0.05, 2000));
 
         let stats = store.stats_for("code-review").unwrap();

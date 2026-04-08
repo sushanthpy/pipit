@@ -1,5 +1,5 @@
 use crate::{
-    ContentEvent, CompletionRequest, LlmProvider, ModelCapabilities, PreferredFormat,
+    CompletionRequest, ContentEvent, LlmProvider, ModelCapabilities, PreferredFormat,
     ProviderError, StopReason, TokenCount, UsageMetadata,
 };
 use async_trait::async_trait;
@@ -56,7 +56,11 @@ impl OpenAiProvider {
     fn capabilities_for_model(model: &str) -> ModelCapabilities {
         ModelCapabilities {
             context_window: 128_000,
-            max_output_tokens: if model.contains("gpt-4") { 16_384 } else { 8192 },
+            max_output_tokens: if model.contains("gpt-4") {
+                16_384
+            } else {
+                8192
+            },
             supports_tool_use: true,
             supports_streaming: true,
             supports_thinking: false,
@@ -99,7 +103,10 @@ impl OpenAiProvider {
                 }
                 crate::Role::User => {
                     // Check if this message contains images
-                    let has_images = msg.content.iter().any(|b| matches!(b, crate::ContentBlock::Image { .. }));
+                    let has_images = msg
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, crate::ContentBlock::Image { .. }));
 
                     if has_images {
                         // Multi-part content with text + image_url blocks
@@ -116,7 +123,8 @@ impl OpenAiProvider {
                                 }
                                 crate::ContentBlock::Image { media_type, data } => {
                                     use base64::Engine;
-                                    let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+                                    let encoded =
+                                        base64::engine::general_purpose::STANDARD.encode(data);
                                     parts.push(serde_json::json!({
                                         "type": "image_url",
                                         "image_url": {
@@ -169,8 +177,7 @@ impl OpenAiProvider {
                         "role": "assistant",
                     });
                     if !content_parts.is_empty() {
-                        msg_json["content"] =
-                            serde_json::json!(content_parts.join(""));
+                        msg_json["content"] = serde_json::json!(content_parts.join(""));
                     }
                     if !tool_calls.is_empty() {
                         msg_json["tool_calls"] = serde_json::json!(tool_calls);
@@ -179,10 +186,16 @@ impl OpenAiProvider {
                 }
                 crate::Role::ToolResult { call_id } => {
                     let content = msg.text_content();
-                    let tool_content = msg.content.iter().find_map(|b| match b {
-                        crate::ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-                        _ => None,
-                    }).unwrap_or(content);
+                    let tool_content = msg
+                        .content
+                        .iter()
+                        .find_map(|b| match b {
+                            crate::ContentBlock::ToolResult { content, .. } => {
+                                Some(content.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(content);
 
                     messages.push(serde_json::json!({
                         "role": "tool",
@@ -273,19 +286,14 @@ impl LlmProvider for OpenAiProvider {
             };
 
             return match status.as_u16() {
-                401 => Err(ProviderError::AuthFailed {
-                    message: body_text,
-                }),
-                413 => Err(ProviderError::RequestTooLarge {
-                    message: body_text,
-                }),
+                401 => Err(ProviderError::AuthFailed { message: body_text }),
+                413 => Err(ProviderError::RequestTooLarge { message: body_text }),
                 429 => Err(ProviderError::RateLimited {
                     retry_after_ms: None,
                 }),
-                400 if is_context_overflow => Err(ProviderError::ContextOverflow {
-                    used: 0,
-                    limit: 0,
-                }),
+                400 if is_context_overflow => {
+                    Err(ProviderError::ContextOverflow { used: 0, limit: 0 })
+                }
                 _ => Err(ProviderError::Other(format!(
                     "HTTP {}: {}",
                     status, body_text
@@ -306,20 +314,48 @@ impl LlmProvider for OpenAiProvider {
         Ok(Box::pin(event_stream))
     }
 
-    // Fix #5: Better token estimation
+    // Content-aware heuristic token estimation.
+    // OpenAI does not expose a public count_tokens API endpoint;
+    // we use calibrated heuristics (~3.8 chars/token for English prose,
+    // ~3.0 for code, ~1.5 for CJK).
     async fn count_tokens(&self, messages: &[crate::Message]) -> Result<TokenCount, ProviderError> {
-        let (mut bytes, mut words) = (0usize, 0usize);
+        let (mut bytes, mut words, mut punct) = (0usize, 0usize, 0usize);
         for m in messages {
             for b in &m.content {
                 match b {
-                    crate::ContentBlock::Text(t) => { bytes += t.len(); words += t.split_whitespace().count(); }
-                    crate::ContentBlock::ToolCall { args, .. } => { bytes += args.to_string().len(); }
-                    crate::ContentBlock::ToolResult { content, .. } => { bytes += content.len(); words += content.split_whitespace().count(); }
+                    crate::ContentBlock::Text(t) => {
+                        bytes += t.len();
+                        words += t.split_whitespace().count();
+                        punct += t.bytes().filter(|b| b.is_ascii_punctuation()).count();
+                    }
+                    crate::ContentBlock::ToolCall { args, .. } => {
+                        let s = args.to_string();
+                        bytes += s.len();
+                        punct += s.bytes().filter(|b| b.is_ascii_punctuation()).count();
+                    }
+                    crate::ContentBlock::ToolResult { content, .. } => {
+                        bytes += content.len();
+                        words += content.split_whitespace().count();
+                        punct += content.bytes().filter(|b| b.is_ascii_punctuation()).count();
+                    }
+                    crate::ContentBlock::Thinking(t) => {
+                        bytes += t.len();
+                        words += t.split_whitespace().count();
+                    }
                     _ => {}
                 }
             }
         }
-        Ok(TokenCount { tokens: ((bytes as u64) / 4).max(((words as f64) * 1.3) as u64) })
+        if bytes == 0 {
+            return Ok(TokenCount { tokens: 0 });
+        }
+        let punct_ratio = punct as f64 / bytes as f64;
+        let divisor = if punct_ratio > 0.15 { 3.0 } else { 3.8 };
+        let byte_estimate = (bytes as f64 / divisor).ceil() as u64;
+        let word_estimate = ((words as f64) * 1.3) as u64;
+        Ok(TokenCount {
+            tokens: byte_estimate.max(word_estimate),
+        })
     }
 
     fn capabilities(&self) -> &ModelCapabilities {
@@ -345,8 +381,7 @@ impl OpenAiStreamParser {
             // Emit any pending tool calls, then finish
             let mut events = Vec::new();
             for (_idx, (id, name, args)) in self.tool_calls.drain() {
-                let parsed_args =
-                    serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
+                let parsed_args = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
                 events.push(ContentEvent::ToolCallComplete {
                     call_id: id,
                     tool_name: name,
@@ -385,10 +420,10 @@ impl OpenAiStreamParser {
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
                     for tc in tool_calls {
                         let idx = tc["index"].as_u64().unwrap_or(0) as u32;
-                        let entry =
-                            self.tool_calls
-                                .entry(idx)
-                                .or_insert_with(|| (String::new(), String::new(), String::new()));
+                        let entry = self
+                            .tool_calls
+                            .entry(idx)
+                            .or_insert_with(|| (String::new(), String::new(), String::new()));
 
                         if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
                             entry.0 = id.to_string();
@@ -415,8 +450,7 @@ impl OpenAiStreamParser {
 
                     // Emit pending tool calls
                     for (_idx, (id, name, args)) in self.tool_calls.drain() {
-                        let parsed =
-                            serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
+                        let parsed = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
                         events.push(ContentEvent::ToolCallComplete {
                             call_id: id,
                             tool_name: name,
@@ -464,9 +498,14 @@ pin_project! {
 impl Stream for OpenAiEventStream {
     type Item = Result<ContentEvent, ProviderError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         let mut this = self.project();
-        if *this.finished { return std::task::Poll::Ready(None); }
+        if *this.finished {
+            return std::task::Poll::Ready(None);
+        }
         if this.cancel.is_cancelled() {
             *this.finished = true;
             return std::task::Poll::Ready(Some(Err(ProviderError::Cancelled)));
@@ -474,7 +513,9 @@ impl Stream for OpenAiEventStream {
 
         // Drain pending events
         if let Some(event) = this.pending_events.pop_front() {
-            if matches!(&event, ContentEvent::Finished { .. }) { *this.finished = true; }
+            if matches!(&event, ContentEvent::Finished { .. }) {
+                *this.finished = true;
+            }
             return std::task::Poll::Ready(Some(Ok(event)));
         }
 
@@ -491,19 +532,25 @@ impl Stream for OpenAiEventStream {
                         let data = data.trim();
                         if !data.is_empty() {
                             let events = this.parser.process_chunk(data);
-                            for e in events { this.pending_events.push_back(e); }
+                            for e in events {
+                                this.pending_events.push_back(e);
+                            }
                         }
                     }
                 }
                 if let Some(event) = this.pending_events.pop_front() {
-                    if matches!(&event, ContentEvent::Finished { .. }) { *this.finished = true; }
+                    if matches!(&event, ContentEvent::Finished { .. }) {
+                        *this.finished = true;
+                    }
                     return std::task::Poll::Ready(Some(Ok(event)));
                 }
                 continue;
             }
 
             match this.byte_stream.as_mut().poll_next(cx) {
-                std::task::Poll::Ready(Some(Ok(bytes))) => { this.buffer.extend_from_slice(&bytes); }
+                std::task::Poll::Ready(Some(Ok(bytes))) => {
+                    this.buffer.extend_from_slice(&bytes);
+                }
                 std::task::Poll::Ready(Some(Err(e))) => {
                     // Drain any buffered data before reporting error
                     if !this.buffer.is_empty() {
@@ -529,9 +576,14 @@ impl Stream for OpenAiEventStream {
                         return std::task::Poll::Ready(Some(Ok(event)));
                     }
                     *this.finished = true;
-                    return std::task::Poll::Ready(Some(Err(ProviderError::Network(e.to_string()))));
+                    return std::task::Poll::Ready(Some(Err(ProviderError::Network(
+                        e.to_string(),
+                    ))));
                 }
-                std::task::Poll::Ready(None) => { *this.finished = true; return std::task::Poll::Ready(None); }
+                std::task::Poll::Ready(None) => {
+                    *this.finished = true;
+                    return std::task::Poll::Ready(None);
+                }
                 std::task::Poll::Pending => return std::task::Poll::Pending,
             }
         }

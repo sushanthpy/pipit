@@ -76,9 +76,15 @@ impl EventAccumulator {
         self.last_event = Instant::now();
         for path in &event.paths {
             match event.kind {
-                EventKind::Create(_) => { self.created.insert(path.clone()); }
-                EventKind::Modify(_) => { self.changed.insert(path.clone()); }
-                EventKind::Remove(_) => { self.deleted.insert(path.clone()); }
+                EventKind::Create(_) => {
+                    self.created.insert(path.clone());
+                }
+                EventKind::Modify(_) => {
+                    self.changed.insert(path.clone());
+                }
+                EventKind::Remove(_) => {
+                    self.deleted.insert(path.clone());
+                }
                 _ => {}
             }
         }
@@ -105,8 +111,9 @@ impl EventAccumulator {
     }
 
     fn is_ready(&self, debounce: Duration) -> bool {
-        !self.changed.is_empty() || !self.created.is_empty() || !self.deleted.is_empty()
-            && self.last_event.elapsed() > debounce
+        !self.changed.is_empty()
+            || !self.created.is_empty()
+            || !self.deleted.is_empty() && self.last_event.elapsed() > debounce
     }
 }
 
@@ -131,9 +138,11 @@ pub fn start_watcher(
             }
         },
         Config::default(),
-    ).map_err(|e| format!("Watcher init failed: {}", e))?;
+    )
+    .map_err(|e| format!("Watcher init failed: {}", e))?;
 
-    watcher.watch(project_root, RecursiveMode::Recursive)
+    watcher
+        .watch(project_root, RecursiveMode::Recursive)
         .map_err(|e| format!("Watch failed: {}", e))?;
 
     // Spawn debounce + suggestion generator
@@ -178,10 +187,12 @@ fn generate_suggestions(events: &[WatchEvent], config: &WatcherConfig) -> Vec<Wa
             WatchEvent::FilesChanged { paths } => {
                 // Test file changed without implementation → suggest running tests
                 if config.watch_tests {
-                    let test_files: Vec<_> = paths.iter()
+                    let test_files: Vec<_> = paths
+                        .iter()
                         .filter(|p| {
                             let name = p.file_name().unwrap_or_default().to_string_lossy();
-                            name.contains("test") || name.contains("spec")
+                            name.contains("test")
+                                || name.contains("spec")
                                 || name.starts_with("test_")
                         })
                         .collect();
@@ -196,11 +207,20 @@ fn generate_suggestions(events: &[WatchEvent], config: &WatcherConfig) -> Vec<Wa
                 }
                 // Dependency manifest changed → suggest dep check
                 if config.watch_deps {
-                    let dep_files: Vec<_> = paths.iter()
+                    let dep_files: Vec<_> = paths
+                        .iter()
                         .filter(|p| {
                             let name = p.file_name().unwrap_or_default().to_string_lossy();
-                            matches!(name.as_ref(), "Cargo.toml" | "package.json" | "pyproject.toml"
-                                | "go.mod" | "Cargo.lock" | "package-lock.json" | "yarn.lock")
+                            matches!(
+                                name.as_ref(),
+                                "Cargo.toml"
+                                    | "package.json"
+                                    | "pyproject.toml"
+                                    | "go.mod"
+                                    | "Cargo.lock"
+                                    | "package-lock.json"
+                                    | "yarn.lock"
+                            )
                         })
                         .collect();
                     if !dep_files.is_empty() {
@@ -212,7 +232,8 @@ fn generate_suggestions(events: &[WatchEvent], config: &WatcherConfig) -> Vec<Wa
             }
             WatchEvent::FilesCreated { paths } => {
                 // New .env.example → suggest checking env vars
-                let env_files: Vec<_> = paths.iter()
+                let env_files: Vec<_> = paths
+                    .iter()
                     .filter(|p| {
                         let name = p.file_name().unwrap_or_default().to_string_lossy();
                         name.contains(".env")
@@ -220,7 +241,8 @@ fn generate_suggestions(events: &[WatchEvent], config: &WatcherConfig) -> Vec<Wa
                     .collect();
                 if !env_files.is_empty() {
                     suggestions.push(WatchEvent::Suggestion {
-                        message: "New environment file detected — check if all variables are set?".to_string(),
+                        message: "New environment file detected — check if all variables are set?"
+                            .to_string(),
                     });
                 }
             }

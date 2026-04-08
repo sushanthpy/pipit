@@ -1,4 +1,3 @@
-pub mod types;
 pub mod anthropic;
 pub mod azure_openai;
 pub mod circuit_breaker;
@@ -7,6 +6,7 @@ pub mod google;
 pub mod openai;
 pub mod resilience;
 pub mod retry;
+pub mod types;
 pub mod vertex;
 
 pub use types::*;
@@ -122,7 +122,10 @@ pub trait LlmProvider: Send + Sync {
         &self,
         request: CompletionRequest,
         cancel: CancellationToken,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ContentEvent, ProviderError>> + Send>>, ProviderError>;
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<ContentEvent, ProviderError>> + Send>>,
+        ProviderError,
+    >;
 
     /// Count tokens for the given messages (estimate if not natively supported).
     async fn count_tokens(&self, messages: &[Message]) -> Result<TokenCount, ProviderError>;
@@ -138,7 +141,9 @@ pub trait LlmProvider: Send + Sync {
     /// of input token cost on cache-warm turns.
     ///
     /// Default: false (providers that don't support cache editing).
-    fn supports_cache_edit(&self) -> bool { false }
+    fn supports_cache_edit(&self) -> bool {
+        false
+    }
 
     /// Edit the provider's prompt cache in place by removing specific
     /// tool_use_ids without invalidating the entire cache.
@@ -149,10 +154,7 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// For providers that support this, the cost is O(|edits|) rather
     /// than O(|cache|), making microcompact a constant-cost operation.
-    async fn edit_cache(
-        &self,
-        _edits: &[CacheEdit],
-    ) -> Result<CacheEditReceipt, ProviderError> {
+    async fn edit_cache(&self, _edits: &[CacheEdit]) -> Result<CacheEditReceipt, ProviderError> {
         Err(ProviderError::Other("Cache editing not supported".into()))
     }
 }
@@ -178,8 +180,9 @@ pub fn create_provider(
         )?)),
 
         PK::AnthropicCompatible => {
-            let url = base_url
-                .ok_or_else(|| ProviderError::Other("--base-url required for anthropic_compatible".into()))?;
+            let url = base_url.ok_or_else(|| {
+                ProviderError::Other("--base-url required for anthropic_compatible".into())
+            })?;
             Ok(Box::new(anthropic::AnthropicProvider::new(
                 model.to_string(),
                 api_key.to_string(),
@@ -194,8 +197,9 @@ pub fn create_provider(
         )?)),
 
         PK::OpenAiCompatible => {
-            let url = base_url
-                .ok_or_else(|| ProviderError::Other("--base-url required for openai_compatible".into()))?;
+            let url = base_url.ok_or_else(|| {
+                ProviderError::Other("--base-url required for openai_compatible".into())
+            })?;
             Ok(Box::new(openai::OpenAiProvider::with_id(
                 "openai_compatible".to_string(),
                 model.to_string(),
@@ -236,7 +240,11 @@ pub fn create_provider(
             "groq".to_string(),
             model.to_string(),
             api_key.to_string(),
-            Some(base_url.unwrap_or("https://api.groq.com/openai").to_string()),
+            Some(
+                base_url
+                    .unwrap_or("https://api.groq.com/openai")
+                    .to_string(),
+            ),
         )?)),
 
         PK::Mistral => Ok(Box::new(openai::OpenAiProvider::with_id(

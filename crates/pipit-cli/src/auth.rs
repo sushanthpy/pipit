@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use pipit_config::{
-    CredentialStore, OAuthFlow, ProviderKind, StoredCredential,
-    oauth_device_config_for, oauth_device_flow,
+    CredentialStore, OAuthFlow, ProviderKind, StoredCredential, oauth_device_config_for,
+    oauth_device_flow,
 };
 
 use crate::AuthAction;
@@ -14,9 +14,8 @@ pub async fn handle(action: &AuthAction) -> Result<()> {
             device,
             adc,
         } => {
-            let provider_kind: ProviderKind = provider
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!(e))?;
+            let provider_kind: ProviderKind =
+                provider.parse().map_err(|e: String| anyhow::anyhow!(e))?;
             let mut store = CredentialStore::load();
 
             if *adc {
@@ -26,21 +25,13 @@ pub async fn handle(action: &AuthAction) -> Result<()> {
                 eprint!("Verifying Google ADC... ");
                 match store.resolve_token(ProviderKind::Google) {
                     Some(_) => {
-                        store.set(
-                            &provider_kind.to_string(),
-                            StoredCredential::GoogleAdc,
-                        );
+                        store.set(&provider_kind.to_string(), StoredCredential::GoogleAdc);
                         store.save().context("Failed to save credentials")?;
                         eprintln!("✓ Google ADC configured");
-                        eprintln!(
-                            "  Using: gcloud auth application-default print-access-token"
-                        );
+                        eprintln!("  Using: gcloud auth application-default print-access-token");
                     }
                     None => {
-                        store.set(
-                            &provider_kind.to_string(),
-                            StoredCredential::GoogleAdc,
-                        );
+                        store.set(&provider_kind.to_string(), StoredCredential::GoogleAdc);
                         store.save().context("Failed to save credentials")?;
                         eprintln!("⚠ gcloud ADC not available yet");
                         eprintln!("  Run: gcloud auth application-default login");
@@ -112,9 +103,8 @@ pub async fn handle(action: &AuthAction) -> Result<()> {
         }
 
         AuthAction::Logout { provider } => {
-            let provider_kind: ProviderKind = provider
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!(e))?;
+            let provider_kind: ProviderKind =
+                provider.parse().map_err(|e: String| anyhow::anyhow!(e))?;
             let mut store = CredentialStore::load();
             if store.remove(&provider_kind.to_string()) {
                 store.save().context("Failed to save credentials")?;
@@ -147,7 +137,8 @@ pub async fn handle(action: &AuthAction) -> Result<()> {
                                 if store.resolve_token(pk).is_some() {
                                     "Google ADC ✓".to_string()
                                 } else {
-                                    "Google ADC ✗ (run: gcloud auth application-default login)".to_string()
+                                    "Google ADC ✗ (run: gcloud auth application-default login)"
+                                        .to_string()
                                 }
                             } else {
                                 "Google ADC".to_string()

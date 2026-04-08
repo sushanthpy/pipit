@@ -1,8 +1,9 @@
 use crate::ContextError;
-use pipit_provider::{CompletionRequest, ContentEvent, LlmProvider, Message};
+use pipit_provider::{CompletionRequest, ContentBlock, ContentEvent, LlmProvider, Message};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Atomically write data to a file: write(tmp) → fsync → rename(tmp, target).
@@ -28,7 +29,9 @@ pub(crate) fn estimate_text_tokens(text: &str) -> u64 {
 ///   - CJK text: ~1.5 chars/token
 ///   - English prose: ~3.5-4.0 chars/token depending on provider
 pub fn estimate_text_tokens_for_provider(text: &str, provider: &str) -> u64 {
-    if text.is_empty() { return 0; }
+    if text.is_empty() {
+        return 0;
+    }
     let len = text.len();
 
     // Base chars-per-token ratio by provider
@@ -44,14 +47,17 @@ pub fn estimate_text_tokens_for_provider(text: &str, provider: &str) -> u64 {
     let punct_ratio = punct as f64 / len as f64;
 
     // CJK detection (Unicode ranges for CJK Unified Ideographs)
-    let cjk_chars = text.chars().filter(|c| {
-        let cp = *c as u32;
-        (0x4E00..=0x9FFF).contains(&cp)      // CJK Unified
+    let cjk_chars = text
+        .chars()
+        .filter(|c| {
+            let cp = *c as u32;
+            (0x4E00..=0x9FFF).contains(&cp)      // CJK Unified
             || (0x3400..=0x4DBF).contains(&cp) // CJK Extension A
             || (0x3040..=0x309F).contains(&cp) // Hiragana
             || (0x30A0..=0x30FF).contains(&cp) // Katakana
             || (0xAC00..=0xD7AF).contains(&cp) // Hangul
-    }).count();
+        })
+        .count();
     let cjk_ratio = cjk_chars as f64 / text.chars().count().max(1) as f64;
 
     let adjusted = if cjk_ratio > 0.2 {
@@ -260,11 +266,25 @@ impl ContextManager {
         } else {
             content.to_string()
         };
-        self.messages.push(Message::tool_result(call_id, &truncated, is_error));
+        self.messages
+            .push(Message::tool_result(call_id, &truncated, is_error));
     }
 
     pub fn messages(&self) -> &[Message] {
         &self.messages
+    }
+
+    /// Remove the last assistant message from the conversation history.
+    /// Used when retrying after a StopReason::Error — the failed response
+    /// should not persist in context since the model will produce a replacement.
+    pub fn pop_last_assistant(&mut self) {
+        if let Some(pos) = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == pipit_provider::Role::Assistant)
+        {
+            self.messages.remove(pos);
+        }
     }
 
     pub fn system_prompt(&self) -> &str {
@@ -287,12 +307,15 @@ impl ContextManager {
     /// Returns (estimated_input_tokens, model_limit, over_by) where over_by > 0 means overflow.
     pub fn preflight_check(&self, tools_count: usize, repo_map: Option<&str>) -> (u64, u64, i64) {
         let system_tokens = estimate_text_tokens(&self.system_prompt);
-        let repo_map_tokens = repo_map.map(|m| estimate_text_tokens(m)).unwrap_or(self.budget.repo_map);
+        let repo_map_tokens = repo_map
+            .map(|m| estimate_text_tokens(m))
+            .unwrap_or(self.budget.repo_map);
         let history_tokens = self.estimate_token_usage();
         let tools_tokens = (tools_count as u64) * 50;
         let output_reserve = self.settings.max_output_tokens as u64;
 
-        let total_input = system_tokens + repo_map_tokens + history_tokens + tools_tokens + output_reserve;
+        let total_input =
+            system_tokens + repo_map_tokens + history_tokens + tools_tokens + output_reserve;
         let over = total_input as i64 - self.budget.model_limit as i64;
         (total_input, self.budget.model_limit, over)
     }
@@ -433,20 +456,100 @@ impl ContextManager {
         let old_count = to_summarize.len();
         let old_tokens: u64 = to_summarize.iter().map(|m| m.estimated_tokens()).sum();
 
-        let summary_message = Message::system(format!(
-            "[Conversation summary]\n{}",
-            summary_text
-        ));
+        let summary_message = Message::system(format!("[Conversation summary]\n{}", summary_text));
 
         let new_tokens = summary_message.estimated_tokens();
 
-        self.messages = std::iter::once(summary_message)
-            .chain(to_keep)
-            .collect();
+        self.messages = std::iter::once(summary_message).chain(to_keep).collect();
 
         Ok(CompressionStats {
             messages_removed: old_count,
             tokens_freed: old_tokens.saturating_sub(new_tokens),
+        })
+    }
+
+    /// Compress using the tiered CompactionPipeline (6-stage with circuit breakers).
+    /// Replaces the monolithic `compress()` with per-stage metrics and session memory sink.
+    pub async fn compress_pipeline(
+        &mut self,
+        provider: Arc<dyn LlmProvider>,
+        session_id: &str,
+        memory_store: Option<&dyn crate::session_memory_compact::MemoryStore>,
+        cancel: CancellationToken,
+    ) -> Result<CompressionStats, ContextError> {
+        use crate::compaction::CompactionPipeline;
+
+        if self.messages.len() <= self.settings.preserve_recent_messages {
+            return Ok(CompressionStats::default());
+        }
+
+        let budget_tokens = self.budget.available_for_history;
+        let old_count = self.messages.len();
+        let old_tokens: u64 = self.messages.iter().map(|m| m.estimated_tokens()).sum();
+
+        let mut pipeline = CompactionPipeline::new(
+            self.settings.preserve_recent_messages,
+            self.settings.tool_result_max_chars,
+            Some(provider),
+        );
+
+        let result = pipeline
+            .run(&mut self.messages, budget_tokens, cancel)
+            .await;
+
+        // Log per-stage metrics
+        for stage in &result.stages {
+            if stage.skipped {
+                tracing::debug!(stage = %stage.name, "Compaction stage skipped (circuit breaker)");
+            } else if stage.failed {
+                tracing::warn!(stage = %stage.name, "Compaction stage failed");
+            } else if stage.tokens_freed > 0 {
+                tracing::info!(
+                    stage = %stage.name,
+                    tokens_freed = stage.tokens_freed,
+                    messages_removed = stage.messages_removed,
+                    duration_ms = stage.duration_ms,
+                    "Compaction stage completed"
+                );
+            }
+        }
+
+        // Sink auto-compact summaries into session memory if a store is provided
+        if let Some(store) = memory_store {
+            if result.total_tokens_freed > 0 {
+                let summary_text = self
+                    .messages
+                    .first()
+                    .and_then(|m| m.content.first())
+                    .and_then(|b| match b {
+                        pipit_provider::ContentBlock::Text(t)
+                            if t.contains("[Auto-compact summary]") =>
+                        {
+                            Some(t.as_str())
+                        }
+                        _ => None,
+                    });
+                if let Some(summary) = summary_text {
+                    let entry = crate::session_memory_compact::summary_to_memory(
+                        session_id,
+                        summary,
+                        0,
+                        old_count as u32,
+                        old_tokens,
+                    );
+                    if let Err(e) = store.store(entry) {
+                        tracing::warn!(
+                            "Failed to store compaction summary in session memory: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(CompressionStats {
+            messages_removed: result.total_messages_removed,
+            tokens_freed: result.total_tokens_freed,
         })
     }
 
@@ -468,7 +571,9 @@ impl ContextManager {
             + self.estimate_token_usage()
             + (tools.len() as u64) * 50; // ~50 tokens per tool schema
         let remaining = self.budget.model_limit.saturating_sub(input_estimate);
-        let max_output = (self.settings.max_output_tokens as u64).min(remaining).max(256);
+        let max_output = (self.settings.max_output_tokens as u64)
+            .min(remaining)
+            .max(256);
 
         CompletionRequest {
             system,
@@ -541,10 +646,8 @@ impl ContextManager {
             let to_keep = self.messages[split_point..].to_vec();
             let old_tokens: u64 = to_summarize.iter().map(|m| m.estimated_tokens()).sum();
             let summary = build_transport_summary(to_summarize);
-            let summary_message = Message::system(format!(
-                "[Transport fallback summary]\n{}",
-                summary
-            ));
+            let summary_message =
+                Message::system(format!("[Transport fallback summary]\n{}", summary));
             let new_tokens = summary_message.estimated_tokens();
             self.messages = std::iter::once(summary_message).chain(to_keep).collect();
 
@@ -588,7 +691,13 @@ fn build_transport_summary(messages: &[Message]) -> String {
             let call_summaries = tool_calls
                 .iter()
                 .take(3)
-                .map(|call| format!("{} {}", call.tool_name, truncate_text(&call.args.to_string(), 100)))
+                .map(|call| {
+                    format!(
+                        "{} {}",
+                        call.tool_name,
+                        truncate_text(&call.args.to_string(), 100)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(" | ");
             lines.push(format!("- {}: {}", role, call_summaries));
@@ -651,7 +760,11 @@ mod tests {
         let stats = manager.force_shrink_for_transport();
 
         assert!(stats.messages_removed > 0);
-        assert!(manager.messages()[0].text_content().contains("Transport fallback summary"));
+        assert!(
+            manager.messages()[0]
+                .text_content()
+                .contains("Transport fallback summary")
+        );
         assert!(manager.messages().len() <= 3);
     }
 }

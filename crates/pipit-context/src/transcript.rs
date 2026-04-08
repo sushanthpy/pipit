@@ -196,11 +196,7 @@ impl TranscriptWal {
         std::fs::rename(&tmp_path, &self.path)?;
 
         // Reopen for appending
-        self.writer = Some(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&self.path)?,
-        );
+        self.writer = Some(std::fs::OpenOptions::new().append(true).open(&self.path)?);
         self.seq = messages.len() as u64;
 
         Ok(())
@@ -219,8 +215,8 @@ impl TranscriptWal {
             timestamp: current_timestamp(),
         };
 
-        let line = serde_json::to_string(&entry)
-            .map_err(|e| WalError::Serialization(e.to_string()))?;
+        let line =
+            serde_json::to_string(&entry).map_err(|e| WalError::Serialization(e.to_string()))?;
 
         if let Some(ref mut writer) = self.writer {
             writeln!(writer, "{}", line)?;

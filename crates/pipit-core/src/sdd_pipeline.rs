@@ -83,13 +83,17 @@ impl SpecPlan {
         let mut completed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         loop {
-            let ready: Vec<&SpecTask> = self.tasks.iter()
+            let ready: Vec<&SpecTask> = self
+                .tasks
+                .iter()
                 .filter(|t| t.status != TaskStatus::Completed && t.status != TaskStatus::Verified)
                 .filter(|t| !completed.contains(&t.id))
                 .filter(|t| t.dependencies.iter().all(|dep| completed.contains(dep)))
                 .collect();
 
-            if ready.is_empty() { break; }
+            if ready.is_empty() {
+                break;
+            }
 
             for task in &ready {
                 completed.insert(task.id);
@@ -106,12 +110,16 @@ impl SpecPlan {
         let mut completed: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         loop {
-            let ready: Vec<&SpecTask> = self.tasks.iter()
+            let ready: Vec<&SpecTask> = self
+                .tasks
+                .iter()
                 .filter(|t| !completed.contains(&t.id))
                 .filter(|t| t.dependencies.iter().all(|dep| completed.contains(dep)))
                 .collect();
 
-            if ready.is_empty() { break; }
+            if ready.is_empty() {
+                break;
+            }
 
             for task in &ready {
                 completed.insert(task.id);
@@ -222,20 +230,27 @@ pub fn parse_spec_plan(source: &str) -> SpecPlan {
             });
         } else if let Some(ref mut task) = current_task {
             if trimmed.starts_with("- Files:") || trimmed.starts_with("- files:") {
-                let files: Vec<String> = trimmed.trim_start_matches("- Files:").trim_start_matches("- files:")
+                let files: Vec<String> = trimmed
+                    .trim_start_matches("- Files:")
+                    .trim_start_matches("- files:")
                     .split(',')
                     .map(|f| f.trim().to_string())
                     .filter(|f| !f.is_empty())
                     .collect();
                 task.files_to_modify.extend(files);
             } else if trimmed.starts_with("- Depends:") || trimmed.starts_with("- depends:") {
-                let deps: Vec<usize> = trimmed.trim_start_matches("- Depends:").trim_start_matches("- depends:")
+                let deps: Vec<usize> = trimmed
+                    .trim_start_matches("- Depends:")
+                    .trim_start_matches("- depends:")
                     .split(',')
                     .filter_map(|d| d.trim().parse().ok())
                     .collect();
                 task.dependencies = deps;
             } else if trimmed.starts_with("- Criteria:") || trimmed.starts_with("- criteria:") {
-                let criteria = trimmed.trim_start_matches("- Criteria:").trim_start_matches("- criteria:").trim();
+                let criteria = trimmed
+                    .trim_start_matches("- Criteria:")
+                    .trim_start_matches("- criteria:")
+                    .trim();
                 task.acceptance_criteria.push(criteria.to_string());
             } else if trimmed.starts_with("- Isolated") || trimmed.starts_with("- isolated") {
                 task.isolated = true;
@@ -246,7 +261,13 @@ pub fn parse_spec_plan(source: &str) -> SpecPlan {
         }
 
         if trimmed.starts_with("Verify:") || trimmed.starts_with("verify:") {
-            verify_cmd = Some(trimmed.trim_start_matches("Verify:").trim_start_matches("verify:").trim().to_string());
+            verify_cmd = Some(
+                trimmed
+                    .trim_start_matches("Verify:")
+                    .trim_start_matches("verify:")
+                    .trim()
+                    .to_string(),
+            );
         }
     }
 
@@ -299,12 +320,55 @@ Verify: pytest tests/
 
     #[test]
     fn test_execution_order() {
-        let plan = SpecPlan::new("test", vec![
-            SpecTask { id: 1, title: "A".into(), description: "".into(), dependencies: vec![], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-            SpecTask { id: 2, title: "B".into(), description: "".into(), dependencies: vec![1], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-            SpecTask { id: 3, title: "C".into(), description: "".into(), dependencies: vec![1], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-            SpecTask { id: 4, title: "D".into(), description: "".into(), dependencies: vec![2, 3], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-        ]);
+        let plan = SpecPlan::new(
+            "test",
+            vec![
+                SpecTask {
+                    id: 1,
+                    title: "A".into(),
+                    description: "".into(),
+                    dependencies: vec![],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+                SpecTask {
+                    id: 2,
+                    title: "B".into(),
+                    description: "".into(),
+                    dependencies: vec![1],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+                SpecTask {
+                    id: 3,
+                    title: "C".into(),
+                    description: "".into(),
+                    dependencies: vec![1],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+                SpecTask {
+                    id: 4,
+                    title: "D".into(),
+                    description: "".into(),
+                    dependencies: vec![2, 3],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+            ],
+        );
         let order = plan.execution_order();
         assert_eq!(order.len(), 4);
         assert_eq!(order[0].id, 1, "Task 1 has no deps, goes first");
@@ -313,11 +377,44 @@ Verify: pytest tests/
 
     #[test]
     fn test_parallelizable_groups() {
-        let plan = SpecPlan::new("test", vec![
-            SpecTask { id: 1, title: "A".into(), description: "".into(), dependencies: vec![], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-            SpecTask { id: 2, title: "B".into(), description: "".into(), dependencies: vec![1], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-            SpecTask { id: 3, title: "C".into(), description: "".into(), dependencies: vec![1], files_to_create: vec![], files_to_modify: vec![], acceptance_criteria: vec![], status: TaskStatus::Pending, isolated: false },
-        ]);
+        let plan = SpecPlan::new(
+            "test",
+            vec![
+                SpecTask {
+                    id: 1,
+                    title: "A".into(),
+                    description: "".into(),
+                    dependencies: vec![],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+                SpecTask {
+                    id: 2,
+                    title: "B".into(),
+                    description: "".into(),
+                    dependencies: vec![1],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+                SpecTask {
+                    id: 3,
+                    title: "C".into(),
+                    description: "".into(),
+                    dependencies: vec![1],
+                    files_to_create: vec![],
+                    files_to_modify: vec![],
+                    acceptance_criteria: vec![],
+                    status: TaskStatus::Pending,
+                    isolated: false,
+                },
+            ],
+        );
         let groups = plan.parallelizable_groups();
         assert_eq!(groups.len(), 2, "Should be 2 groups: [A] then [B, C]");
         assert_eq!(groups[0].len(), 1, "First group: just A");
@@ -329,7 +426,8 @@ Verify: pytest tests/
         let plan = SpecPlan {
             spec_source: "test".into(),
             tasks: vec![SpecTask {
-                id: 1, title: "Add auth".into(),
+                id: 1,
+                title: "Add auth".into(),
                 description: "Add JWT authentication".into(),
                 dependencies: vec![],
                 files_to_create: vec!["auth.py".into()],

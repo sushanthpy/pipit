@@ -81,10 +81,15 @@ pub enum Severity {
 
 impl From<f64> for Severity {
     fn from(score: f64) -> Self {
-        if score >= 0.8 { Self::Critical }
-        else if score >= 0.6 { Self::High }
-        else if score >= 0.3 { Self::Medium }
-        else { Self::Low }
+        if score >= 0.8 {
+            Self::Critical
+        } else if score >= 0.6 {
+            Self::High
+        } else if score >= 0.3 {
+            Self::Medium
+        } else {
+            Self::Low
+        }
     }
 }
 
@@ -117,21 +122,40 @@ pub fn detect_attack_surfaces(file_path: &str, source: &str) -> Vec<AttackSurfac
         let trimmed = line.trim();
 
         // Track block comments (/* ... */ and """ ... """)
-        if trimmed.contains("/*") && !trimmed.contains("*/") { in_block_comment = true; continue; }
-        if trimmed.contains("*/") { in_block_comment = false; continue; }
+        if trimmed.contains("/*") && !trimmed.contains("*/") {
+            in_block_comment = true;
+            continue;
+        }
+        if trimmed.contains("*/") {
+            in_block_comment = false;
+            continue;
+        }
         if trimmed.starts_with("\"\"\"") || trimmed.starts_with("'''") {
             in_block_comment = !in_block_comment;
             continue;
         }
-        if in_block_comment { continue; }
+        if in_block_comment {
+            continue;
+        }
 
         // Skip line comments and pure string literals
-        if is_comment_or_string(trimmed) { continue; }
+        if is_comment_or_string(trimmed) {
+            continue;
+        }
 
         // HTTP endpoints
-        for pattern in &["#[get(", "#[post(", "#[put(", "#[delete(",
-                          "@app.route", "@router.", "app.get(", "app.post(",
-                          "router.get(", "router.post("] {
+        for pattern in &[
+            "#[get(",
+            "#[post(",
+            "#[put(",
+            "#[delete(",
+            "@app.route",
+            "@router.",
+            "app.get(",
+            "app.post(",
+            "router.get(",
+            "router.post(",
+        ] {
             if trimmed.contains(pattern) {
                 id_counter += 1;
                 surfaces.push(AttackSurface {
@@ -146,10 +170,20 @@ pub fn detect_attack_surfaces(file_path: &str, source: &str) -> Vec<AttackSurfac
         }
 
         // SQL / database queries
-        for pattern in &["execute(", "query(", "raw_sql", "cursor.execute",
-                          "SELECT ", "INSERT ", "UPDATE ", "DELETE ",
-                          "db.query", "pool.query"] {
-            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#') {
+        for pattern in &[
+            "execute(",
+            "query(",
+            "raw_sql",
+            "cursor.execute",
+            "SELECT ",
+            "INSERT ",
+            "UPDATE ",
+            "DELETE ",
+            "db.query",
+            "pool.query",
+        ] {
+            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#')
+            {
                 id_counter += 1;
                 surfaces.push(AttackSurface {
                     id: format!("{}:{}", file_path, id_counter),
@@ -157,16 +191,27 @@ pub fn detect_attack_surfaces(file_path: &str, source: &str) -> Vec<AttackSurfac
                     line: line_num + 1,
                     kind: SurfaceKind::DatabaseQuery,
                     criticality: SurfaceKind::DatabaseQuery.criticality(),
-                    description: format!("Database operation: {}", trimmed.chars().take(80).collect::<String>()),
+                    description: format!(
+                        "Database operation: {}",
+                        trimmed.chars().take(80).collect::<String>()
+                    ),
                 });
             }
         }
 
         // Process execution
-        for pattern in &["Command::new", "subprocess.run", "subprocess.Popen",
-                          "exec(", "eval(", "os.system(", "shell=True",
-                          "Process.Start"] {
-            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#') {
+        for pattern in &[
+            "Command::new",
+            "subprocess.run",
+            "subprocess.Popen",
+            "exec(",
+            "eval(",
+            "os.system(",
+            "shell=True",
+            "Process.Start",
+        ] {
+            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#')
+            {
                 id_counter += 1;
                 surfaces.push(AttackSurface {
                     id: format!("{}:{}", file_path, id_counter),
@@ -174,16 +219,27 @@ pub fn detect_attack_surfaces(file_path: &str, source: &str) -> Vec<AttackSurfac
                     line: line_num + 1,
                     kind: SurfaceKind::ProcessExecution,
                     criticality: SurfaceKind::ProcessExecution.criticality(),
-                    description: format!("Process execution: {}", trimmed.chars().take(80).collect::<String>()),
+                    description: format!(
+                        "Process execution: {}",
+                        trimmed.chars().take(80).collect::<String>()
+                    ),
                 });
             }
         }
 
         // Deserialization
-        for pattern in &["from_str(", "from_slice(", "deserialize(",
-                          "json.loads(", "pickle.load", "yaml.load(",
-                          "JSON.parse(", "eval("] {
-            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#') {
+        for pattern in &[
+            "from_str(",
+            "from_slice(",
+            "deserialize(",
+            "json.loads(",
+            "pickle.load",
+            "yaml.load(",
+            "JSON.parse(",
+            "eval(",
+        ] {
+            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#')
+            {
                 id_counter += 1;
                 surfaces.push(AttackSurface {
                     id: format!("{}:{}", file_path, id_counter),
@@ -191,16 +247,29 @@ pub fn detect_attack_surfaces(file_path: &str, source: &str) -> Vec<AttackSurfac
                     line: line_num + 1,
                     kind: SurfaceKind::Deserialization,
                     criticality: SurfaceKind::Deserialization.criticality(),
-                    description: format!("Deserialization: {}", trimmed.chars().take(80).collect::<String>()),
+                    description: format!(
+                        "Deserialization: {}",
+                        trimmed.chars().take(80).collect::<String>()
+                    ),
                 });
             }
         }
 
         // File system access
-        for pattern in &["open(", "read_to_string", "write(", "fs::",
-                          "std::fs", "Path::new", "pathlib.Path"] {
-            if trimmed.contains(pattern) && !trimmed.starts_with("//") && !trimmed.starts_with('#')
-                && !trimmed.contains("test") {
+        for pattern in &[
+            "open(",
+            "read_to_string",
+            "write(",
+            "fs::",
+            "std::fs",
+            "Path::new",
+            "pathlib.Path",
+        ] {
+            if trimmed.contains(pattern)
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with('#')
+                && !trimmed.contains("test")
+            {
                 id_counter += 1;
                 surfaces.push(AttackSurface {
                     id: format!("{}:{}", file_path, id_counter),
@@ -208,7 +277,10 @@ pub fn detect_attack_surfaces(file_path: &str, source: &str) -> Vec<AttackSurfac
                     line: line_num + 1,
                     kind: SurfaceKind::FileSystemAccess,
                     criticality: SurfaceKind::FileSystemAccess.criticality(),
-                    description: format!("File access: {}", trimmed.chars().take(80).collect::<String>()),
+                    description: format!(
+                        "File access: {}",
+                        trimmed.chars().take(80).collect::<String>()
+                    ),
                 });
             }
         }
@@ -237,7 +309,9 @@ pub fn compute_threat_scores(
 
     // BFS from each input node
     for &start in input_nodes {
-        if start >= n { continue; }
+        if start >= n {
+            continue;
+        }
         let mut visited = vec![false; n];
         let mut queue = VecDeque::new();
         queue.push_back((start, 0usize));
@@ -264,14 +338,38 @@ pub fn compute_threat_scores(
 /// Map attack surfaces to STRIDE categories.
 pub fn classify_stride(surface: &AttackSurface) -> Vec<StrideCategory> {
     match surface.kind {
-        SurfaceKind::HttpEndpoint => vec![StrideCategory::Spoofing, StrideCategory::Tampering, StrideCategory::DenialOfService],
-        SurfaceKind::DatabaseQuery => vec![StrideCategory::Tampering, StrideCategory::InformationDisclosure],
-        SurfaceKind::ProcessExecution => vec![StrideCategory::ElevationOfPrivilege, StrideCategory::Tampering],
-        SurfaceKind::Deserialization => vec![StrideCategory::Tampering, StrideCategory::ElevationOfPrivilege],
-        SurfaceKind::AuthCheck => vec![StrideCategory::Spoofing, StrideCategory::ElevationOfPrivilege],
-        SurfaceKind::CryptoOperation => vec![StrideCategory::InformationDisclosure, StrideCategory::Repudiation],
-        SurfaceKind::FileSystemAccess => vec![StrideCategory::Tampering, StrideCategory::InformationDisclosure],
-        SurfaceKind::ExternalApiCall => vec![StrideCategory::Spoofing, StrideCategory::DenialOfService],
+        SurfaceKind::HttpEndpoint => vec![
+            StrideCategory::Spoofing,
+            StrideCategory::Tampering,
+            StrideCategory::DenialOfService,
+        ],
+        SurfaceKind::DatabaseQuery => vec![
+            StrideCategory::Tampering,
+            StrideCategory::InformationDisclosure,
+        ],
+        SurfaceKind::ProcessExecution => vec![
+            StrideCategory::ElevationOfPrivilege,
+            StrideCategory::Tampering,
+        ],
+        SurfaceKind::Deserialization => vec![
+            StrideCategory::Tampering,
+            StrideCategory::ElevationOfPrivilege,
+        ],
+        SurfaceKind::AuthCheck => vec![
+            StrideCategory::Spoofing,
+            StrideCategory::ElevationOfPrivilege,
+        ],
+        SurfaceKind::CryptoOperation => vec![
+            StrideCategory::InformationDisclosure,
+            StrideCategory::Repudiation,
+        ],
+        SurfaceKind::FileSystemAccess => vec![
+            StrideCategory::Tampering,
+            StrideCategory::InformationDisclosure,
+        ],
+        SurfaceKind::ExternalApiCall => {
+            vec![StrideCategory::Spoofing, StrideCategory::DenialOfService]
+        }
         SurfaceKind::FileParser => vec![StrideCategory::Tampering, StrideCategory::DenialOfService],
         SurfaceKind::CliArgument => vec![StrideCategory::Tampering],
     }
@@ -279,29 +377,53 @@ pub fn classify_stride(surface: &AttackSurface) -> Vec<StrideCategory> {
 
 /// Build a complete threat report.
 pub fn generate_threat_report(surfaces: Vec<AttackSurface>) -> ThreatReport {
-    let threats: Vec<Threat> = surfaces.iter().map(|s| {
-        let categories = classify_stride(s);
-        let severity = Severity::from(s.criticality);
-        Threat {
-            surface: s.clone(),
-            stride_categories: categories,
-            threat_score: s.criticality,
-            exploit_chain: vec![format!("Input reaches {} at {}:{}", s.kind_str(), s.file, s.line)],
-            mitigation: suggest_mitigation(s),
-            severity,
-        }
-    }).collect();
+    let threats: Vec<Threat> = surfaces
+        .iter()
+        .map(|s| {
+            let categories = classify_stride(s);
+            let severity = Severity::from(s.criticality);
+            Threat {
+                surface: s.clone(),
+                stride_categories: categories,
+                threat_score: s.criticality,
+                exploit_chain: vec![format!(
+                    "Input reaches {} at {}:{}",
+                    s.kind_str(),
+                    s.file,
+                    s.line
+                )],
+                mitigation: suggest_mitigation(s),
+                severity,
+            }
+        })
+        .collect();
 
     let summary = ThreatSummary {
         total_surfaces: surfaces.len(),
         total_threats: threats.len(),
-        critical_count: threats.iter().filter(|t| t.severity == Severity::Critical).count(),
-        high_count: threats.iter().filter(|t| t.severity == Severity::High).count(),
-        medium_count: threats.iter().filter(|t| t.severity == Severity::Medium).count(),
-        low_count: threats.iter().filter(|t| t.severity == Severity::Low).count(),
+        critical_count: threats
+            .iter()
+            .filter(|t| t.severity == Severity::Critical)
+            .count(),
+        high_count: threats
+            .iter()
+            .filter(|t| t.severity == Severity::High)
+            .count(),
+        medium_count: threats
+            .iter()
+            .filter(|t| t.severity == Severity::Medium)
+            .count(),
+        low_count: threats
+            .iter()
+            .filter(|t| t.severity == Severity::Low)
+            .count(),
     };
 
-    ThreatReport { surfaces, threats, summary }
+    ThreatReport {
+        surfaces,
+        threats,
+        summary,
+    }
 }
 
 impl AttackSurface {
@@ -367,7 +489,11 @@ def create_user():
     subprocess.run(data['cmd'], shell=True)
 "#;
         let surfaces = detect_attack_surfaces("app.py", code);
-        assert!(surfaces.len() >= 3, "Should find HTTP, SQL, subprocess: found {}", surfaces.len());
+        assert!(
+            surfaces.len() >= 3,
+            "Should find HTTP, SQL, subprocess: found {}",
+            surfaces.len()
+        );
 
         let kinds: Vec<_> = surfaces.iter().map(|s| s.kind).collect();
         assert!(kinds.contains(&SurfaceKind::HttpEndpoint));
@@ -379,29 +505,41 @@ def create_user():
     fn test_threat_scoring() {
         let surfaces = vec![
             AttackSurface {
-                id: "1".into(), file: "a.py".into(), line: 1,
-                kind: SurfaceKind::HttpEndpoint, criticality: 0.7,
+                id: "1".into(),
+                file: "a.py".into(),
+                line: 1,
+                kind: SurfaceKind::HttpEndpoint,
+                criticality: 0.7,
                 description: "endpoint".into(),
             },
             AttackSurface {
-                id: "2".into(), file: "a.py".into(), line: 5,
-                kind: SurfaceKind::DatabaseQuery, criticality: 0.9,
+                id: "2".into(),
+                file: "a.py".into(),
+                line: 5,
+                kind: SurfaceKind::DatabaseQuery,
+                criticality: 0.9,
                 description: "query".into(),
             },
         ];
         let edges = vec![(0, 1)]; // HTTP → DB
-        let inputs = vec![0];     // HTTP is input
+        let inputs = vec![0]; // HTTP is input
 
         let scores = compute_threat_scores(&surfaces, &edges, &inputs);
-        assert!(scores[1] > 0.0, "DB should get threat score from HTTP input");
+        assert!(
+            scores[1] > 0.0,
+            "DB should get threat score from HTTP input"
+        );
         assert_eq!(scores[0], 0.0, "Input node itself gets 0 (depth=0)");
     }
 
     #[test]
     fn test_stride_classification() {
         let surface = AttackSurface {
-            id: "1".into(), file: "a.py".into(), line: 1,
-            kind: SurfaceKind::ProcessExecution, criticality: 1.0,
+            id: "1".into(),
+            file: "a.py".into(),
+            line: 1,
+            kind: SurfaceKind::ProcessExecution,
+            criticality: 1.0,
             description: "exec".into(),
         };
         let cats = classify_stride(&surface);

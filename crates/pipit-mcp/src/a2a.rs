@@ -61,7 +61,11 @@ pub enum A2APart {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "file")]
-    File { name: String, data: String, mime_type: String },
+    File {
+        name: String,
+        data: String,
+        mime_type: String,
+    },
 }
 
 /// A2A Task status response.
@@ -126,12 +130,14 @@ pub fn pipit_agent_card(base_url: &str) -> AgentCard {
 /// Discover a remote A2A agent by fetching its Agent Card.
 pub async fn discover_agent(base_url: &str) -> Result<AgentCard, String> {
     let url = format!("{}/.well-known/agent.json", base_url.trim_end_matches('/'));
-    let resp = reqwest::get(&url).await
+    let resp = reqwest::get(&url)
+        .await
         .map_err(|e| format!("A2A discovery failed: {}", e))?;
     if !resp.status().is_success() {
         return Err(format!("A2A agent returned {}", resp.status()));
     }
-    resp.json::<AgentCard>().await
+    resp.json::<AgentCard>()
+        .await
         .map_err(|e| format!("Invalid Agent Card: {}", e))
 }
 
@@ -139,7 +145,8 @@ pub async fn discover_agent(base_url: &str) -> Result<AgentCard, String> {
 pub async fn send_task(agent_url: &str, task: &A2ATask) -> Result<A2ATaskStatus, String> {
     let url = format!("{}/tasks/send", agent_url.trim_end_matches('/'));
     let client = reqwest::Client::new();
-    let resp = client.post(&url)
+    let resp = client
+        .post(&url)
         .json(task)
         .send()
         .await
@@ -148,7 +155,8 @@ pub async fn send_task(agent_url: &str, task: &A2ATask) -> Result<A2ATaskStatus,
         let body = resp.text().await.unwrap_or_default();
         return Err(format!("A2A error: {}", body));
     }
-    resp.json::<A2ATaskStatus>().await
+    resp.json::<A2ATaskStatus>()
+        .await
         .map_err(|e| format!("Invalid A2A response: {}", e))
 }
 

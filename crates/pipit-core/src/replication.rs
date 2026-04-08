@@ -71,10 +71,7 @@ pub enum AppendOutcome {
     /// Successfully appended.
     Success { new_seq: u64 },
     /// Conflict: server has a different event at expected_seq.
-    Conflict {
-        expected_seq: u64,
-        server_seq: u64,
-    },
+    Conflict { expected_seq: u64, server_seq: u64 },
     /// Transient failure (retry eligible).
     TransientError { message: String },
     /// Permanent failure (do not retry).

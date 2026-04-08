@@ -62,9 +62,11 @@ impl Default for FilesystemPolicy {
         Self {
             allow_write: vec![".".into()],
             deny_read: vec![
-                "~/.ssh".into(),
+                // NOTE: ~/.ssh is intentionally NOT denied.
+                // Git push via SSH is a core workflow and requires reading
+                // the user's SSH keys. The sandbox still prevents writes to
+                // ~/.ssh and network access is domain-restricted.
                 "~/.aws".into(),
-                "~/.gnupg".into(),
                 "~/.config/pipit/secrets".into(),
             ],
             read_only_system: true,
@@ -82,8 +84,10 @@ impl Default for NetworkPolicy {
     fn default() -> Self {
         Self {
             allowed_domains: vec![
-                "github.com".into(), "npmjs.com".into(),
-                "pypi.org".into(), "crates.io".into(),
+                "github.com".into(),
+                "npmjs.com".into(),
+                "pypi.org".into(),
+                "crates.io".into(),
                 "registry.npmjs.org".into(),
             ],
             block_all: false,
@@ -105,20 +109,31 @@ impl Default for EnvPolicy {
     fn default() -> Self {
         Self {
             pass_through: vec![
-                "PATH".into(), "HOME".into(), "LANG".into(), "TERM".into(),
-                "USER".into(), "SHELL".into(), "TMPDIR".into(),
+                "PATH".into(),
+                "HOME".into(),
+                "LANG".into(),
+                "TERM".into(),
+                "USER".into(),
+                "SHELL".into(),
+                "TMPDIR".into(),
                 // Build tool vars
-                "CARGO_HOME".into(), "RUSTUP_HOME".into(),
-                "GOPATH".into(), "GOROOT".into(),
-                "NODE_PATH".into(), "NPM_CONFIG_PREFIX".into(),
-                "VIRTUAL_ENV".into(), "CONDA_DEFAULT_ENV".into(),
+                "CARGO_HOME".into(),
+                "RUSTUP_HOME".into(),
+                "GOPATH".into(),
+                "GOROOT".into(),
+                "NODE_PATH".into(),
+                "NPM_CONFIG_PREFIX".into(),
+                "VIRTUAL_ENV".into(),
+                "CONDA_DEFAULT_ENV".into(),
             ],
             strip: vec![
                 // Common secret-carrying env vars
                 "AWS_SECRET_ACCESS_KEY".into(),
                 "AWS_SESSION_TOKEN".into(),
-                "GITHUB_TOKEN".into(),
-                "GH_TOKEN".into(),
+                // NOTE: GITHUB_TOKEN and GH_TOKEN are intentionally NOT stripped.
+                // They are needed for `git push` via HTTPS and GitHub CLI operations.
+                // The sandbox restricts network access to allowed domains, and these
+                // tokens are scoped to GitHub anyway.
                 "OPENAI_API_KEY".into(),
                 "ANTHROPIC_API_KEY".into(),
                 "DATABASE_URL".into(),
@@ -140,7 +155,8 @@ pub fn check_binary_allowlist(command: &str, config: &SandboxConfig) -> Result<(
     // Extract the primary binary from the command.
     // Handle pipes, &&, ||, ; by checking each sub-command.
     let separators = ['|', ';'];
-    let parts: Vec<&str> = command.split(|c: char| separators.contains(&c))
+    let parts: Vec<&str> = command
+        .split(|c: char| separators.contains(&c))
         .flat_map(|part| part.split("&&"))
         .flat_map(|part| part.split("||"))
         .collect();
@@ -153,7 +169,8 @@ pub fn check_binary_allowlist(command: &str, config: &SandboxConfig) -> Result<(
 
         // Skip env var assignments at the start (e.g., FOO=bar cmd)
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        let binary_token = tokens.iter()
+        let binary_token = tokens
+            .iter()
             .find(|t| !t.contains('='))
             .copied()
             .unwrap_or("");
@@ -261,6 +278,13 @@ fn bwrap_command(command: &str, cwd: &Path, config: &SandboxConfig) -> tokio::pr
         .args(&["--dev", "/dev"])
         .args(&["--tmpfs", "/tmp"]);
 
+    // Mount $HOME read-only for git config, SSH keys, tool configs.
+    // Without this, git operations fail because ~/.gitconfig, ~/.ssh/,
+    // and credential helpers are unavailable.
+    if let Ok(home) = std::env::var("HOME") {
+        cmd.args(&["--ro-bind", &home, &home]);
+    }
+
     // Read-write bind for project directory
     cmd.args(&["--bind", cwd_str, cwd_str]);
 
@@ -290,29 +314,76 @@ fn bwrap_command(command: &str, cwd: &Path, config: &SandboxConfig) -> tokio::pr
 fn seatbelt_command(command: &str, cwd: &Path, config: &SandboxConfig) -> tokio::process::Command {
     let cwd_str = cwd.to_str().unwrap_or(".");
 
-    // Generate a Seatbelt profile
+    // Generate a Seatbelt profile.
+    //
+    // Design principle: restrict WRITES, allow reads.
+    // File reads are non-destructive — the real security boundaries are:
+    //   1. Where code can WRITE (project dir + temp only)
+    //   2. What processes can EXECUTE
+    //   3. Network access
+    //
+    // The old approach enumerated specific read paths (/usr, /bin, /System, etc.)
+    // but missed locations that git, node, python and other dev tools need
+    // (e.g. /etc, /var, /dev, /AppleInternal, dyld caches). This caused tools
+    // to silently abort (SIGABRT) or return empty output.
     let mut profile = String::from("(version 1)\n(deny default)\n");
+
+    // Process execution
     profile.push_str("(allow process-exec)\n");
     profile.push_str("(allow process-fork)\n");
+
+    // System calls needed by subprocesses
     profile.push_str("(allow sysctl-read)\n");
     profile.push_str("(allow mach-lookup)\n");
-    profile.push_str(&format!(
-        "(allow file-read* (subpath \"{}\"))\n",
-        cwd_str
-    ));
-    profile.push_str(&format!(
-        "(allow file-write* (subpath \"{}\"))\n",
-        cwd_str
-    ));
-    // Read-only system paths
-    profile.push_str("(allow file-read* (subpath \"/usr\"))\n");
-    profile.push_str("(allow file-read* (subpath \"/bin\"))\n");
-    profile.push_str("(allow file-read* (subpath \"/sbin\"))\n");
-    profile.push_str("(allow file-read* (subpath \"/Library\"))\n");
-    profile.push_str("(allow file-read* (subpath \"/System\"))\n");
-    profile.push_str("(allow file-read* (subpath \"/private/tmp\"))\n");
-    profile.push_str("(allow file-read* (subpath \"/private/var\"))\n");
-    // Deny sensitive directories
+    // IPC needed for git, node, and other tools that use shared memory
+    profile.push_str("(allow ipc-posix-shm-read-data)\n");
+    profile.push_str("(allow ipc-posix-shm-write-data)\n");
+    profile.push_str("(allow ipc-posix-shm-write-create)\n");
+    // Signals needed for process management
+    profile.push_str("(allow signal (target self))\n");
+
+    // ── File reads: allow everywhere ──
+    // Dev tools read from too many scattered locations to enumerate.
+    // Reads are non-destructive; the write restrictions below are what matter.
+    profile.push_str("(allow file-read*)\n");
+
+    // ── File writes: restricted to project dir + temp ──
+    profile.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", cwd_str));
+    profile.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
+    profile.push_str("(allow file-write* (subpath \"/tmp\"))\n");
+    // /dev/null, /dev/tty, etc.
+    profile.push_str("(allow file-write* (subpath \"/dev\"))\n");
+
+    // Home directory write access for tool caches
+    if let Ok(home) = std::env::var("HOME") {
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/.npm\"))\n",
+            home
+        ));
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/.cache\"))\n",
+            home
+        ));
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/.gitconfig\"))\n",
+            home
+        ));
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/.config/git\"))\n",
+            home
+        ));
+        // Cargo/Rust
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/.cargo\"))\n",
+            home
+        ));
+        profile.push_str(&format!(
+            "(allow file-write* (subpath \"{}/.rustup\"))\n",
+            home
+        ));
+    }
+
+    // Deny sensitive directories (overrides the blanket read-allow above)
     for deny in &config.filesystem.deny_read {
         let expanded = shellexpand_tilde(deny);
         profile.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", expanded));

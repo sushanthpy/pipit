@@ -9,7 +9,7 @@ use crate::store::DaemonStore;
 
 use anyhow::Result;
 use pipit_channel::{MessageOrigin, NormalizedTask, TaskSink};
-use pipit_intelligence::{analyze_dependencies, DependencyHealthReport};
+use pipit_intelligence::{DependencyHealthReport, analyze_dependencies};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -87,13 +87,26 @@ impl ProjectHealth {
         }
     }
 
-    /// Recompute composite health: H(t) = Σ wᵢ·hᵢ(t)
+    /// Recompute composite health: H(t) = Σ wᵢ·hᵢ(t) / Σ wᵢ (active only)
+    ///
+    /// Only metrics with actual observations (samples > 0) contribute.
+    /// Weights are renormalized so the score is meaningful even when
+    /// some analyzers haven't run yet. This avoids the previous pattern
+    /// of seeding unobserved metrics with 0.8, which made 45% of the
+    /// composite score synthetic.
     pub fn recompute(&mut self) {
-        self.composite_health = self
-            .metrics
-            .values()
-            .map(|m| m.weight * m.value)
-            .sum();
+        let active: Vec<&EwmaMetric> = self.metrics.values().filter(|m| m.samples > 0).collect();
+        if active.is_empty() {
+            self.composite_health = 1.0; // No data → assume healthy
+        } else {
+            let total_weight: f64 = active.iter().map(|m| m.weight).sum();
+            if total_weight > 0.0 {
+                self.composite_health =
+                    active.iter().map(|m| m.weight * m.value).sum::<f64>() / total_weight;
+            } else {
+                self.composite_health = 1.0;
+            }
+        }
         self.last_check = std::time::Instant::now();
     }
 
@@ -105,13 +118,24 @@ impl ProjectHealth {
     /// Generate a remediation task prompt from the worst metrics.
     pub fn remediation_prompt(&self) -> String {
         let mut worst: Vec<_> = self.metrics.values().collect();
-        worst.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
+        worst.sort_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let issues: Vec<String> = worst
             .iter()
             .take(3)
             .filter(|m| m.value < 0.7)
-            .map(|m| format!("- {} health: {:.0}% (last raw: {:.0}%)", m.name, m.value * 100.0, m.raw_last * 100.0))
+            .map(|m| {
+                format!(
+                    "- {} health: {:.0}% (last raw: {:.0}%)",
+                    m.name,
+                    m.value * 100.0,
+                    m.raw_last * 100.0
+                )
+            })
             .collect();
 
         if issues.is_empty() {
@@ -128,10 +152,7 @@ impl ProjectHealth {
 }
 
 /// Run health checks for a project and update metrics.
-pub fn check_project_health(
-    health: &mut ProjectHealth,
-    project_config: &ProjectConfig,
-) {
+pub fn check_project_health(health: &mut ProjectHealth, project_config: &ProjectConfig) {
     // Dependency freshness
     let dep_reports = analyze_dependencies(&project_config.root);
     let dep_health: f64 = if dep_reports.is_empty() {
@@ -152,7 +173,13 @@ pub fn check_project_health(
             .output();
 
         let pass_rate = match result {
-            Ok(output) => if output.status.success() { 1.0 } else { 0.0 },
+            Ok(output) => {
+                if output.status.success() {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Err(_) => 0.5, // Can't run tests → neutral
         };
         if let Some(m) = health.metrics.get_mut("test_pass_rate") {
@@ -160,15 +187,17 @@ pub fn check_project_health(
         }
     }
 
-    // Other metrics get defaults until more analyzers are built
-    // (lint_score, dead_code_ratio, doc_coverage set to 0.8 baseline)
-    for name in &["lint_score", "dead_code_ratio", "doc_coverage"] {
-        if let Some(m) = health.metrics.get_mut(*name) {
-            if m.samples == 0 {
-                m.update(0.8);
-            }
-        }
-    }
+    // Metrics without real analyzers are left at their initial state (no samples)
+    // rather than seeded with a synthetic 0.8 baseline. The composite health
+    // score already handles missing metrics via weight redistribution: only
+    // metrics with samples > 0 contribute to the weighted sum, and their
+    // weights are renormalized. This means a project with only dep_freshness
+    // and test_pass_rate will score based on those two alone (weight 0.55)
+    // instead of being diluted by fabricated 0.8 values.
+    //
+    // Previously: lint_score, dead_code_ratio, doc_coverage were seeded at 0.8,
+    // making 45% of the composite health score synthetic.
+    // Now: they contribute nothing until real analyzers are implemented.
 
     health.recompute();
 }
@@ -252,7 +281,11 @@ mod tests {
             m.update(0.8);
         }
         // EWMA should converge near 0.8
-        assert!((m.value - 0.8).abs() < 0.05, "EWMA should converge: {}", m.value);
+        assert!(
+            (m.value - 0.8).abs() < 0.05,
+            "EWMA should converge: {}",
+            m.value
+        );
     }
 
     #[test]
@@ -272,7 +305,11 @@ mod tests {
         // EWMA should dampen: drop should be < 50% of raw drop
         let raw_drop = 0.9 - 0.1;
         let ewma_drop = before - after_noise;
-        assert!(ewma_drop < raw_drop * 0.5, "EWMA should dampen noise: drop={}", ewma_drop);
+        assert!(
+            ewma_drop < raw_drop * 0.5,
+            "EWMA should dampen noise: drop={}",
+            ewma_drop
+        );
     }
 
     #[test]
@@ -286,7 +323,11 @@ mod tests {
         h.recompute();
 
         // Composite should be ~0.5 (sum of weights * 0.5)
-        assert!((h.composite_health - 0.5).abs() < 0.1, "health = {}", h.composite_health);
+        assert!(
+            (h.composite_health - 0.5).abs() < 0.1,
+            "health = {}",
+            h.composite_health
+        );
         assert!(h.needs_remediation(0.6));
         assert!(!h.needs_remediation(0.4));
     }

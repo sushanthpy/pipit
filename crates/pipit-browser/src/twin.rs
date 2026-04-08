@@ -171,16 +171,11 @@ impl BrowserTwin {
 
     /// Check if an operation is allowed for the given origin.
     /// Cost: O(1) via HashSet lookup.
-    pub fn check_permission(
-        &self,
-        origin: &str,
-        method: BrowserMethod,
-    ) -> Result<(), String> {
+    pub fn check_permission(&self, origin: &str, method: BrowserMethod) -> Result<(), String> {
         // Check origin allowlist
         if !self.capabilities.allowed_origins.is_empty()
             && !self.capabilities.allowed_origins.iter().any(|allowed| {
-                origin == *allowed
-                    || (allowed.starts_with("*.") && origin.ends_with(&allowed[1..]))
+                origin == *allowed || (allowed.starts_with("*.") && origin.ends_with(&allowed[1..]))
             })
         {
             return Err(format!(

@@ -1,4 +1,3 @@
-
 //! Extended Tool Suite
 //!
 //! Network and execution tools that complement the typed tool system.
@@ -29,7 +28,9 @@ pub struct WebFetchTool;
 
 #[async_trait]
 impl Tool for WebFetchTool {
-    fn name(&self) -> &str { "web_fetch" }
+    fn name(&self) -> &str {
+        "web_fetch"
+    }
 
     fn schema(&self) -> Value {
         serde_json::json!({
@@ -47,13 +48,28 @@ impl Tool for WebFetchTool {
         "Fetch a URL and return its content. Supports text extraction from HTML."
     }
 
-    fn is_mutating(&self) -> bool { false }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let url = args.get("url").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("url is required".into()))?;
-        let max_bytes = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(100_000) as usize;
-        let extract_text = args.get("extract_text").and_then(|v| v.as_bool()).unwrap_or(true);
+        let max_bytes = args
+            .get("max_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(100_000) as usize;
+        let extract_text = args
+            .get("extract_text")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -67,13 +83,16 @@ impl Tool for WebFetchTool {
         };
 
         let status = response.status();
-        let content_type = response.headers()
+        let content_type = response
+            .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
 
-        let body = response.bytes().await
+        let body = response
+            .bytes()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Read body failed: {e}")))?;
 
         let body = if body.len() > max_bytes {
@@ -109,8 +128,12 @@ fn strip_html_tags(html: &str) -> String {
                 in_tag = true;
                 // Check for script/style opening
                 let rest = &html[html.len().saturating_sub(result.len())..];
-                if rest.starts_with("<script") { in_script = true; }
-                if rest.starts_with("<style") { in_style = true; }
+                if rest.starts_with("<script") {
+                    in_script = true;
+                }
+                if rest.starts_with("<style") {
+                    in_style = true;
+                }
             }
             '>' => {
                 in_tag = false;
@@ -119,8 +142,12 @@ fn strip_html_tags(html: &str) -> String {
             _ if in_tag => continue,
             _ if in_script || in_style => {
                 // Check for closing tags
-                if html[..].contains("</script>") { in_script = false; }
-                if html[..].contains("</style>") { in_style = false; }
+                if html[..].contains("</script>") {
+                    in_script = false;
+                }
+                if html[..].contains("</style>") {
+                    in_style = false;
+                }
                 continue;
             }
             '\n' | '\r' | '\t' => {
@@ -157,7 +184,9 @@ pub struct WebSearchTool;
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    fn name(&self) -> &str { "web_search" }
+    fn name(&self) -> &str {
+        "web_search"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -168,13 +197,27 @@ impl Tool for WebSearchTool {
             "required": ["query"]
         })
     }
-    fn description(&self) -> &str { "Search the web and return results with titles, URLs, and snippets." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Search the web and return results with titles, URLs, and snippets."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let query = args.get("query").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("query is required".into()))?;
-        let max_results = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5) as usize;
 
         // Check for API key in environment
         let api_key = std::env::var("PIPIT_SEARCH_API_KEY")
@@ -191,7 +234,8 @@ impl Tool for WebSearchTool {
 
                 let url = format!(
                     "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-                    urlencoding::encode(query), max_results
+                    urlencoding::encode(query),
+                    max_results
                 );
 
                 let response = tokio::select! {
@@ -206,38 +250,59 @@ impl Tool for WebSearchTool {
                 if !response.status().is_success() {
                     let status = response.status();
                     let body = response.text().await.unwrap_or_default();
-                    return Ok(ToolResult::text(format!("Search API returned {status}: {body}")));
+                    return Ok(ToolResult::text(format!(
+                        "Search API returned {status}: {body}"
+                    )));
                 }
 
-                let data: Value = response.json().await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Parse search results: {e}")))?;
+                let data: Value = response.json().await.map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Parse search results: {e}"))
+                })?;
 
                 let mut results = String::new();
-                if let Some(web) = data.get("web").and_then(|w| w.get("results")).and_then(|r| r.as_array()) {
+                if let Some(web) = data
+                    .get("web")
+                    .and_then(|w| w.get("results"))
+                    .and_then(|r| r.as_array())
+                {
                     for (i, item) in web.iter().take(max_results).enumerate() {
-                        let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("(no title)");
+                        let title = item
+                            .get("title")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("(no title)");
                         let url = item.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                        let description = item.get("description").and_then(|d| d.as_str()).unwrap_or("");
-                        results.push_str(&format!("{}. {}\n   {}\n   {}\n\n", i+1, title, url, description));
+                        let description = item
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("");
+                        results.push_str(&format!(
+                            "{}. {}\n   {}\n   {}\n\n",
+                            i + 1,
+                            title,
+                            url,
+                            description
+                        ));
                     }
                 }
 
                 if results.is_empty() {
-                    Ok(ToolResult::text(format!("No results found for: \"{query}\"")))
+                    Ok(ToolResult::text(format!(
+                        "No results found for: \"{query}\""
+                    )))
                 } else {
-                    Ok(ToolResult::text(format!("Search results for \"{query}\":\n\n{results}")))
+                    Ok(ToolResult::text(format!(
+                        "Search results for \"{query}\":\n\n{results}"
+                    )))
                 }
             }
-            Err(_) => {
-                Ok(ToolResult::text(format!(
-                    "Search results for: \"{query}\"\n\n\
+            Err(_) => Ok(ToolResult::text(format!(
+                "Search results for: \"{query}\"\n\n\
                      [Web search requires an API key. Set one of:\n\
                      - PIPIT_SEARCH_API_KEY (Brave Search)\n\
                      - BRAVE_SEARCH_API_KEY\n\
                      - SERPAPI_API_KEY\n\
                      Get a free key at https://api.search.brave.com/register]"
-                )))
-            }
+            ))),
         }
     }
 }
@@ -250,7 +315,9 @@ pub struct SleepTool;
 
 #[async_trait]
 impl Tool for SleepTool {
-    fn name(&self) -> &str { "sleep" }
+    fn name(&self) -> &str {
+        "sleep"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -261,21 +328,37 @@ impl Tool for SleepTool {
             "required": ["seconds"]
         })
     }
-    fn description(&self) -> &str { "Wait for a specified duration. Useful for polling or rate limiting." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Wait for a specified duration. Useful for polling or rate limiting."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let seconds = args.get("seconds").and_then(|v| v.as_f64())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let seconds = args
+            .get("seconds")
+            .and_then(|v| v.as_f64())
             .ok_or_else(|| ToolError::InvalidArgs("seconds is required".into()))?;
         let seconds = seconds.min(300.0).max(0.0);
-        let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("waiting");
+        let reason = args
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("waiting");
 
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs_f64(seconds)) => {},
             _ = cancel.cancelled() => return Err(ToolError::ExecutionFailed("Cancelled".into())),
         }
 
-        Ok(ToolResult::text(format!("Slept for {seconds:.1}s ({reason})")))
+        Ok(ToolResult::text(format!(
+            "Slept for {seconds:.1}s ({reason})"
+        )))
     }
 }
 
@@ -297,11 +380,18 @@ struct TodoItem {
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-enum TodoStatus { Pending, InProgress, Done }
+enum TodoStatus {
+    Pending,
+    InProgress,
+    Done,
+}
 
 impl TodoTool {
     pub fn new() -> Self {
-        Self { items: Arc::new(Mutex::new(Vec::new())), persist_path: None }
+        Self {
+            items: Arc::new(Mutex::new(Vec::new())),
+            persist_path: None,
+        }
     }
 
     pub fn with_project_root(project_root: &std::path::Path) -> Self {
@@ -333,7 +423,9 @@ impl TodoTool {
 
 #[async_trait]
 impl Tool for TodoTool {
-    fn name(&self) -> &str { "todo" }
+    fn name(&self) -> &str {
+        "todo"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -346,18 +438,31 @@ impl Tool for TodoTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "Manage a persistent todo list for tracking sub-tasks during a session." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Manage a persistent todo list for tracking sub-tasks during a session."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
 
         let mut items = self.items.lock().unwrap();
 
         match action {
             "add" => {
-                let text = args.get("text").and_then(|v| v.as_str())
+                let text = args
+                    .get("text")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("text is required for add".into()))?;
                 let id = items.len() + 1;
                 items.push(TodoItem {
@@ -374,38 +479,56 @@ impl Tool for TodoTool {
                 if items.is_empty() {
                     return Ok(ToolResult::text("No todos."));
                 }
-                let list: Vec<String> = items.iter().map(|item| {
-                    let status = match item.status {
-                        TodoStatus::Pending => "[ ]",
-                        TodoStatus::InProgress => "[~]",
-                        TodoStatus::Done => "[x]",
-                    };
-                    format!("#{} {} {}", item.id, status, item.text)
-                }).collect();
+                let list: Vec<String> = items
+                    .iter()
+                    .map(|item| {
+                        let status = match item.status {
+                            TodoStatus::Pending => "[ ]",
+                            TodoStatus::InProgress => "[~]",
+                            TodoStatus::Done => "[x]",
+                        };
+                        format!("#{} {} {}", item.id, status, item.text)
+                    })
+                    .collect();
                 Ok(ToolResult::text(list.join("\n")))
             }
             "update" => {
-                let id = args.get("id").and_then(|v| v.as_u64())
-                    .ok_or_else(|| ToolError::InvalidArgs("id is required for update".into()))? as usize;
-                let status_str = args.get("status").and_then(|v| v.as_str()).unwrap_or("done");
+                let id = args
+                    .get("id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ToolError::InvalidArgs("id is required for update".into()))?
+                    as usize;
+                let status_str = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("done");
                 let status = match status_str {
                     "pending" => TodoStatus::Pending,
                     "in_progress" => TodoStatus::InProgress,
                     "done" => TodoStatus::Done,
-                    _ => return Err(ToolError::InvalidArgs(format!("Unknown status: {status_str}"))),
+                    _ => {
+                        return Err(ToolError::InvalidArgs(format!(
+                            "Unknown status: {status_str}"
+                        )));
+                    }
                 };
                 if let Some(item) = items.iter_mut().find(|i| i.id == id) {
                     item.status = status;
                     drop(items);
                     self.persist();
-                    Ok(ToolResult::mutating(format!("Updated todo #{id} → {status_str}")))
+                    Ok(ToolResult::mutating(format!(
+                        "Updated todo #{id} → {status_str}"
+                    )))
                 } else {
                     Err(ToolError::InvalidArgs(format!("Todo #{id} not found")))
                 }
             }
             "remove" => {
-                let id = args.get("id").and_then(|v| v.as_u64())
-                    .ok_or_else(|| ToolError::InvalidArgs("id is required for remove".into()))? as usize;
+                let id = args
+                    .get("id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ToolError::InvalidArgs("id is required for remove".into()))?
+                    as usize;
                 let before = items.len();
                 items.retain(|i| i.id != id);
                 if items.len() < before {
@@ -429,7 +552,9 @@ pub struct ConfigTool;
 
 #[async_trait]
 impl Tool for ConfigTool {
-    fn name(&self) -> &str { "config" }
+    fn name(&self) -> &str {
+        "config"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -441,17 +566,27 @@ impl Tool for ConfigTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "View or modify runtime configuration settings." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "View or modify runtime configuration settings."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
 
         match action {
-            "list" => {
-                Ok(ToolResult::text(
-                    "Available config keys:\n\
+            "list" => Ok(ToolResult::text(
+                "Available config keys:\n\
                      model.default_model — Current model ID\n\
                      model.context_window — Context window size\n\
                      approval — Permission mode (default/plan/auto/yolo)\n\
@@ -459,43 +594,57 @@ impl Tool for ConfigTool {
                      context.compression_threshold — When to trigger compaction\n\
                      ui.theme — UI theme\n\
                      ui.show_thinking — Show model thinking\n\
-                     ui.show_cost — Show cost tracking"
-                ))
-            }
+                     ui.show_cost — Show cost tracking",
+            )),
             "get" => {
-                let key = args.get("key").and_then(|v| v.as_str())
+                let key = args
+                    .get("key")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("key is required for get".into()))?;
                 // Read from project config file
                 let config_path = _ctx.project_root.join(".pipit").join("config.toml");
                 if config_path.exists() {
-                    let content = tokio::fs::read_to_string(&config_path).await
+                    let content = tokio::fs::read_to_string(&config_path)
+                        .await
                         .map_err(|e| ToolError::ExecutionFailed(format!("Read config: {e}")))?;
-                    let config: toml::Value = content.parse()
+                    let config: toml::Value = content
+                        .parse()
                         .map_err(|e| ToolError::ExecutionFailed(format!("Parse config: {e}")))?;
                     // Navigate dotted key path
                     let parts: Vec<&str> = key.split('.').collect();
                     let mut current = &config;
                     for part in &parts {
-                        current = current.get(part)
-                            .ok_or_else(|| ToolError::InvalidArgs(format!("Key not found: {key}")))?;
+                        current = current.get(part).ok_or_else(|| {
+                            ToolError::InvalidArgs(format!("Key not found: {key}"))
+                        })?;
                     }
                     Ok(ToolResult::text(format!("{key} = {current}")))
                 } else {
-                    Ok(ToolResult::text(format!("No project config at {}. Use 'set' to create.", config_path.display())))
+                    Ok(ToolResult::text(format!(
+                        "No project config at {}. Use 'set' to create.",
+                        config_path.display()
+                    )))
                 }
             }
             "set" => {
-                let key = args.get("key").and_then(|v| v.as_str())
+                let key = args
+                    .get("key")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("key is required for set".into()))?;
-                let value = args.get("value").and_then(|v| v.as_str())
+                let value = args
+                    .get("value")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("value is required for set".into()))?;
                 let config_path = _ctx.project_root.join(".pipit").join("config.toml");
                 let _ = std::fs::create_dir_all(_ctx.project_root.join(".pipit"));
 
                 let mut config: toml::Value = if config_path.exists() {
-                    let content = tokio::fs::read_to_string(&config_path).await
+                    let content = tokio::fs::read_to_string(&config_path)
+                        .await
                         .map_err(|e| ToolError::ExecutionFailed(format!("Read config: {e}")))?;
-                    content.parse().unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                    content
+                        .parse()
+                        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
                 } else {
                     toml::Value::Table(toml::map::Map::new())
                 };
@@ -512,7 +661,8 @@ impl Tool for ConfigTool {
                     } else {
                         // Navigate/create intermediate tables
                         if let toml::Value::Table(table) = current {
-                            current = table.entry(part.to_string())
+                            current = table
+                                .entry(part.to_string())
                                 .or_insert(toml::Value::Table(toml::map::Map::new()));
                         }
                     }
@@ -520,10 +670,14 @@ impl Tool for ConfigTool {
 
                 let serialized = toml::to_string_pretty(&config)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize config: {e}")))?;
-                tokio::fs::write(&config_path, &serialized).await
+                tokio::fs::write(&config_path, &serialized)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write config: {e}")))?;
 
-                Ok(ToolResult::mutating(format!("Set config '{key}' = '{value}' (saved to {})", config_path.display())))
+                Ok(ToolResult::mutating(format!(
+                    "Set config '{key}' = '{value}' (saved to {})",
+                    config_path.display()
+                )))
             }
             _ => Err(ToolError::InvalidArgs(format!("Unknown action: {action}"))),
         }
@@ -550,13 +704,17 @@ struct TaskRecord {
 
 impl TaskTool {
     pub fn new() -> Self {
-        Self { tasks: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            tasks: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
 #[async_trait]
 impl Tool for TaskTool {
-    fn name(&self) -> &str { "task" }
+    fn name(&self) -> &str {
+        "task"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -570,19 +728,39 @@ impl Tool for TaskTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "Create and manage background tasks (bash commands, sub-agents)." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Create and manage background tasks (bash commands, sub-agents)."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
 
         match action {
             "create" => {
-                let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("unnamed task");
-                let task_type = args.get("task_type").and_then(|v| v.as_str()).unwrap_or("bash");
+                let desc = args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unnamed task");
+                let task_type = args
+                    .get("task_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("bash");
                 let command = args.get("command").and_then(|v| v.as_str());
-                let id = format!("task_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
+                let id = format!(
+                    "task_{}",
+                    uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+                );
 
                 // Create task output directory
                 let task_dir = ctx.project_root.join(".pipit").join("tasks");
@@ -593,10 +771,12 @@ impl Tool for TaskTool {
                 if task_type == "bash" {
                     if let Some(cmd) = command {
                         // Spawn real background process
-                        let log_file = std::fs::File::create(&log_path)
-                            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create log: {e}")))?;
-                        let log_err = log_file.try_clone()
-                            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to clone log: {e}")))?;
+                        let log_file = std::fs::File::create(&log_path).map_err(|e| {
+                            ToolError::ExecutionFailed(format!("Failed to create log: {e}"))
+                        })?;
+                        let log_err = log_file.try_clone().map_err(|e| {
+                            ToolError::ExecutionFailed(format!("Failed to clone log: {e}"))
+                        })?;
 
                         let child = tokio::process::Command::new("sh")
                             .args(["-c", cmd])
@@ -604,7 +784,9 @@ impl Tool for TaskTool {
                             .stdout(std::process::Stdio::from(log_file))
                             .stderr(std::process::Stdio::from(log_err))
                             .spawn()
-                            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to spawn: {e}")))?;
+                            .map_err(|e| {
+                                ToolError::ExecutionFailed(format!("Failed to spawn: {e}"))
+                            })?;
 
                         // Save PID
                         if let Some(pid) = child.id() {
@@ -644,7 +826,9 @@ impl Tool for TaskTool {
                             log_path.display()
                         )))
                     } else {
-                        Err(ToolError::InvalidArgs("command is required for bash tasks".into()))
+                        Err(ToolError::InvalidArgs(
+                            "command is required for bash tasks".into(),
+                        ))
                     }
                 } else {
                     let mut tasks = self.tasks.lock().unwrap();
@@ -664,24 +848,38 @@ impl Tool for TaskTool {
                 if tasks.is_empty() {
                     return Ok(ToolResult::text("No active tasks."));
                 }
-                let lines: Vec<String> = tasks.iter().map(|t| {
-                    format!("{} [{}] {} — {}", t.id, t.status, t.task_type, t.description)
-                }).collect();
+                let lines: Vec<String> = tasks
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "{} [{}] {} — {}",
+                            t.id, t.status, t.task_type, t.description
+                        )
+                    })
+                    .collect();
                 Ok(ToolResult::text(lines.join("\n")))
             }
             "get" | "stop" => {
-                let task_id = args.get("task_id").and_then(|v| v.as_str())
+                let task_id = args
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("task_id is required".into()))?;
                 let mut tasks = self.tasks.lock().unwrap();
                 if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
                     if action == "stop" {
                         // Kill the process if it has a PID file
-                        let pid_path = ctx.project_root.join(".pipit").join("tasks").join(format!("{task_id}.pid"));
+                        let pid_path = ctx
+                            .project_root
+                            .join(".pipit")
+                            .join("tasks")
+                            .join(format!("{task_id}.pid"));
                         if pid_path.exists() {
                             if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
                                 if let Ok(pid) = pid_str.trim().parse::<i32>() {
                                     // Send SIGTERM
-                                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                                    unsafe {
+                                        libc::kill(pid, libc::SIGTERM);
+                                    }
                                 }
                             }
                         }
@@ -717,7 +915,9 @@ pub struct BriefTool;
 
 #[async_trait]
 impl Tool for BriefTool {
-    fn name(&self) -> &str { "brief" }
+    fn name(&self) -> &str {
+        "brief"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -726,11 +926,23 @@ impl Tool for BriefTool {
             }
         })
     }
-    fn description(&self) -> &str { "Generate a summary of recent session activity, changes made, or conversation context." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Generate a summary of recent session activity, changes made, or conversation context."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("session");
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let scope = args
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or("session");
 
         match scope {
             "changes" => {
@@ -748,12 +960,10 @@ impl Tool for BriefTool {
                     Ok(ToolResult::text(format!("Changes since HEAD:\n{diff}")))
                 }
             }
-            _ => {
-                Ok(ToolResult::text(
-                    "Session summary: Use /brief in the REPL for a full summary with \
-                     token usage, cost, files modified, and conversation highlights."
-                ))
-            }
+            _ => Ok(ToolResult::text(
+                "Session summary: Use /brief in the REPL for a full summary with \
+                     token usage, cost, files modified, and conversation highlights.",
+            )),
         }
     }
 }
@@ -777,13 +987,17 @@ struct CronEntry {
 
 impl CronTool {
     pub fn new() -> Self {
-        Self { schedules: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            schedules: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
 #[async_trait]
 impl Tool for CronTool {
-    fn name(&self) -> &str { "cron" }
+    fn name(&self) -> &str {
+        "cron"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -797,21 +1011,42 @@ impl Tool for CronTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "Create, list, or delete scheduled recurring tasks." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Create, list, or delete scheduled recurring tasks."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
 
         match action {
             "create" => {
-                let schedule = args.get("schedule").and_then(|v| v.as_str())
+                let schedule = args
+                    .get("schedule")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("schedule is required".into()))?;
-                let command = args.get("command").and_then(|v| v.as_str())
+                let command = args
+                    .get("command")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("command is required".into()))?;
-                let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("scheduled task");
-                let id = format!("cron_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
+                let desc = args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("scheduled task");
+                let id = format!(
+                    "cron_{}",
+                    uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+                );
                 let mut schedules = self.schedules.lock().unwrap();
                 schedules.push(CronEntry {
                     id: id.clone(),
@@ -820,21 +1055,31 @@ impl Tool for CronTool {
                     description: desc.to_string(),
                     enabled: true,
                 });
-                Ok(ToolResult::mutating(format!("Created cron job {id}: '{schedule}' → {command}")))
+                Ok(ToolResult::mutating(format!(
+                    "Created cron job {id}: '{schedule}' → {command}"
+                )))
             }
             "list" => {
                 let schedules = self.schedules.lock().unwrap();
                 if schedules.is_empty() {
                     return Ok(ToolResult::text("No scheduled tasks."));
                 }
-                let lines: Vec<String> = schedules.iter().map(|s| {
-                    let status = if s.enabled { "active" } else { "paused" };
-                    format!("{} [{}] {} — {} ({})", s.id, status, s.schedule, s.description, s.command)
-                }).collect();
+                let lines: Vec<String> = schedules
+                    .iter()
+                    .map(|s| {
+                        let status = if s.enabled { "active" } else { "paused" };
+                        format!(
+                            "{} [{}] {} — {} ({})",
+                            s.id, status, s.schedule, s.description, s.command
+                        )
+                    })
+                    .collect();
                 Ok(ToolResult::text(lines.join("\n")))
             }
             "delete" => {
-                let cron_id = args.get("cron_id").and_then(|v| v.as_str())
+                let cron_id = args
+                    .get("cron_id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("cron_id is required".into()))?;
                 let mut schedules = self.schedules.lock().unwrap();
                 let before = schedules.len();
@@ -842,7 +1087,9 @@ impl Tool for CronTool {
                 if schedules.len() < before {
                     Ok(ToolResult::mutating(format!("Deleted cron job {cron_id}")))
                 } else {
-                    Err(ToolError::InvalidArgs(format!("Cron job {cron_id} not found")))
+                    Err(ToolError::InvalidArgs(format!(
+                        "Cron job {cron_id} not found"
+                    )))
                 }
             }
             _ => Err(ToolError::InvalidArgs(format!("Unknown action: {action}"))),
@@ -863,7 +1110,9 @@ pub struct TeamTool;
 
 #[async_trait]
 impl Tool for TeamTool {
-    fn name(&self) -> &str { "team" }
+    fn name(&self) -> &str {
+        "team"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -876,11 +1125,22 @@ impl Tool for TeamTool {
             "required": ["action"]
         })
     }
-    fn description(&self) -> &str { "Manage team shared context, conventions, and memory. Create, list, share work offline; sync requires pipit-daemon." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Manage team shared context, conventions, and memory. Create, list, share work offline; sync requires pipit-daemon."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
 
         let project_root = &ctx.project_root;
@@ -890,56 +1150,79 @@ impl Tool for TeamTool {
 
         match action {
             "create" => {
-                let name = args.get("name").and_then(|v| v.as_str())
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("name is required for create".into()))?;
 
                 // Ensure directories exist
-                std::fs::create_dir_all(&team_dir)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create team dir: {}", e)))?;
+                std::fs::create_dir_all(&team_dir).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to create team dir: {}", e))
+                })?;
 
                 // Read or create teams.toml
                 let mut teams: toml::Value = if teams_path.exists() {
-                    let content = std::fs::read_to_string(&teams_path)
-                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read teams.toml: {}", e)))?;
-                    content.parse::<toml::Value>()
+                    let content = std::fs::read_to_string(&teams_path).map_err(|e| {
+                        ToolError::ExecutionFailed(format!("Failed to read teams.toml: {}", e))
+                    })?;
+                    content
+                        .parse::<toml::Value>()
                         .unwrap_or(toml::Value::Table(toml::map::Map::new()))
                 } else {
                     toml::Value::Table(toml::map::Map::new())
                 };
 
                 // Add team entry
-                let team_id = format!("team-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0000"));
+                let team_id = format!(
+                    "team-{}",
+                    uuid::Uuid::new_v4()
+                        .to_string()
+                        .split('-')
+                        .next()
+                        .unwrap_or("0000")
+                );
                 if let toml::Value::Table(table) = &mut teams {
-                    let teams_arr = table.entry("teams".to_string())
+                    let teams_arr = table
+                        .entry("teams".to_string())
                         .or_insert(toml::Value::Array(Vec::new()));
                     if let toml::Value::Array(arr) = teams_arr {
                         let mut entry = toml::map::Map::new();
                         entry.insert("id".to_string(), toml::Value::String(team_id.clone()));
                         entry.insert("name".to_string(), toml::Value::String(name.to_string()));
-                        entry.insert("created_at".to_string(), toml::Value::String(
-                            chrono::Utc::now().to_rfc3339()
-                        ));
+                        entry.insert(
+                            "created_at".to_string(),
+                            toml::Value::String(chrono::Utc::now().to_rfc3339()),
+                        );
                         entry.insert("members".to_string(), toml::Value::Array(Vec::new()));
                         arr.push(toml::Value::Table(entry));
                     }
                 }
 
                 // Write teams.toml
-                let content = toml::to_string_pretty(&teams)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to serialize teams: {}", e)))?;
-                std::fs::write(&teams_path, &content)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write teams.toml: {}", e)))?;
+                let content = toml::to_string_pretty(&teams).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to serialize teams: {}", e))
+                })?;
+                std::fs::write(&teams_path, &content).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to write teams.toml: {}", e))
+                })?;
 
                 // Create team shared.toml
                 let shared_path = team_dir.join("shared.toml");
                 if !shared_path.exists() {
-                    std::fs::write(&shared_path, "# Team shared context\n[shared]\n")
-                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create shared.toml: {}", e)))?;
+                    std::fs::write(&shared_path, "# Team shared context\n[shared]\n").map_err(
+                        |e| {
+                            ToolError::ExecutionFailed(format!(
+                                "Failed to create shared.toml: {}",
+                                e
+                            ))
+                        },
+                    )?;
                 }
 
                 Ok(ToolResult::text(format!(
                     "Created team '{}' (id: {}). Team config: {}\nShared context: {}",
-                    name, team_id,
+                    name,
+                    team_id,
                     teams_path.display(),
                     team_dir.join("shared.toml").display(),
                 )))
@@ -948,27 +1231,34 @@ impl Tool for TeamTool {
             "list" => {
                 if !teams_path.exists() {
                     return Ok(ToolResult::text(
-                        "No teams configured. Use `team create --name <name>` to create one.".to_string()
+                        "No teams configured. Use `team create --name <name>` to create one."
+                            .to_string(),
                     ));
                 }
 
-                let content = std::fs::read_to_string(&teams_path)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read teams.toml: {}", e)))?;
-                let teams: toml::Value = content.parse()
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to parse teams.toml: {}", e)))?;
+                let content = std::fs::read_to_string(&teams_path).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to read teams.toml: {}", e))
+                })?;
+                let teams: toml::Value = content.parse().map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to parse teams.toml: {}", e))
+                })?;
 
                 let mut output = String::from("Teams:\n");
                 if let Some(toml::Value::Array(arr)) = teams.get("teams") {
                     for (i, team) in arr.iter().enumerate() {
                         let name = team.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let id = team.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                        let members = team.get("members")
+                        let members = team
+                            .get("members")
                             .and_then(|v| v.as_array())
                             .map(|a| a.len())
                             .unwrap_or(0);
                         output.push_str(&format!(
                             "  {}. {} (id: {}, {} members)\n",
-                            i + 1, name, id, members
+                            i + 1,
+                            name,
+                            id,
+                            members
                         ));
                     }
                 } else {
@@ -979,9 +1269,14 @@ impl Tool for TeamTool {
                 let shared_path = team_dir.join("shared.toml");
                 if shared_path.exists() {
                     if let Ok(shared_content) = std::fs::read_to_string(&shared_path) {
-                        let shared: toml::Value = shared_content.parse().unwrap_or(toml::Value::Table(toml::map::Map::new()));
+                        let shared: toml::Value = shared_content
+                            .parse()
+                            .unwrap_or(toml::Value::Table(toml::map::Map::new()));
                         if let Some(toml::Value::Table(table)) = shared.get("shared") {
-                            output.push_str(&format!("\nShared context ({} entries):\n", table.len()));
+                            output.push_str(&format!(
+                                "\nShared context ({} entries):\n",
+                                table.len()
+                            ));
                             for (key, value) in table.iter().take(10) {
                                 let val_owned = value.to_string();
                                 let val_str = value.as_str().unwrap_or(&val_owned);
@@ -996,9 +1291,13 @@ impl Tool for TeamTool {
             }
 
             "share" => {
-                let key = args.get("key").and_then(|v| v.as_str())
+                let key = args
+                    .get("key")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("key is required for share".into()))?;
-                let value = args.get("value").and_then(|v| v.as_str())
+                let value = args
+                    .get("value")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("value is required for share".into()))?;
 
                 // Secret scanning — reject if secrets detected
@@ -1010,33 +1309,43 @@ impl Tool for TeamTool {
                 }
 
                 // Ensure team dir exists
-                std::fs::create_dir_all(&team_dir)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create team dir: {}", e)))?;
+                std::fs::create_dir_all(&team_dir).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to create team dir: {}", e))
+                })?;
 
                 let shared_path = team_dir.join("shared.toml");
                 let mut shared: toml::Value = if shared_path.exists() {
-                    let content = std::fs::read_to_string(&shared_path)
-                        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read shared.toml: {}", e)))?;
-                    content.parse().unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                    let content = std::fs::read_to_string(&shared_path).map_err(|e| {
+                        ToolError::ExecutionFailed(format!("Failed to read shared.toml: {}", e))
+                    })?;
+                    content
+                        .parse()
+                        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
                 } else {
                     let mut root = toml::map::Map::new();
-                    root.insert("shared".to_string(), toml::Value::Table(toml::map::Map::new()));
+                    root.insert(
+                        "shared".to_string(),
+                        toml::Value::Table(toml::map::Map::new()),
+                    );
                     toml::Value::Table(root)
                 };
 
                 // Set the key-value pair
                 if let toml::Value::Table(root) = &mut shared {
-                    let section = root.entry("shared".to_string())
+                    let section = root
+                        .entry("shared".to_string())
                         .or_insert(toml::Value::Table(toml::map::Map::new()));
                     if let toml::Value::Table(table) = section {
                         table.insert(key.to_string(), toml::Value::String(value.to_string()));
                     }
                 }
 
-                let content = toml::to_string_pretty(&shared)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to serialize: {}", e)))?;
-                std::fs::write(&shared_path, &content)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Failed to write shared.toml: {}", e)))?;
+                let content = toml::to_string_pretty(&shared).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to serialize: {}", e))
+                })?;
+                std::fs::write(&shared_path, &content).map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to write shared.toml: {}", e))
+                })?;
 
                 Ok(ToolResult::text(format!(
                     "Shared '{key}' to team context at {}",
@@ -1055,11 +1364,10 @@ impl Tool for TeamTool {
                 ))
             }
 
-            other => {
-                Ok(ToolResult::text(format!(
-                    "Unknown team action '{}'. Available: create, list, share, sync", other
-                )))
-            }
+            other => Ok(ToolResult::text(format!(
+                "Unknown team action '{}'. Available: create, list, share, sync",
+                other
+            ))),
         }
     }
 }
@@ -1068,16 +1376,16 @@ impl Tool for TeamTool {
 /// Checks for common secret patterns (API keys, tokens, passwords).
 fn team_tool_scan_secrets(value: &str) -> bool {
     let patterns = [
-        "sk-",         // OpenAI keys
-        "sk-ant-",     // Anthropic keys
-        "ghp_",        // GitHub PATs
-        "gho_",        // GitHub OAuth
-        "glpat-",      // GitLab PAT
-        "AKIA",        // AWS access key
-        "xoxb-",       // Slack bot token
-        "xoxp-",       // Slack user token
-        "-----BEGIN",  // PEM private keys
-        "Bearer ",     // Bearer tokens
+        "sk-",        // OpenAI keys
+        "sk-ant-",    // Anthropic keys
+        "ghp_",       // GitHub PATs
+        "gho_",       // GitHub OAuth
+        "glpat-",     // GitLab PAT
+        "AKIA",       // AWS access key
+        "xoxb-",      // Slack bot token
+        "xoxp-",      // Slack user token
+        "-----BEGIN", // PEM private keys
+        "Bearer ",    // Bearer tokens
     ];
 
     // Check for known prefixes
@@ -1089,7 +1397,10 @@ fn team_tool_scan_secrets(value: &str) -> bool {
 
     // Check for base64-like high entropy strings (>40 chars, alphanumeric)
     if value.len() > 40 {
-        let alnum_count = value.chars().filter(|c| c.is_alphanumeric() || *c == '+' || *c == '/' || *c == '=').count();
+        let alnum_count = value
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
+            .count();
         if alnum_count as f64 / value.len() as f64 > 0.85 {
             return true;
         }
@@ -1106,7 +1417,9 @@ pub struct NotebookEditTool;
 
 #[async_trait]
 impl Tool for NotebookEditTool {
-    fn name(&self) -> &str { "notebook_edit" }
+    fn name(&self) -> &str {
+        "notebook_edit"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1120,17 +1433,31 @@ impl Tool for NotebookEditTool {
             "required": ["path", "action"]
         })
     }
-    fn description(&self) -> &str { "Read and edit Jupyter notebook cells (.ipynb files)." }
-    fn is_mutating(&self) -> bool { true }
+    fn description(&self) -> &str {
+        "Read and edit Jupyter notebook cells (.ipynb files)."
+    }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let path = args.get("path").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("path is required".into()))?;
-        let action = args.get("action").and_then(|v| v.as_str())
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("action is required".into()))?;
 
         let full_path = ctx.current_dir().join(path);
-        let content = tokio::fs::read_to_string(&full_path).await
+        let content = tokio::fs::read_to_string(&full_path)
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Read notebook failed: {e}")))?;
 
         let mut notebook: serde_json::Value = serde_json::from_str(&content)
@@ -1138,51 +1465,82 @@ impl Tool for NotebookEditTool {
 
         match action {
             "read" => {
-                let cells = notebook.get("cells").and_then(|c| c.as_array())
+                let cells = notebook
+                    .get("cells")
+                    .and_then(|c| c.as_array())
                     .ok_or_else(|| ToolError::ExecutionFailed("Invalid notebook format".into()))?;
                 let mut output = String::new();
                 for (i, cell) in cells.iter().enumerate() {
-                    let cell_type = cell.get("cell_type").and_then(|t| t.as_str()).unwrap_or("unknown");
-                    let source = cell.get("source").and_then(|s| s.as_array())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(""))
+                    let cell_type = cell
+                        .get("cell_type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
+                    let source = cell
+                        .get("source")
+                        .and_then(|s| s.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
                         .unwrap_or_default();
                     output.push_str(&format!("--- Cell {i} [{cell_type}] ---\n{source}\n\n"));
                 }
                 Ok(ToolResult::text(output))
             }
             "edit_cell" => {
-                let cell_index = args.get("cell_index").and_then(|v| v.as_u64())
-                    .ok_or_else(|| ToolError::InvalidArgs("cell_index is required".into()))? as usize;
-                let new_content = args.get("content").and_then(|v| v.as_str())
+                let cell_index = args
+                    .get("cell_index")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ToolError::InvalidArgs("cell_index is required".into()))?
+                    as usize;
+                let new_content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgs("content is required".into()))?;
 
-                let cells = notebook.get_mut("cells").and_then(|c| c.as_array_mut())
+                let cells = notebook
+                    .get_mut("cells")
+                    .and_then(|c| c.as_array_mut())
                     .ok_or_else(|| ToolError::ExecutionFailed("Invalid notebook".into()))?;
 
                 if cell_index >= cells.len() {
-                    return Err(ToolError::InvalidArgs(format!("Cell index {cell_index} out of range")));
+                    return Err(ToolError::InvalidArgs(format!(
+                        "Cell index {cell_index} out of range"
+                    )));
                 }
 
-                let lines: Vec<serde_json::Value> = new_content.lines()
+                let lines: Vec<serde_json::Value> = new_content
+                    .lines()
                     .map(|l| serde_json::Value::String(format!("{l}\n")))
                     .collect();
                 cells[cell_index]["source"] = serde_json::Value::Array(lines);
 
                 let serialized = serde_json::to_string_pretty(&notebook)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize failed: {e}")))?;
-                tokio::fs::write(&full_path, &serialized).await
+                tokio::fs::write(&full_path, &serialized)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {e}")))?;
 
-                Ok(ToolResult::mutating(format!("Edited cell {cell_index} in {path}")))
+                Ok(ToolResult::mutating(format!(
+                    "Edited cell {cell_index} in {path}"
+                )))
             }
             "add_cell" => {
                 let new_content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let cell_type = args.get("cell_type").and_then(|v| v.as_str()).unwrap_or("code");
+                let cell_type = args
+                    .get("cell_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("code");
 
-                let cells = notebook.get_mut("cells").and_then(|c| c.as_array_mut())
+                let cells = notebook
+                    .get_mut("cells")
+                    .and_then(|c| c.as_array_mut())
                     .ok_or_else(|| ToolError::ExecutionFailed("Invalid notebook".into()))?;
 
-                let lines: Vec<serde_json::Value> = new_content.lines()
+                let lines: Vec<serde_json::Value> = new_content
+                    .lines()
                     .map(|l| serde_json::Value::String(format!("{l}\n")))
                     .collect();
 
@@ -1198,30 +1556,43 @@ impl Tool for NotebookEditTool {
 
                 let serialized = serde_json::to_string_pretty(&notebook)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize failed: {e}")))?;
-                tokio::fs::write(&full_path, &serialized).await
+                tokio::fs::write(&full_path, &serialized)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {e}")))?;
 
-                Ok(ToolResult::mutating(format!("Added {cell_type} cell at index {idx} in {path}")))
+                Ok(ToolResult::mutating(format!(
+                    "Added {cell_type} cell at index {idx} in {path}"
+                )))
             }
             "delete_cell" => {
-                let cell_index = args.get("cell_index").and_then(|v| v.as_u64())
-                    .ok_or_else(|| ToolError::InvalidArgs("cell_index is required".into()))? as usize;
+                let cell_index = args
+                    .get("cell_index")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ToolError::InvalidArgs("cell_index is required".into()))?
+                    as usize;
 
-                let cells = notebook.get_mut("cells").and_then(|c| c.as_array_mut())
+                let cells = notebook
+                    .get_mut("cells")
+                    .and_then(|c| c.as_array_mut())
                     .ok_or_else(|| ToolError::ExecutionFailed("Invalid notebook".into()))?;
 
                 if cell_index >= cells.len() {
-                    return Err(ToolError::InvalidArgs(format!("Cell index {cell_index} out of range")));
+                    return Err(ToolError::InvalidArgs(format!(
+                        "Cell index {cell_index} out of range"
+                    )));
                 }
 
                 cells.remove(cell_index);
 
                 let serialized = serde_json::to_string_pretty(&notebook)
                     .map_err(|e| ToolError::ExecutionFailed(format!("Serialize failed: {e}")))?;
-                tokio::fs::write(&full_path, &serialized).await
+                tokio::fs::write(&full_path, &serialized)
+                    .await
                     .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {e}")))?;
 
-                Ok(ToolResult::mutating(format!("Deleted cell {cell_index} from {path}")))
+                Ok(ToolResult::mutating(format!(
+                    "Deleted cell {cell_index} from {path}"
+                )))
             }
             _ => Err(ToolError::InvalidArgs(format!("Unknown action: {action}"))),
         }
@@ -1246,7 +1617,9 @@ struct ToolIndexEntry {
 
 impl ToolSearchTool {
     pub fn new() -> Self {
-        Self { index: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            index: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     pub fn rebuild_index(&self, tools: &[(String, String)]) {
@@ -1266,7 +1639,9 @@ impl ToolSearchTool {
 fn categorize_tool(name: &str) -> String {
     match name {
         "bash" | "powershell" | "sleep" => "execution".to_string(),
-        "read_file" | "write_file" | "edit_file" | "multi_edit" | "notebook_edit" => "file".to_string(),
+        "read_file" | "write_file" | "edit_file" | "multi_edit" | "notebook_edit" => {
+            "file".to_string()
+        }
         "grep" | "glob" | "list_directory" => "search".to_string(),
         "web_fetch" | "web_search" => "network".to_string(),
         "todo" | "task" | "cron" | "brief" | "team" => "project".to_string(),
@@ -1306,7 +1681,9 @@ fn search_score(query: &str, text: &str) -> f64 {
 
 #[async_trait]
 impl Tool for ToolSearchTool {
-    fn name(&self) -> &str { "tool_search" }
+    fn name(&self) -> &str {
+        "tool_search"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1317,17 +1694,29 @@ impl Tool for ToolSearchTool {
             "required": ["query"]
         })
     }
-    fn description(&self) -> &str { "Search for available tools by keyword. Use when the tool list is too large to scan." }
-    fn is_mutating(&self) -> bool { false }
+    fn description(&self) -> &str {
+        "Search for available tools by keyword. Use when the tool list is too large to scan."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let query = args.get("query").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("query is required".into()))?;
         let category = args.get("category").and_then(|v| v.as_str());
 
         let index = self.index.lock().unwrap();
 
-        let mut results: Vec<(f64, &ToolIndexEntry)> = index.iter()
+        let mut results: Vec<(f64, &ToolIndexEntry)> = index
+            .iter()
             .filter(|e| category.map_or(true, |c| e.category == c))
             .map(|e| {
                 let score = search_score(query, &format!("{} {}", e.name, e.description));
@@ -1340,14 +1729,26 @@ impl Tool for ToolSearchTool {
         results.truncate(10);
 
         if results.is_empty() {
-            return Ok(ToolResult::text(format!("No tools found matching '{query}'")));
+            return Ok(ToolResult::text(format!(
+                "No tools found matching '{query}'"
+            )));
         }
 
-        let lines: Vec<String> = results.iter().map(|(score, e)| {
-            format!("{} [{}] (score: {:.1}) — {}", e.name, e.category, score, e.description)
-        }).collect();
+        let lines: Vec<String> = results
+            .iter()
+            .map(|(score, e)| {
+                format!(
+                    "{} [{}] (score: {:.1}) — {}",
+                    e.name, e.category, score, e.description
+                )
+            })
+            .collect();
 
-        Ok(ToolResult::text(format!("Found {} tools:\n{}", results.len(), lines.join("\n"))))
+        Ok(ToolResult::text(format!(
+            "Found {} tools:\n{}",
+            results.len(),
+            lines.join("\n")
+        )))
     }
 }
 
@@ -1359,11 +1760,11 @@ impl Tool for ToolSearchTool {
 ///
 /// Only registers tools that are NOT superseded by the typed tool system.
 /// Typed equivalents (task, brief, config, sleep, notebook, tool_search,
-/// schedule, plan_mode, worktree) are registered via `typed::register_all_typed_tools()`.
+/// schedule, plan_mode, worktree, web_search) are registered via `typed::register_all_typed_tools()`.
 pub fn register_extended_tools(registry: &mut crate::ToolRegistry) {
     use std::sync::Arc;
     registry.register(Arc::new(WebFetchTool));
-    registry.register(Arc::new(WebSearchTool));
+    // Note: WebSearchTool superseded by TypedWebSearchTool in typed/web.rs
     // Extra tools (PowerShell, REPL, Skill, LSP, RemoteTrigger)
     extra_tools::register_extra_tools(registry);
     // MCP resources, Auth, SendMessage, TaskOutput

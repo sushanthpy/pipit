@@ -119,7 +119,10 @@ impl TurnTimeline {
 
     /// Total verification time.
     pub fn verification_time(&self) -> Option<Duration> {
-        self.phase_duration(TimelinePhase::VerificationStart, TimelinePhase::VerificationEnd)
+        self.phase_duration(
+            TimelinePhase::VerificationStart,
+            TimelinePhase::VerificationEnd,
+        )
     }
 
     /// Persistence overhead.
@@ -142,14 +145,16 @@ impl TurnTimeline {
             (TimelinePhase::Dispatched, TimelinePhase::FirstToken),
             (TimelinePhase::FirstToken, TimelinePhase::ResponseComplete),
             (TimelinePhase::ToolStart, TimelinePhase::ToolEnd),
-            (TimelinePhase::VerificationStart, TimelinePhase::VerificationEnd),
+            (
+                TimelinePhase::VerificationStart,
+                TimelinePhase::VerificationEnd,
+            ),
             (TimelinePhase::PersistStart, TimelinePhase::PersistEnd),
         ];
 
-        adjacent_pairs.into_iter()
-            .filter_map(|(from, to)| {
-                self.phase_duration(from, to).map(|d| (to, d))
-            })
+        adjacent_pairs
+            .into_iter()
+            .filter_map(|(from, to)| self.phase_duration(from, to).map(|d| (to, d)))
             .collect()
     }
 }
@@ -276,7 +281,9 @@ impl UnifiedProfiler {
 
         // Check verification fraction in recent turns
         for timeline in self.recent_timelines(5) {
-            if let (Some(total), Some(verify)) = (timeline.total_duration, timeline.verification_time()) {
+            if let (Some(total), Some(verify)) =
+                (timeline.total_duration, timeline.verification_time())
+            {
                 let fraction = verify.as_millis() as f64 / total.as_millis() as f64;
                 if fraction > self.slo.verification_max_fraction {
                     violations.push(format!(
@@ -288,7 +295,8 @@ impl UnifiedProfiler {
                 }
             }
 
-            if let (Some(total), Some(persist)) = (timeline.total_duration, timeline.persist_time()) {
+            if let (Some(total), Some(persist)) = (timeline.total_duration, timeline.persist_time())
+            {
                 let fraction = persist.as_millis() as f64 / total.as_millis() as f64;
                 if fraction > self.slo.persist_max_fraction {
                     violations.push(format!(

@@ -93,7 +93,11 @@ pub enum TransportFeature {
 impl TransportCapabilities {
     pub fn full() -> Self {
         Self {
-            transports: vec![TransportKind::WebSocket, TransportKind::Sse, TransportKind::HttpPoll],
+            transports: vec![
+                TransportKind::WebSocket,
+                TransportKind::Sse,
+                TransportKind::HttpPoll,
+            ],
             features: vec![
                 TransportFeature::Compression,
                 TransportFeature::MessageReplay,
@@ -109,12 +113,15 @@ impl TransportCapabilities {
         let mut my_transports = self.transports.clone();
         my_transports.sort_by(|a, b| b.cmp(a)); // highest priority first
 
-        let selected = my_transports.iter()
+        let selected = my_transports
+            .iter()
             .find(|t| peer.transports.contains(t))
             .copied()
             .unwrap_or(TransportKind::HttpPoll);
 
-        let features: Vec<TransportFeature> = self.features.iter()
+        let features: Vec<TransportFeature> = self
+            .features
+            .iter()
             .filter(|f| peer.features.contains(f))
             .copied()
             .collect();
@@ -239,7 +246,10 @@ mod tests {
     fn transport_negotiation() {
         let client = TransportCapabilities {
             transports: vec![TransportKind::WebSocket, TransportKind::Sse],
-            features: vec![TransportFeature::Compression, TransportFeature::MessageReplay],
+            features: vec![
+                TransportFeature::Compression,
+                TransportFeature::MessageReplay,
+            ],
             max_message_size: 1024 * 1024,
             protocol_version: 2,
         };
@@ -252,7 +262,11 @@ mod tests {
         let negotiated = client.negotiate(&server);
         assert_eq!(negotiated.transport, TransportKind::Sse); // highest mutual
         assert!(negotiated.features.contains(&TransportFeature::Compression));
-        assert!(!negotiated.features.contains(&TransportFeature::MessageReplay));
+        assert!(
+            !negotiated
+                .features
+                .contains(&TransportFeature::MessageReplay)
+        );
         assert_eq!(negotiated.max_message_size, 512 * 1024);
     }
 

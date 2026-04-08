@@ -76,16 +76,30 @@ pub enum CslConstraint {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum CslCmp {
-    Le, Lt, Ge, Gt, Eq, Ne,
+    Le,
+    Lt,
+    Ge,
+    Gt,
+    Eq,
+    Ne,
 }
 
 impl CslSpec {
     pub fn new(name: &str) -> Self {
-        Self { name: name.into(), variables: Vec::new(), constraints: Vec::new(), functions: Vec::new() }
+        Self {
+            name: name.into(),
+            variables: Vec::new(),
+            constraints: Vec::new(),
+            functions: Vec::new(),
+        }
     }
 
     pub fn add_variable(&mut self, name: &str, var_type: CslType, desc: &str) {
-        self.variables.push(CslVariable { name: name.into(), var_type, description: desc.into() });
+        self.variables.push(CslVariable {
+            name: name.into(),
+            var_type,
+            description: desc.into(),
+        });
     }
 
     pub fn add_constraint(&mut self, c: CslConstraint) {
@@ -94,7 +108,10 @@ impl CslSpec {
 
     /// Count constraints needing human review.
     pub fn review_count(&self) -> usize {
-        self.constraints.iter().filter(|c| matches!(c, CslConstraint::ReviewRequired { .. })).count()
+        self.constraints
+            .iter()
+            .filter(|c| matches!(c, CslConstraint::ReviewRequired { .. }))
+            .count()
     }
 
     /// Generate property-based test inputs via Hit-and-Run sampling.
@@ -103,11 +120,15 @@ impl CslSpec {
         let mut rng = rand::thread_rng();
         let mut inputs = Vec::new();
 
-        let int_vars: Vec<&CslVariable> = self.variables.iter()
+        let int_vars: Vec<&CslVariable> = self
+            .variables
+            .iter()
             .filter(|v| v.var_type == CslType::Int)
             .collect();
 
-        if int_vars.is_empty() { return inputs; }
+        if int_vars.is_empty() {
+            return inputs;
+        }
 
         // Extract bounds from linear constraints
         let mut bounds: HashMap<&str, (i64, i64)> = HashMap::new();
@@ -116,7 +137,12 @@ impl CslSpec {
         }
 
         for constraint in &self.constraints {
-            if let CslConstraint::Linear { terms, comparison, bound } = constraint {
+            if let CslConstraint::Linear {
+                terms,
+                comparison,
+                bound,
+            } = constraint
+            {
                 if terms.len() == 1 {
                     let (coeff, var) = &terms[0];
                     if let Some(b) = bounds.get_mut(var.as_str()) {
@@ -144,7 +170,10 @@ impl CslSpec {
             attempts += 1;
             let mut input = HashMap::new();
             for var in &int_vars {
-                let (lo, hi) = bounds.get(var.name.as_str()).copied().unwrap_or((-100, 100));
+                let (lo, hi) = bounds
+                    .get(var.name.as_str())
+                    .copied()
+                    .unwrap_or((-100, 100));
                 let val = if lo <= hi { rng.gen_range(lo..=hi) } else { lo };
                 input.insert(var.name.clone(), val);
             }
@@ -159,13 +188,20 @@ impl CslSpec {
 
     /// Check if an input satisfies all constraints.
     fn satisfies_all_constraints(&self, input: &HashMap<String, i64>) -> bool {
-        self.constraints.iter().all(|c| Self::eval_constraint(c, input))
+        self.constraints
+            .iter()
+            .all(|c| Self::eval_constraint(c, input))
     }
 
     fn eval_constraint(c: &CslConstraint, input: &HashMap<String, i64>) -> bool {
         match c {
-            CslConstraint::Linear { terms, comparison, bound } => {
-                let lhs: i64 = terms.iter()
+            CslConstraint::Linear {
+                terms,
+                comparison,
+                bound,
+            } => {
+                let lhs: i64 = terms
+                    .iter()
                     .map(|(coeff, var)| coeff * input.get(var.as_str()).copied().unwrap_or(0))
                     .sum();
                 match comparison {
@@ -181,14 +217,18 @@ impl CslSpec {
             CslConstraint::IntEqual { var, value } => {
                 input.get(var.as_str()).copied().unwrap_or(0) == *value
             }
-            CslConstraint::And(clauses) => clauses.iter().all(|cl| Self::eval_constraint(cl, input)),
+            CslConstraint::And(clauses) => {
+                clauses.iter().all(|cl| Self::eval_constraint(cl, input))
+            }
             CslConstraint::Or(clauses) => clauses.iter().any(|cl| Self::eval_constraint(cl, input)),
             CslConstraint::Not(inner) => !Self::eval_constraint(inner, input),
             CslConstraint::Implies(p, q) => {
                 !Self::eval_constraint(p, input) || Self::eval_constraint(q, input)
             }
             CslConstraint::FuncApp { .. } => true, // Uninterpreted functions can't be evaluated
-            CslConstraint::ReviewRequired { constraint, .. } => Self::eval_constraint(constraint, input),
+            CslConstraint::ReviewRequired { constraint, .. } => {
+                Self::eval_constraint(constraint, input)
+            }
         }
     }
 }
@@ -237,9 +277,15 @@ mod tests {
     #[test]
     fn test_review_counting() {
         let mut spec = CslSpec::new("test");
-        spec.add_constraint(CslConstraint::IntEqual { var: "x".into(), value: 5 });
+        spec.add_constraint(CslConstraint::IntEqual {
+            var: "x".into(),
+            value: 5,
+        });
         spec.add_constraint(CslConstraint::ReviewRequired {
-            constraint: Box::new(CslConstraint::IntEqual { var: "y".into(), value: 10 }),
+            constraint: Box::new(CslConstraint::IntEqual {
+                var: "y".into(),
+                value: 10,
+            }),
             reason: "Uncertain about upper bound".into(),
         });
         assert_eq!(spec.review_count(), 1);

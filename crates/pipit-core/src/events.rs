@@ -129,10 +129,7 @@ impl CapabilityGrant {
                     if let Some(url) = args.get("url").and_then(|v| v.as_str()) {
                         let host_matches = allowed.iter().any(|h| url.contains(h));
                         if !host_matches {
-                            return Err(format!(
-                                "host not in allowed list: {:?}",
-                                allowed
-                            ));
+                            return Err(format!("host not in allowed list: {:?}", allowed));
                         }
                     }
                 }
@@ -200,23 +197,53 @@ impl ApprovalHandler for AutoApproveHandler {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     // --- Lifecycle ---
-    TurnStart { turn_number: u32 },
-    TurnEnd { turn_number: u32, reason: TurnEndReason },
+    TurnStart {
+        turn_number: u32,
+    },
+    TurnEnd {
+        turn_number: u32,
+        reason: TurnEndReason,
+    },
 
     // --- Streaming ---
-    ContentDelta { text: String },
-    ThinkingDelta { text: String },
-    ContentComplete { full_text: String },
+    ContentDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ContentComplete {
+        full_text: String,
+    },
 
     // --- Tool calls ---
-    ToolCallStart { call_id: String, name: String, args: Value },
-    ToolCallEnd { call_id: String, name: String, result: ToolCallOutcome },
-    ToolApprovalNeeded { call_id: String, name: String, args: Value },
+    ToolCallStart {
+        call_id: String,
+        name: String,
+        args: Value,
+    },
+    ToolCallEnd {
+        call_id: String,
+        name: String,
+        result: ToolCallOutcome,
+    },
+    ToolApprovalNeeded {
+        call_id: String,
+        name: String,
+        args: Value,
+    },
 
     // --- Context ---
     CompressionStart,
-    CompressionEnd { messages_removed: usize, tokens_freed: u64 },
-    TokenUsageUpdate { used: u64, limit: u64, cost: f64 },
+    CompressionEnd {
+        messages_removed: usize,
+        tokens_freed: u64,
+    },
+    TokenUsageUpdate {
+        used: u64,
+        limit: u64,
+        cost: f64,
+    },
     PlanSelected {
         strategy: String,
         rationale: String,
@@ -225,16 +252,33 @@ pub enum AgentEvent {
     },
 
     // --- Errors ---
-    ProviderError { error: String, will_retry: bool },
-    ToolError { call_id: String, error: String },
-    LoopDetected { tool_name: String, count: u32 },
+    ProviderError {
+        error: String,
+        will_retry: bool,
+    },
+    ToolError {
+        call_id: String,
+        error: String,
+    },
+    LoopDetected {
+        tool_name: String,
+        count: u32,
+    },
 
     // --- Steering ---
-    SteeringMessageInjected { text: String },
+    SteeringMessageInjected {
+        text: String,
+    },
 
     // --- Status ---
     /// Agent is busy with a phase that doesn't stream tokens (planning, verifying, etc.)
-    Waiting { label: String },
+    Waiting {
+        label: String,
+    },
+    /// Adaptive turn budget was extended — UI should update the displayed limit.
+    BudgetExtended {
+        new_approved: u32,
+    },
 
     // --- PEV phase transitions ---
     /// Phase changed in the PEV orchestrator.
@@ -277,20 +321,34 @@ pub enum TurnEndReason {
 
 #[derive(Debug, Clone)]
 pub enum ToolCallOutcome {
-    Success { content: String, mutated: bool },
+    Success {
+        content: String,
+        mutated: bool,
+    },
     PolicyBlocked {
         message: String,
         stage: crate::proof::PolicyStage,
         mutated: bool,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum AgentOutcome {
-    Completed { turns: u32, total_tokens: u64, cost: f64, proof: ProofPacket },
+    Completed {
+        turns: u32,
+        total_tokens: u64,
+        cost: f64,
+        proof: ProofPacket,
+    },
     MaxTurnsReached(u32),
-    BudgetExhausted { turns: u32, cost: f64, budget: f64 },
+    BudgetExhausted {
+        turns: u32,
+        cost: f64,
+        budget: f64,
+    },
     Cancelled,
     Error(String),
 }
@@ -323,43 +381,106 @@ pub struct RuntimeEvent {
 #[serde(tag = "type")]
 pub enum RuntimeEventKind {
     // ── Turn lifecycle ──
-    TurnStart { turn_number: u32 },
-    TurnEnd { turn_number: u32, reason: String },
+    TurnStart {
+        turn_number: u32,
+    },
+    TurnEnd {
+        turn_number: u32,
+        reason: String,
+    },
 
     // ── Content streaming ──
-    ContentDelta { text: String },
-    ThinkingDelta { text: String },
-    ContentComplete { full_text: String },
+    ContentDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ContentComplete {
+        full_text: String,
+    },
 
     // ── Tool lifecycle ──
-    ToolCallStart { call_id: String, name: String, args: Value },
-    ToolCallEnd { call_id: String, name: String, success: bool, mutated: bool, summary: String },
-    ToolApprovalNeeded { call_id: String, name: String, args: Value },
+    ToolCallStart {
+        call_id: String,
+        name: String,
+        args: Value,
+    },
+    ToolCallEnd {
+        call_id: String,
+        name: String,
+        success: bool,
+        mutated: bool,
+        summary: String,
+    },
+    ToolApprovalNeeded {
+        call_id: String,
+        name: String,
+        args: Value,
+    },
 
     // ── Planning & verification ──
-    PlanSelected { strategy: String, rationale: String, pivoted: bool },
-    VerifierVerdict { verdict: String, confidence: f32, summary: String },
-    RepairStarted { attempt: u32, reason: String },
-    PhaseTransition { from: String, to: String },
+    PlanSelected {
+        strategy: String,
+        rationale: String,
+        pivoted: bool,
+    },
+    VerifierVerdict {
+        verdict: String,
+        confidence: f32,
+        summary: String,
+    },
+    RepairStarted {
+        attempt: u32,
+        reason: String,
+    },
+    PhaseTransition {
+        from: String,
+        to: String,
+    },
 
     // ── Context management ──
     CompressionStart,
-    CompressionEnd { messages_removed: usize, tokens_freed: u64 },
-    TokenUsage { used: u64, limit: u64, cost: f64 },
+    CompressionEnd {
+        messages_removed: usize,
+        tokens_freed: u64,
+    },
+    TokenUsage {
+        used: u64,
+        limit: u64,
+        cost: f64,
+    },
 
     // ── Status & control ──
-    Waiting { label: String },
-    SteeringInjected { text: String },
-    LoopDetected { tool_name: String, count: u32 },
+    Waiting {
+        label: String,
+    },
+    SteeringInjected {
+        text: String,
+    },
+    LoopDetected {
+        tool_name: String,
+        count: u32,
+    },
 
     // ── Errors ──
-    ProviderError { error: String, will_retry: bool },
+    ProviderError {
+        error: String,
+        will_retry: bool,
+    },
 
     // ── Canonical turn FSM ──
-    TurnPhaseEntered { turn: u32, phase: String, detail: Option<String>, timestamp_ms: u64 },
+    TurnPhaseEntered {
+        turn: u32,
+        phase: String,
+        detail: Option<String>,
+        timestamp_ms: u64,
+    },
 
     // ── Termination ──
-    SessionEnded { outcome: String },
+    SessionEnded {
+        outcome: String,
+    },
 }
 
 impl RuntimeEvent {
@@ -378,81 +499,132 @@ impl RuntimeEvent {
     /// Convert from an AgentEvent to a RuntimeEvent.
     pub fn from_agent_event(event: &AgentEvent) -> Option<Self> {
         let kind = match event {
-            AgentEvent::TurnStart { turn_number } => {
-                RuntimeEventKind::TurnStart { turn_number: *turn_number }
+            AgentEvent::TurnStart { turn_number } => RuntimeEventKind::TurnStart {
+                turn_number: *turn_number,
+            },
+            AgentEvent::TurnEnd {
+                turn_number,
+                reason,
+            } => RuntimeEventKind::TurnEnd {
+                turn_number: *turn_number,
+                reason: format!("{:?}", reason),
+            },
+            AgentEvent::ContentDelta { text } => {
+                RuntimeEventKind::ContentDelta { text: text.clone() }
             }
-            AgentEvent::TurnEnd { turn_number, reason } => {
-                RuntimeEventKind::TurnEnd {
-                    turn_number: *turn_number,
-                    reason: format!("{:?}", reason),
-                }
+            AgentEvent::ThinkingDelta { text } => {
+                RuntimeEventKind::ThinkingDelta { text: text.clone() }
             }
-            AgentEvent::ContentDelta { text } => RuntimeEventKind::ContentDelta { text: text.clone() },
-            AgentEvent::ThinkingDelta { text } => RuntimeEventKind::ThinkingDelta { text: text.clone() },
-            AgentEvent::ContentComplete { full_text } => {
-                RuntimeEventKind::ContentComplete { full_text: full_text.clone() }
-            }
-            AgentEvent::ToolCallStart { call_id, name, args } => {
-                RuntimeEventKind::ToolCallStart {
-                    call_id: call_id.clone(), name: name.clone(), args: args.clone(),
-                }
-            }
-            AgentEvent::ToolCallEnd { call_id, name, result } => {
+            AgentEvent::ContentComplete { full_text } => RuntimeEventKind::ContentComplete {
+                full_text: full_text.clone(),
+            },
+            AgentEvent::ToolCallStart {
+                call_id,
+                name,
+                args,
+            } => RuntimeEventKind::ToolCallStart {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                args: args.clone(),
+            },
+            AgentEvent::ToolCallEnd {
+                call_id,
+                name,
+                result,
+            } => {
                 let (success, mutated, summary) = match result {
-                    ToolCallOutcome::Success { content, mutated } => (true, *mutated, content.chars().take(200).collect()),
-                    ToolCallOutcome::PolicyBlocked { message, .. } => (false, false, message.clone()),
+                    ToolCallOutcome::Success { content, mutated } => {
+                        (true, *mutated, content.chars().take(200).collect())
+                    }
+                    ToolCallOutcome::PolicyBlocked { message, .. } => {
+                        (false, false, message.clone())
+                    }
                     ToolCallOutcome::Error { message } => (false, false, message.clone()),
                 };
                 RuntimeEventKind::ToolCallEnd {
-                    call_id: call_id.clone(), name: name.clone(), success, mutated, summary,
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    success,
+                    mutated,
+                    summary,
                 }
             }
-            AgentEvent::ToolApprovalNeeded { call_id, name, args } => {
-                RuntimeEventKind::ToolApprovalNeeded {
-                    call_id: call_id.clone(), name: name.clone(), args: args.clone(),
-                }
-            }
-            AgentEvent::PlanSelected { strategy, rationale, pivoted, .. } => {
-                RuntimeEventKind::PlanSelected {
-                    strategy: strategy.clone(), rationale: rationale.clone(), pivoted: *pivoted,
-                }
-            }
-            AgentEvent::VerifierVerdict { verdict, confidence, findings_summary } => {
-                RuntimeEventKind::VerifierVerdict {
-                    verdict: verdict.clone(), confidence: *confidence, summary: findings_summary.clone(),
-                }
-            }
-            AgentEvent::RepairStarted { attempt, reason } => {
-                RuntimeEventKind::RepairStarted { attempt: *attempt, reason: reason.clone() }
-            }
-            AgentEvent::PhaseTransition { from, to, .. } => {
-                RuntimeEventKind::PhaseTransition { from: from.clone(), to: to.clone() }
-            }
+            AgentEvent::ToolApprovalNeeded {
+                call_id,
+                name,
+                args,
+            } => RuntimeEventKind::ToolApprovalNeeded {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                args: args.clone(),
+            },
+            AgentEvent::PlanSelected {
+                strategy,
+                rationale,
+                pivoted,
+                ..
+            } => RuntimeEventKind::PlanSelected {
+                strategy: strategy.clone(),
+                rationale: rationale.clone(),
+                pivoted: *pivoted,
+            },
+            AgentEvent::VerifierVerdict {
+                verdict,
+                confidence,
+                findings_summary,
+            } => RuntimeEventKind::VerifierVerdict {
+                verdict: verdict.clone(),
+                confidence: *confidence,
+                summary: findings_summary.clone(),
+            },
+            AgentEvent::RepairStarted { attempt, reason } => RuntimeEventKind::RepairStarted {
+                attempt: *attempt,
+                reason: reason.clone(),
+            },
+            AgentEvent::PhaseTransition { from, to, .. } => RuntimeEventKind::PhaseTransition {
+                from: from.clone(),
+                to: to.clone(),
+            },
             AgentEvent::CompressionStart => RuntimeEventKind::CompressionStart,
-            AgentEvent::CompressionEnd { messages_removed, tokens_freed } => {
-                RuntimeEventKind::CompressionEnd {
-                    messages_removed: *messages_removed, tokens_freed: *tokens_freed,
-                }
-            }
-            AgentEvent::TokenUsageUpdate { used, limit, cost } => {
-                RuntimeEventKind::TokenUsage { used: *used, limit: *limit, cost: *cost }
-            }
-            AgentEvent::Waiting { label } => RuntimeEventKind::Waiting { label: label.clone() },
+            AgentEvent::CompressionEnd {
+                messages_removed,
+                tokens_freed,
+            } => RuntimeEventKind::CompressionEnd {
+                messages_removed: *messages_removed,
+                tokens_freed: *tokens_freed,
+            },
+            AgentEvent::TokenUsageUpdate { used, limit, cost } => RuntimeEventKind::TokenUsage {
+                used: *used,
+                limit: *limit,
+                cost: *cost,
+            },
+            AgentEvent::Waiting { label } => RuntimeEventKind::Waiting {
+                label: label.clone(),
+            },
             AgentEvent::SteeringMessageInjected { text } => {
                 RuntimeEventKind::SteeringInjected { text: text.clone() }
             }
-            AgentEvent::LoopDetected { tool_name, count } => {
-                RuntimeEventKind::LoopDetected { tool_name: tool_name.clone(), count: *count }
-            }
-            AgentEvent::ProviderError { error, will_retry } => {
-                RuntimeEventKind::ProviderError { error: error.clone(), will_retry: *will_retry }
-            }
+            AgentEvent::LoopDetected { tool_name, count } => RuntimeEventKind::LoopDetected {
+                tool_name: tool_name.clone(),
+                count: *count,
+            },
+            AgentEvent::ProviderError { error, will_retry } => RuntimeEventKind::ProviderError {
+                error: error.clone(),
+                will_retry: *will_retry,
+            },
             AgentEvent::ToolError { .. } => return None,
-            AgentEvent::TurnPhaseEntered { turn, phase, detail, timestamp_ms } => {
-                RuntimeEventKind::TurnPhaseEntered {
-                    turn: *turn, phase: phase.clone(), detail: detail.clone(), timestamp_ms: *timestamp_ms,
-                }
-            }
+            AgentEvent::TurnPhaseEntered {
+                turn,
+                phase,
+                detail,
+                timestamp_ms,
+            } => RuntimeEventKind::TurnPhaseEntered {
+                turn: *turn,
+                phase: phase.clone(),
+                detail: detail.clone(),
+                timestamp_ms: *timestamp_ms,
+            },
+            AgentEvent::BudgetExtended { .. } => return None,
         };
         Some(Self::new(kind))
     }

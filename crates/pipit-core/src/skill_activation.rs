@@ -108,10 +108,7 @@ impl SkillActivationIndex {
                 .push(skill_id.clone());
         }
 
-        self.rules
-            .entry(skill_id)
-            .or_default()
-            .push(rule);
+        self.rules.entry(skill_id).or_default().push(rule);
     }
 
     /// Find all skills that should be active for the given touched files.
@@ -159,12 +156,7 @@ impl SkillActivationIndex {
         self.rules.len()
     }
 
-    fn insert_path_pattern(
-        &mut self,
-        pattern: &str,
-        skill_id: &str,
-        scope: ActivationScope,
-    ) {
+    fn insert_path_pattern(&mut self, pattern: &str, skill_id: &str, scope: ActivationScope) {
         // Extract directory prefix from pattern
         let dir_prefix = if let Some(stripped) = pattern.strip_prefix("**/") {
             // **/foo → match "foo" at any depth
@@ -186,7 +178,10 @@ impl SkillActivationIndex {
             if *part == "**" || *part == "*" {
                 break;
             }
-            node = node.children.entry(part.to_string()).or_insert_with(TrieNode::new);
+            node = node
+                .children
+                .entry(part.to_string())
+                .or_insert_with(TrieNode::new);
         }
         node.skills.push((skill_id.to_string(), scope));
     }
@@ -236,12 +231,7 @@ pub fn discover_skill_files(root: &Path) -> Vec<(PathBuf, u32)> {
     results
 }
 
-fn walk_skill_dir(
-    base: &Path,
-    dir: &Path,
-    depth: u32,
-    results: &mut Vec<(PathBuf, u32)>,
-) {
+fn walk_skill_dir(base: &Path, dir: &Path, depth: u32, results: &mut Vec<(PathBuf, u32)>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,

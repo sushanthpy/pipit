@@ -1,5 +1,5 @@
-use crate::{AppliedEdit, EditError, EditFormat, EditOp};
 use crate::apply::atomic_write;
+use crate::{AppliedEdit, EditError, EditFormat, EditOp};
 use std::path::{Path, PathBuf};
 
 /// Search/Replace block format — default for LLM-driven editing.
@@ -185,9 +185,10 @@ fn fuzzy_search_replace(content: &str, search: &str, replace: &str) -> Option<St
             break;
         }
 
-        let matches = search_lines.iter().enumerate().all(|(j, search_line)| {
-            content_lines[start + j].trim() == search_line.trim()
-        });
+        let matches = search_lines
+            .iter()
+            .enumerate()
+            .all(|(j, search_line)| content_lines[start + j].trim() == search_line.trim());
 
         if matches {
             let end = start + search_lines.len();
@@ -212,16 +213,19 @@ fn fuzzy_search_replace(content: &str, search: &str, replace: &str) -> Option<St
             } else {
                 ' '
             };
-            let mut result_lines: Vec<String> =
-                content_lines[..start].iter().map(|s| s.to_string()).collect();
+            let mut result_lines: Vec<String> = content_lines[..start]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
 
             // Apply replacement with indent mapping
             for replace_line in replace.lines() {
                 let adjusted = if !replace_line.trim().is_empty() {
                     let r_indent = detect_indent(replace_line).len();
                     let new_indent_len = map_indent(r_indent, &indent_pairs);
-                    let new_indent: String =
-                        std::iter::repeat(indent_char).take(new_indent_len).collect();
+                    let new_indent: String = std::iter::repeat(indent_char)
+                        .take(new_indent_len)
+                        .collect();
                     format!("{}{}", new_indent, replace_line.trim_start())
                 } else {
                     replace_line.to_string()
@@ -289,7 +293,10 @@ fn make_applied_edit(path: &Path, before: &str, after: &str) -> AppliedEdit {
     let unified = diff
         .unified_diff()
         .context_radius(3)
-        .header(&format!("a/{}", path.display()), &format!("b/{}", path.display()))
+        .header(
+            &format!("a/{}", path.display()),
+            &format!("b/{}", path.display()),
+        )
         .to_string();
 
     let added = after.lines().count() as i64;

@@ -57,9 +57,7 @@ pub struct SkillEvalReport {
 }
 
 /// Generate eval tasks from all skills that have test suites.
-pub fn generate_eval_tasks(
-    packages: &[crate::manifest::SkillPackage],
-) -> Vec<SkillEvalTask> {
+pub fn generate_eval_tasks(packages: &[crate::manifest::SkillPackage]) -> Vec<SkillEvalTask> {
     packages
         .iter()
         .filter_map(|pkg| {

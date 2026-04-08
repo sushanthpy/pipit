@@ -12,9 +12,9 @@
 //! 5. AutoCompact — Full LLM-based summarization as last resort
 
 use crate::ContextError;
+use crate::budget::estimate_text_tokens;
 use pipit_provider::{CompletionRequest, ContentBlock, ContentEvent, LlmProvider, Message};
 use tokio_util::sync::CancellationToken;
-use crate::budget::estimate_text_tokens;
 
 // ─── CompactionPass Trait ───────────────────────────────────────────────
 
@@ -124,9 +124,7 @@ impl CompactionPipeline {
                 max_chars: tool_result_budget_chars,
                 exempt_tools: vec!["grep".to_string(), "glob".to_string()],
             }),
-            Box::new(SnipCompactPass {
-                preserve_recent,
-            }),
+            Box::new(SnipCompactPass { preserve_recent }),
             Box::new(MicroCompactPass {
                 stale_turn_threshold: 6,
             }),
@@ -272,10 +270,15 @@ impl CompactionPipeline {
         let mut result = PassResult::default();
         // Dedup first
         if !self.passes.is_empty() && self.passes[0].name() == "dedup" {
-            if let Ok(r) = self.passes[0].compact(messages, u64::MAX, cancel.clone()).await {
+            if let Ok(r) = self.passes[0]
+                .compact(messages, u64::MAX, cancel.clone())
+                .await
+            {
                 result.tokens_freed += r.tokens_freed;
                 result.messages_removed += r.messages_removed;
-                if r.modified { result.modified = true; }
+                if r.modified {
+                    result.modified = true;
+                }
             }
         }
         // Then micro-compact
@@ -283,7 +286,9 @@ impl CompactionPipeline {
             if let Ok(r) = self.passes[3].compact(messages, u64::MAX, cancel).await {
                 result.tokens_freed += r.tokens_freed;
                 result.messages_removed += r.messages_removed;
-                if r.modified { result.modified = true; }
+                if r.modified {
+                    result.modified = true;
+                }
             }
         }
 
@@ -310,7 +315,9 @@ pub struct DedupCompactPass;
 
 #[async_trait::async_trait]
 impl CompactionPass for DedupCompactPass {
-    fn name(&self) -> &str { "dedup" }
+    fn name(&self) -> &str {
+        "dedup"
+    }
 
     async fn compact(
         &mut self,
@@ -440,7 +447,10 @@ impl CompactionPass for SnipCompactPass {
         for i in 0..compactable_end {
             // A segment ends when the next message is a user message (new turn)
             let is_segment_end = i + 1 >= compactable_end
-                || matches!(messages.get(i + 1).map(|m| &m.role), Some(pipit_provider::Role::User));
+                || matches!(
+                    messages.get(i + 1).map(|m| &m.role),
+                    Some(pipit_provider::Role::User)
+                );
 
             if is_segment_end {
                 let seg_tokens: u64 = messages[seg_start..=i]
@@ -516,7 +526,8 @@ impl CompactionPass for MicroCompactPass {
         let mut modified = false;
 
         // Collect tool_call_ids from the stale region to identify their results
-        let mut stale_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut stale_call_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for msg in &messages[..stale_boundary] {
             for block in &msg.content {
                 if let ContentBlock::ToolCall { call_id, .. } = block {
@@ -535,7 +546,8 @@ impl CompactionPass for MicroCompactPass {
                     if stale_call_ids.contains(call_id.as_str()) && content.len() > 200 {
                         let old_tokens = estimate_text_tokens(content);
                         // Keep first 2 lines as summary
-                        let summary: String = content.lines().take(2).collect::<Vec<_>>().join("\n");
+                        let summary: String =
+                            content.lines().take(2).collect::<Vec<_>>().join("\n");
                         *content = format!("[stale result] {}", summary);
                         let new_tokens = estimate_text_tokens(content);
                         freed += old_tokens.saturating_sub(new_tokens);
@@ -698,10 +710,7 @@ impl CompactionPass for AutoCompactPass {
         let old_count = to_summarize.len();
         let old_tokens: u64 = to_summarize.iter().map(|m| m.estimated_tokens()).sum();
 
-        let summary_message = Message::system(format!(
-            "[Auto-compact summary]\n{}",
-            summary_text
-        ));
+        let summary_message = Message::system(format!("[Auto-compact summary]\n{}", summary_text));
         let new_tokens = summary_message.estimated_tokens();
 
         *messages = std::iter::once(summary_message).chain(to_keep).collect();

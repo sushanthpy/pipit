@@ -19,8 +19,7 @@
 
 use crate::google::GoogleProvider;
 use crate::{
-    ContentEvent, CompletionRequest, LlmProvider, ModelCapabilities,
-    ProviderError, TokenCount,
+    CompletionRequest, ContentEvent, LlmProvider, ModelCapabilities, ProviderError, TokenCount,
 };
 use async_trait::async_trait;
 use futures::Stream;
@@ -45,8 +44,8 @@ impl VertexProvider {
     ) -> Result<Self, ProviderError> {
         // Resolve project and location from env vars or base_url
         let project = std::env::var("VERTEX_PROJECT").ok();
-        let location = std::env::var("VERTEX_LOCATION")
-            .unwrap_or_else(|_| "us-central1".to_string());
+        let location =
+            std::env::var("VERTEX_LOCATION").unwrap_or_else(|_| "us-central1".to_string());
 
         let vertex_base = if let Some(ref url) = base_url {
             // User provided full base URL — use it directly
@@ -109,11 +108,7 @@ impl VertexProvider {
         // The /publishers/google path component is Vertex-specific.
         let vertex_api_base = format!("{}/publishers/google", vertex_base);
 
-        let inner = GoogleProvider::new(
-            model,
-            access_token,
-            Some(vertex_api_base),
-        )?;
+        let inner = GoogleProvider::new(model, access_token, Some(vertex_api_base))?;
 
         Ok(Self {
             inner,
@@ -128,14 +123,12 @@ fn resolve_gcloud_token() -> Result<String, ProviderError> {
     let output = std::process::Command::new("gcloud")
         .args(["auth", "print-access-token"])
         .output()
-        .map_err(|e| {
-            ProviderError::AuthFailed {
-                message: format!(
-                    "Failed to run 'gcloud auth print-access-token': {}. \
+        .map_err(|e| ProviderError::AuthFailed {
+            message: format!(
+                "Failed to run 'gcloud auth print-access-token': {}. \
                      Set VERTEX_API_KEY or authenticate with gcloud.",
-                    e
-                ),
-            }
+                e
+            ),
         })?;
 
     if !output.status.success() {
@@ -202,7 +195,10 @@ mod tests {
     #[test]
     fn extract_project_from_url_works() {
         let url = "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1";
-        assert_eq!(extract_project_from_url(url), Some("my-project".to_string()));
+        assert_eq!(
+            extract_project_from_url(url),
+            Some("my-project".to_string())
+        );
     }
 
     #[test]

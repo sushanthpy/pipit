@@ -7,8 +7,8 @@
 //! - withholding errors from the stream until recovery is attempted
 
 use crate::events::AgentEvent;
-use pipit_context::budget::CompressionStats;
 use pipit_context::ContextManager;
+use pipit_context::budget::CompressionStats;
 use pipit_provider::{LlmProvider, ProviderError};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -30,9 +30,7 @@ pub enum RecoveryState {
     /// Full emergency summarization as second recovery attempt.
     ReactiveCompact,
     /// All recovery attempts exhausted — error will be surfaced.
-    Exhausted {
-        original_error: String,
-    },
+    Exhausted { original_error: String },
 }
 
 /// Classifies errors for recovery routing.
@@ -90,7 +88,10 @@ impl RecoveryController {
             ProviderError::RequestTooLarge { .. } => Some(RecoveryErrorKind::PromptTooLong),
             ProviderError::OutputTruncated => Some(RecoveryErrorKind::OutputTruncated),
             ProviderError::Other(msg) => {
-                if msg.contains("413") || msg.contains("payload too large") || msg.contains("Payload Too Large") {
+                if msg.contains("413")
+                    || msg.contains("payload too large")
+                    || msg.contains("Payload Too Large")
+                {
                     Some(RecoveryErrorKind::PromptTooLong)
                 } else if msg.contains("max_tokens") || msg.contains("output_tokens") {
                     Some(RecoveryErrorKind::OutputTruncated)
@@ -157,7 +158,8 @@ impl RecoveryController {
                             self.state = RecoveryState::ReactiveCompact;
                             RecoveryAction::ReactiveCompact
                         } else {
-                            let error = "Content too large, reactive compact already attempted".to_string();
+                            let error =
+                                "Content too large, reactive compact already attempted".to_string();
                             self.state = RecoveryState::Exhausted {
                                 original_error: error.clone(),
                             };
@@ -185,7 +187,8 @@ impl RecoveryController {
 
             RecoveryState::ReactiveCompact => {
                 // Reactive compact already tried — give up
-                let error = "Context overflow recovery exhausted after reactive compact".to_string();
+                let error =
+                    "Context overflow recovery exhausted after reactive compact".to_string();
                 self.state = RecoveryState::Exhausted {
                     original_error: error.clone(),
                 };
@@ -295,7 +298,10 @@ mod tests {
 
         // First recovery: escalate output tokens
         let action = ctrl.next_recovery_action();
-        assert!(matches!(action, RecoveryAction::EscalateOutputTokens(16384)));
+        assert!(matches!(
+            action,
+            RecoveryAction::EscalateOutputTokens(16384)
+        ));
         assert_eq!(ctrl.current_output_limit(), 16384);
     }
 

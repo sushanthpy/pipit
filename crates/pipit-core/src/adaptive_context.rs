@@ -145,7 +145,10 @@ impl AdaptiveContextController {
     /// Compute the retention plan: which segments to keep, summarize, or evict.
     /// Greedy knapsack by descending marginal utility within the token budget.
     pub fn retention_plan(&self, budget: u64) -> RetentionPlan {
-        let mut scored: Vec<(usize, f64)> = self.segments.iter().enumerate()
+        let mut scored: Vec<(usize, f64)> = self
+            .segments
+            .iter()
+            .enumerate()
             .map(|(i, seg)| {
                 let age = self.current_turn.saturating_sub(seg.created_at_turn);
                 let recency_factor = self.recency_decay.powi(age as i32);
@@ -155,7 +158,8 @@ impl AdaptiveContextController {
                     MemoryTier::Historical => 1.0,
                     MemoryTier::Exhaust => 0.3,
                 };
-                let score = seg.relevance * recency_factor * tier_boost / (seg.tokens.max(1) as f64);
+                let score =
+                    seg.relevance * recency_factor * tier_boost / (seg.tokens.max(1) as f64);
                 (i, score)
             })
             .collect();
@@ -270,7 +274,9 @@ mod tests {
             relevance: 0.1,
             created_at_turn: 0,
             message_range: (1, 1),
-            content_type: SegmentContent::ToolResult { tool_name: "read_file".into() },
+            content_type: SegmentContent::ToolResult {
+                tool_name: "read_file".into(),
+            },
         });
 
         // Very tight budget — pinned should still be kept
@@ -310,13 +316,17 @@ mod tests {
     #[test]
     fn tier_reclassification() {
         let tier = AdaptiveContextController::classify_tier(
-            &SegmentContent::ToolResult { tool_name: "read_file".into() },
+            &SegmentContent::ToolResult {
+                tool_name: "read_file".into(),
+            },
             0,
         );
         assert_eq!(tier, MemoryTier::Active);
 
         let tier = AdaptiveContextController::classify_tier(
-            &SegmentContent::ToolResult { tool_name: "read_file".into() },
+            &SegmentContent::ToolResult {
+                tool_name: "read_file".into(),
+            },
             6,
         );
         assert_eq!(tier, MemoryTier::Exhaust);

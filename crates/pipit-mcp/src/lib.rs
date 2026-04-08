@@ -11,14 +11,15 @@
 //! - `pipit mcp add <server>` support
 
 pub use pipit_tools::mcp::{
-    load_mcp_config, McpClient, McpConfig, McpManager, McpServerConfig, McpToolDef, McpToolWrapper,
+    McpClient, McpConfig, McpManager, McpServerConfig, McpToolDef, McpToolWrapper, load_mcp_config,
 };
 
-mod sse;
 pub mod a2a;
 pub mod plugins;
 pub mod protocol;
+mod sse;
 
+pub use plugins::{PluginKind, PluginManifest, PluginRegistry};
 pub use sse::SseTransport;
 
 /// Maximum tools to eagerly register per server before switching to lazy mode.
@@ -146,23 +147,29 @@ impl pipit_tools::Tool for McpSearchTool {
             };
 
             let Some(server_name) = server_name else {
-                return Ok(pipit_tools::ToolResult::error(
-                    format!("Tool '{}' not found in MCP index. Use query to search first.", tool_name)
-                ));
+                return Ok(pipit_tools::ToolResult::error(format!(
+                    "Tool '{}' not found in MCP index. Use query to search first.",
+                    tool_name
+                )));
             };
 
             let Some(client) = self.find_client(&server_name) else {
-                return Ok(pipit_tools::ToolResult::error(
-                    format!("MCP server '{}' not connected", server_name)
-                ));
+                return Ok(pipit_tools::ToolResult::error(format!(
+                    "MCP server '{}' not connected",
+                    server_name
+                )));
             };
 
-            let tool_args = args.get("args").cloned().unwrap_or(Value::Object(Default::default()));
+            let tool_args = args
+                .get("args")
+                .cloned()
+                .unwrap_or(Value::Object(Default::default()));
             match client.call_tool(tool_name, tool_args).await {
                 Ok(result) => Ok(pipit_tools::ToolResult::text(result)),
-                Err(e) => Ok(pipit_tools::ToolResult::error(
-                    format!("MCP tool '{}' failed: {}", tool_name, e)
-                )),
+                Err(e) => Ok(pipit_tools::ToolResult::error(format!(
+                    "MCP tool '{}' failed: {}",
+                    tool_name, e
+                ))),
             }
         } else {
             // Mode 2: Search for tools
@@ -171,24 +178,30 @@ impl pipit_tools::Tool for McpSearchTool {
                 let mut idx = self.index.lock().unwrap();
                 idx.search(query, 10)
                     .into_iter()
-                    .map(|e| serde_json::json!({
-                        "name": e.name,
-                        "server": e.server,
-                        "description": e.description,
-                        "category": e.category,
-                    }))
+                    .map(|e| {
+                        serde_json::json!({
+                            "name": e.name,
+                            "server": e.server,
+                            "description": e.description,
+                            "category": e.category,
+                        })
+                    })
                     .collect::<Vec<_>>()
             };
 
             if results.is_empty() {
-                Ok(pipit_tools::ToolResult::text(
-                    format!("No MCP tools found matching '{}'. Try a different search query.", query)
-                ))
+                Ok(pipit_tools::ToolResult::text(format!(
+                    "No MCP tools found matching '{}'. Try a different search query.",
+                    query
+                )))
             } else {
                 let json = serde_json::to_string_pretty(&results).unwrap_or_default();
-                Ok(pipit_tools::ToolResult::text(
-                    format!("Found {} MCP tools matching '{}':\n{}\n\nTo invoke a tool, call mcp_search with invoke=\"tool_name\" and args={{...}}", results.len(), query, json)
-                ))
+                Ok(pipit_tools::ToolResult::text(format!(
+                    "Found {} MCP tools matching '{}':\n{}\n\nTo invoke a tool, call mcp_search with invoke=\"tool_name\" and args={{...}}",
+                    results.len(),
+                    query,
+                    json
+                )))
             }
         }
     }
@@ -216,7 +229,8 @@ pub async fn health_check_servers(manager: &McpManager) -> Vec<McpServerHealth> 
         let start = std::time::Instant::now();
         let health = match client.call_method("tools/list", None).await {
             Ok(response) => {
-                let tool_count = response.get("tools")
+                let tool_count = response
+                    .get("tools")
                     .and_then(|t| t.as_array())
                     .map(|a| a.len())
                     .unwrap_or(0);

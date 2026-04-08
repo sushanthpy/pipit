@@ -92,15 +92,14 @@ impl PhaseTimeoutTracker {
 
     /// Get the timeout duration for the current phase.
     pub fn current_phase_timeout(&self) -> Option<Duration> {
-        self.current_phase.map(|phase| self.budget_for_phase(&phase))
+        self.current_phase
+            .map(|phase| self.budget_for_phase(&phase))
     }
 
     /// Check if the current phase has exceeded its timeout.
     pub fn is_current_phase_timed_out(&self) -> bool {
         match (self.current_phase_start, self.current_phase) {
-            (Some(start), Some(phase)) => {
-                start.elapsed() > self.budget_for_phase(&phase)
-            }
+            (Some(start), Some(phase)) => start.elapsed() > self.budget_for_phase(&phase),
             _ => false,
         }
     }
@@ -137,12 +136,8 @@ impl PhaseTimeoutTracker {
                 self.budgets.verify += remaining;
                 PhaseTimeoutAction::SkipToVerify
             }
-            PevPhase::Verifying => {
-                PhaseTimeoutAction::Escalate
-            }
-            PevPhase::Repairing => {
-                PhaseTimeoutAction::Escalate
-            }
+            PevPhase::Verifying => PhaseTimeoutAction::Escalate,
+            PevPhase::Repairing => PhaseTimeoutAction::Escalate,
             _ => PhaseTimeoutAction::Continue,
         }
     }

@@ -89,12 +89,17 @@ pub fn load_custom_suites(project_root: &Path) -> Vec<BenchSuite> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let instruction_path = path.join("instruction.md");
                 let test_path = path.join("test.sh");
 
                 if instruction_path.exists() && test_path.exists() {
-                    let instruction = std::fs::read_to_string(&instruction_path).unwrap_or_default();
+                    let instruction =
+                        std::fs::read_to_string(&instruction_path).unwrap_or_default();
                     let test_script = std::fs::read_to_string(&test_path).unwrap_or_default();
                     let dockerfile = path.join("Dockerfile");
 

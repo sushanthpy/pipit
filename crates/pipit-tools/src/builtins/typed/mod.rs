@@ -3,13 +3,14 @@
 //! Every tool here uses typed input (schemars), declared capabilities,
 //! declared purity, and ToolCard self-description.
 
-pub mod task;
 pub mod agent_tools;
-pub mod plan_worktree;
-pub mod web;
 pub mod meta;
 pub mod notebook_repl;
+pub mod plan_worktree;
+pub mod scaffold;
 pub mod schedule;
+pub mod task;
+pub mod web;
 
 /// Register all typed tools into the registry.
 pub fn register_all_typed_tools(registry: &mut crate::ToolRegistry) {
@@ -40,4 +41,7 @@ pub fn register_all_typed_tools(registry: &mut crate::ToolRegistry) {
 
     // Phase 11: Scheduled jobs
     crate::register_typed(registry, schedule::ScheduleTool::new());
+
+    // Phase 12: Project scaffolding
+    crate::register_typed(registry, scaffold::ScaffoldProjectTool);
 }

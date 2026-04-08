@@ -1,4 +1,3 @@
-
 //! Shadowed Rule Detection — identifies security-weakening rule orderings.
 //!
 //! Rule R_j is shadowed by R_i (i < j) if L(R_i) ⊇ L(R_j), meaning R_i
@@ -13,8 +12,8 @@
 //!
 //! Complexity: O(R²) where R = number of rules (typically small, <100).
 
-use crate::rules::PermissionRuleSet;
 use crate::Decision;
+use crate::rules::PermissionRuleSet;
 
 /// A detected shadow: rule at index `masking_idx` shadows rule at `shadowed_idx`.
 #[derive(Debug, Clone)]
@@ -88,39 +87,43 @@ pub fn detect_shadows(rule_set: &PermissionRuleSet) -> Vec<ShadowedRule> {
     shadows
 }
 
-/// Approximate check: does the tool pattern of R_i subsume R_j?
+/// Check: does the tool pattern of R_i subsume R_j?
 ///
-/// This is a conservative approximation. We check:
-/// - R_i uses "*" (matches everything) → subsumes any R_j tool pattern
-/// - R_i and R_j have the same tool pattern → subsumes if command/path patterns also subsume
+/// Uses the compiled GlobMatcher to test whether R_i's tool pattern
+/// covers R_j's tool name, then compares restriction counts.
 ///
-/// For command/path patterns, we check prefix subsumption:
-/// "foo*" subsumes "foobar*" because L("foo*") ⊇ L("foobar*").
+/// Previous implementation ignored tool names entirely (_name_i, _name_j
+/// were unused) and only compared restriction counts, meaning rules
+/// targeting completely different tools could be flagged as shadows.
 fn tool_pattern_subsumes(
-    _name_i: &str,
-    _name_j: &str,
+    name_i: &str,
+    name_j: &str,
     r_i: &crate::rules::PermissionRule,
     r_j: &crate::rules::PermissionRule,
 ) -> bool {
-    // If R_i has a wildcard tool matcher, it subsumes any R_j tool pattern
-    // We approximate this by checking if R_i matches R_j's tool name pattern
-    // Since we can't inspect GlobMatcher internals, we use the original pattern strings
-    // stored in the rule name as a proxy. This is a conservative approximation.
+    // Step 1: Check if R_i's tool pattern covers R_j's tool name.
+    // Use the compiled GlobMatcher which correctly handles wildcards,
+    // globs, and exact matches.
+    let tool_covered = r_i.tool_matcher.is_match(name_j) || name_i == name_j;
 
-    // For now, we use a simpler heuristic: if both rules target the same tool
-    // (or R_i targets "*"), and R_i has no command/path restriction while R_j does,
-    // then R_i subsumes R_j.
+    if !tool_covered {
+        return false;
+    }
 
+    // Step 2: R_i subsumes R_j if R_i has equal or fewer restrictions.
+    // A rule with no command/path restriction matches ALL commands/paths,
+    // so it is strictly broader than one with restrictions.
     let i_has_cmd = r_i.command_matcher.is_some();
     let j_has_cmd = r_j.command_matcher.is_some();
     let i_has_path = r_i.path_matcher.is_some();
     let j_has_path = r_j.path_matcher.is_some();
 
-    // R_i is broader if it has fewer restrictions
     let i_restrictions = i_has_cmd as u8 + i_has_path as u8;
     let j_restrictions = j_has_cmd as u8 + j_has_path as u8;
 
-    i_restrictions < j_restrictions
+    // R_i subsumes R_j if R_i has strictly fewer restrictions,
+    // OR same restrictions and identical tool pattern (redundancy check).
+    i_restrictions < j_restrictions || (i_restrictions == j_restrictions && name_i == name_j)
 }
 
 #[cfg(test)]
@@ -133,4 +136,3 @@ mod tests {
         assert!(matches!(ShadowSeverity::Critical, ShadowSeverity::Critical));
     }
 }
-

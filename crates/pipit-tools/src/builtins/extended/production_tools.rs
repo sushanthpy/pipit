@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolContext, ToolError, ToolResult, ToolDisplay};
+use crate::{Tool, ToolContext, ToolDisplay, ToolError, ToolResult};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Shared state: FileStateCache for stale-write detection
@@ -37,7 +37,9 @@ struct FileStateEntry {
 
 impl FileStateCache {
     pub fn new() -> Self {
-        Self { entries: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            entries: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Record the content hash of a file after reading it.
@@ -47,10 +49,13 @@ impl FileStateCache {
         content.hash(&mut hasher);
         let hash = hasher.finish();
         let mut entries = self.entries.lock().unwrap();
-        entries.insert(path.to_path_buf(), FileStateEntry {
-            content_hash: hash,
-            recorded_at: std::time::Instant::now(),
-        });
+        entries.insert(
+            path.to_path_buf(),
+            FileStateEntry {
+                content_hash: hash,
+                recorded_at: std::time::Instant::now(),
+            },
+        );
     }
 
     /// Check if a file has been modified since we last read it.
@@ -91,7 +96,9 @@ impl EnterPlanModeTool {
 
 #[async_trait]
 impl Tool for EnterPlanModeTool {
-    fn name(&self) -> &str { "enter_plan_mode" }
+    fn name(&self) -> &str {
+        "enter_plan_mode"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -108,10 +115,20 @@ impl Tool for EnterPlanModeTool {
          list_directory) and planning are allowed. Write/execute tools are blocked. \
          Use this to safely explore before making changes."
     }
-    fn is_mutating(&self) -> bool { false }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("planning");
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let reason = args
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("planning");
         let mut stack = self.mode_stack.lock().unwrap();
         let current_mode = format!("{:?}", ctx.approval_mode);
         stack.push(current_mode.clone());
@@ -139,7 +156,9 @@ impl ExitPlanModeTool {
 
 #[async_trait]
 impl Tool for ExitPlanModeTool {
-    fn name(&self) -> &str { "exit_plan_mode" }
+    fn name(&self) -> &str {
+        "exit_plan_mode"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
@@ -147,12 +166,21 @@ impl Tool for ExitPlanModeTool {
         "Exit plan mode and restore previous permission mode. \
          Write and execute tools become available again."
     }
-    fn is_mutating(&self) -> bool { false }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
         let mut stack = self.mode_stack.lock().unwrap();
         if let Some(previous) = stack.pop() {
-            Ok(ToolResult::text(format!("Exited plan mode. Restored mode: {previous}")))
+            Ok(ToolResult::text(format!(
+                "Exited plan mode. Restored mode: {previous}"
+            )))
         } else {
             Ok(ToolResult::text("Not in plan mode — no mode to restore."))
         }
@@ -167,7 +195,9 @@ pub struct EnterWorktreeTool;
 
 #[async_trait]
 impl Tool for EnterWorktreeTool {
-    fn name(&self) -> &str { "enter_worktree" }
+    fn name(&self) -> &str {
+        "enter_worktree"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -187,23 +217,53 @@ impl Tool for EnterWorktreeTool {
         "Create an isolated git worktree for sandboxed editing. Changes in the worktree \
          don't affect the main working directory. Use exit_worktree to discard or merge."
     }
-    fn is_mutating(&self) -> bool { true }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let branch = args.get("branch").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let branch = args
+            .get("branch")
+            .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("pipit-wt-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap()));
-        let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("sandboxed editing");
+            .unwrap_or_else(|| {
+                format!(
+                    "pipit-wt-{}",
+                    uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+                )
+            });
+        let reason = args
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("sandboxed editing");
 
-        let worktree_path = ctx.project_root.join(".pipit").join("worktrees").join(&branch);
+        let worktree_path = ctx
+            .project_root
+            .join(".pipit")
+            .join("worktrees")
+            .join(&branch);
 
         // Create worktree directory
-        tokio::fs::create_dir_all(worktree_path.parent().unwrap()).await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create worktree dir: {e}")))?;
+        tokio::fs::create_dir_all(worktree_path.parent().unwrap())
+            .await
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("Failed to create worktree dir: {e}"))
+            })?;
 
         // git worktree add
         let output = tokio::process::Command::new("git")
-            .args(["worktree", "add", "-b", &branch, worktree_path.to_str().unwrap()])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                &branch,
+                worktree_path.to_str().unwrap(),
+            ])
             .current_dir(&ctx.project_root)
             .output()
             .await
@@ -211,7 +271,9 @@ impl Tool for EnterWorktreeTool {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ToolError::ExecutionFailed(format!("git worktree add failed: {stderr}")));
+            return Err(ToolError::ExecutionFailed(format!(
+                "git worktree add failed: {stderr}"
+            )));
         }
 
         // Switch cwd to worktree
@@ -233,7 +295,9 @@ pub struct ExitWorktreeTool;
 
 #[async_trait]
 impl Tool for ExitWorktreeTool {
-    fn name(&self) -> &str { "exit_worktree" }
+    fn name(&self) -> &str {
+        "exit_worktree"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -249,10 +313,20 @@ impl Tool for ExitWorktreeTool {
     fn description(&self) -> &str {
         "Exit the current git worktree. Choose to discard changes, keep the branch, or merge into main."
     }
-    fn is_mutating(&self) -> bool { true }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("discard");
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("discard");
         let cwd = ctx.current_dir();
 
         // Check if we're actually in a worktree
@@ -263,7 +337,9 @@ impl Tool for ExitWorktreeTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("git check failed: {e}")))?;
 
-        let common_dir = String::from_utf8_lossy(&worktree_check.stdout).trim().to_string();
+        let common_dir = String::from_utf8_lossy(&worktree_check.stdout)
+            .trim()
+            .to_string();
         let git_dir = tokio::process::Command::new("git")
             .args(["rev-parse", "--git-dir"])
             .current_dir(&cwd)
@@ -283,7 +359,9 @@ impl Tool for ExitWorktreeTool {
             .output()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("git branch failed: {e}")))?;
-        let branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+        let branch = String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string();
 
         // Restore cwd to project root
         ctx.set_cwd(ctx.project_root.clone());
@@ -303,7 +381,9 @@ impl Tool for ExitWorktreeTool {
                         .output()
                         .await;
                 }
-                Ok(ToolResult::mutating(format!("Discarded worktree and branch '{branch}'. Returned to project root.")))
+                Ok(ToolResult::mutating(format!(
+                    "Discarded worktree and branch '{branch}'. Returned to project root."
+                )))
             }
             "keep" => {
                 let _ = tokio::process::Command::new("git")
@@ -311,7 +391,9 @@ impl Tool for ExitWorktreeTool {
                     .current_dir(&ctx.project_root)
                     .output()
                     .await;
-                Ok(ToolResult::mutating(format!("Removed worktree but kept branch '{branch}'. Returned to project root.")))
+                Ok(ToolResult::mutating(format!(
+                    "Removed worktree but kept branch '{branch}'. Returned to project root."
+                )))
             }
             "merge" => {
                 // Remove worktree first, then merge
@@ -332,13 +414,17 @@ impl Tool for ExitWorktreeTool {
                         .current_dir(&ctx.project_root)
                         .output()
                         .await;
-                    Ok(ToolResult::mutating(format!("Merged branch '{branch}' and cleaned up. Returned to project root.")))
+                    Ok(ToolResult::mutating(format!(
+                        "Merged branch '{branch}' and cleaned up. Returned to project root."
+                    )))
                 } else {
                     let stderr = String::from_utf8_lossy(&merge.stderr);
-                    Ok(ToolResult::mutating(format!("Merge conflicts in branch '{branch}': {stderr}\nResolve manually.")))
+                    Ok(ToolResult::mutating(format!(
+                        "Merge conflicts in branch '{branch}': {stderr}\nResolve manually."
+                    )))
                 }
             }
-            _ => Err(ToolError::InvalidArgs(format!("Unknown action: {action}")))
+            _ => Err(ToolError::InvalidArgs(format!("Unknown action: {action}"))),
         }
     }
 }
@@ -351,7 +437,9 @@ pub struct ListMcpResourcesTool;
 
 #[async_trait]
 impl Tool for ListMcpResourcesTool {
-    fn name(&self) -> &str { "list_mcp_resources" }
+    fn name(&self) -> &str {
+        "list_mcp_resources"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -372,25 +460,42 @@ impl Tool for ListMcpResourcesTool {
         "List available resources from an MCP server. Resources are files, database records, \
          API endpoints, or other structured data exposed by the server."
     }
-    fn is_mutating(&self) -> bool { false }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let server = args.get("server").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let server = args
+            .get("server")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("server name is required".into()))?;
         let cursor = args.get("cursor").and_then(|v| v.as_str());
 
         // Load MCP config and find the server
-        let config = crate::mcp::load_mcp_config(&ctx.project_root)
-            .ok_or_else(|| ToolError::ExecutionFailed(
-                "No MCP configuration found. Create .pipit/mcp.json to configure MCP servers.".into()
-            ))?;
+        let config = crate::mcp::load_mcp_config(&ctx.project_root).ok_or_else(|| {
+            ToolError::ExecutionFailed(
+                "No MCP configuration found. Create .pipit/mcp.json to configure MCP servers."
+                    .into(),
+            )
+        })?;
 
-        let server_config = config.mcp_servers.get(server)
-            .ok_or_else(|| ToolError::ExecutionFailed(format!(
+        let server_config = config.mcp_servers.get(server).ok_or_else(|| {
+            ToolError::ExecutionFailed(format!(
                 "MCP server '{}' not found in config. Available: {}",
                 server,
-                config.mcp_servers.keys().cloned().collect::<Vec<_>>().join(", ")
-            )))?;
+                config
+                    .mcp_servers
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
 
         // Connect to the server based on transport type
         let client = match server_config {
@@ -401,7 +506,12 @@ impl Tool for ListMcpResourcesTool {
             }
             crate::mcp::McpServerConfig::Sse { .. } => {
                 return Err(ToolError::ExecutionFailed(
-                    "SSE transport not supported for resources/list. Use stdio servers.".into()
+                    "SSE transport not supported for resources/list. Use stdio servers.".into(),
+                ));
+            }
+            crate::mcp::McpServerConfig::StreamableHttp { .. } => {
+                return Err(ToolError::ExecutionFailed(
+                    "Streamable HTTP transport not supported for resources/list. Use stdio servers.".into()
                 ));
             }
         };
@@ -411,7 +521,8 @@ impl Tool for ListMcpResourcesTool {
             params.insert("cursor".to_string(), Value::String(c.to_string()));
         }
 
-        let result = client.call_method("resources/list", Some(Value::Object(params)))
+        let result = client
+            .call_method("resources/list", Some(Value::Object(params)))
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("resources/list failed: {e}")))?;
 
@@ -421,22 +532,33 @@ impl Tool for ListMcpResourcesTool {
 
         match resources {
             Some(resources) if !resources.is_empty() => {
-                let formatted: Vec<String> = resources.iter().map(|r| {
-                    let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(uri);
-                    let desc = r.get("description").and_then(|v| v.as_str());
-                    match desc {
-                        Some(d) => format!("  - {name} ({uri}): {d}"),
-                        None => format!("  - {name} ({uri})"),
-                    }
-                }).collect();
-                let mut output = format!("Resources from '{server}' ({} items):\n{}", formatted.len(), formatted.join("\n"));
+                let formatted: Vec<String> = resources
+                    .iter()
+                    .map(|r| {
+                        let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = r.get("name").and_then(|v| v.as_str()).unwrap_or(uri);
+                        let desc = r.get("description").and_then(|v| v.as_str());
+                        match desc {
+                            Some(d) => format!("  - {name} ({uri}): {d}"),
+                            None => format!("  - {name} ({uri})"),
+                        }
+                    })
+                    .collect();
+                let mut output = format!(
+                    "Resources from '{server}' ({} items):\n{}",
+                    formatted.len(),
+                    formatted.join("\n")
+                );
                 if let Some(c) = next_cursor {
-                    output.push_str(&format!("\n\n[More results available — use cursor: \"{c}\"]"));
+                    output.push_str(&format!(
+                        "\n\n[More results available — use cursor: \"{c}\"]"
+                    ));
                 }
                 Ok(ToolResult::text(output))
             }
-            _ => Ok(ToolResult::text(format!("No resources found on MCP server '{server}'.")))
+            _ => Ok(ToolResult::text(format!(
+                "No resources found on MCP server '{server}'."
+            ))),
         }
     }
 }
@@ -449,7 +571,9 @@ pub struct ReadMcpResourceTool;
 
 #[async_trait]
 impl Tool for ReadMcpResourceTool {
-    fn name(&self) -> &str { "read_mcp_resource" }
+    fn name(&self) -> &str {
+        "read_mcp_resource"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -469,24 +593,36 @@ impl Tool for ReadMcpResourceTool {
     fn description(&self) -> &str {
         "Read a specific resource from an MCP server by URI. Returns the resource content."
     }
-    fn is_mutating(&self) -> bool { false }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let server = args.get("server").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let server = args
+            .get("server")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("server name is required".into()))?;
-        let uri = args.get("uri").and_then(|v| v.as_str())
+        let uri = args
+            .get("uri")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("resource URI is required".into()))?;
 
         // Load MCP config and find the server
-        let config = crate::mcp::load_mcp_config(&ctx.project_root)
-            .ok_or_else(|| ToolError::ExecutionFailed(
-                "No MCP configuration found. Create .pipit/mcp.json to configure MCP servers.".into()
-            ))?;
+        let config = crate::mcp::load_mcp_config(&ctx.project_root).ok_or_else(|| {
+            ToolError::ExecutionFailed(
+                "No MCP configuration found. Create .pipit/mcp.json to configure MCP servers."
+                    .into(),
+            )
+        })?;
 
-        let server_config = config.mcp_servers.get(server)
-            .ok_or_else(|| ToolError::ExecutionFailed(format!(
-                "MCP server '{}' not found in config.", server
-            )))?;
+        let server_config = config.mcp_servers.get(server).ok_or_else(|| {
+            ToolError::ExecutionFailed(format!("MCP server '{}' not found in config.", server))
+        })?;
 
         let client = match server_config {
             crate::mcp::McpServerConfig::Stdio { command, args, env } => {
@@ -496,12 +632,18 @@ impl Tool for ReadMcpResourceTool {
             }
             crate::mcp::McpServerConfig::Sse { .. } => {
                 return Err(ToolError::ExecutionFailed(
-                    "SSE transport not supported for resources/read. Use stdio servers.".into()
+                    "SSE transport not supported for resources/read. Use stdio servers.".into(),
+                ));
+            }
+            crate::mcp::McpServerConfig::StreamableHttp { .. } => {
+                return Err(ToolError::ExecutionFailed(
+                    "Streamable HTTP not supported for resources/read. Use stdio servers.".into(),
                 ));
             }
         };
 
-        let result = client.call_method("resources/read", Some(serde_json::json!({"uri": uri})))
+        let result = client
+            .call_method("resources/read", Some(serde_json::json!({"uri": uri})))
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("resources/read failed: {e}")))?;
 
@@ -512,7 +654,10 @@ impl Tool for ReadMcpResourceTool {
                 let mut output = String::new();
                 for item in contents {
                     let content_uri = item.get("uri").and_then(|v| v.as_str()).unwrap_or(uri);
-                    let mime = item.get("mimeType").and_then(|v| v.as_str()).unwrap_or("text/plain");
+                    let mime = item
+                        .get("mimeType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("text/plain");
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                         output.push_str(&format!("[{content_uri} ({mime})]\n{text}\n"));
                     } else if let Some(blob) = item.get("blob").and_then(|v| v.as_str()) {
@@ -521,7 +666,9 @@ impl Tool for ReadMcpResourceTool {
                 }
                 Ok(ToolResult::text(output))
             }
-            _ => Ok(ToolResult::text(format!("Resource '{uri}' returned no content.")))
+            _ => Ok(ToolResult::text(format!(
+                "Resource '{uri}' returned no content."
+            ))),
         }
     }
 }
@@ -534,7 +681,9 @@ pub struct McpAuthTool;
 
 #[async_trait]
 impl Tool for McpAuthTool {
-    fn name(&self) -> &str { "mcp_auth" }
+    fn name(&self) -> &str {
+        "mcp_auth"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -555,22 +704,33 @@ impl Tool for McpAuthTool {
         "Authenticate with an MCP server that requires OAuth. Triggers the PKCE flow: \
          opens browser for user authorization, captures callback, exchanges code for tokens."
     }
-    fn is_mutating(&self) -> bool { true }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let server = args.get("server").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let server = args
+            .get("server")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("server name is required".into()))?;
         let auth_url = args.get("auth_url").and_then(|v| v.as_str());
 
         if let Some(url) = auth_url {
             // Open browser for OAuth
-            let open_cmd = if cfg!(target_os = "macos") { "open" }
-                else if cfg!(target_os = "linux") { "xdg-open" }
-                else { "start" };
+            let open_cmd = if cfg!(target_os = "macos") {
+                "open"
+            } else if cfg!(target_os = "linux") {
+                "xdg-open"
+            } else {
+                "start"
+            };
 
-            let _ = tokio::process::Command::new(open_cmd)
-                .arg(url)
-                .spawn();
+            let _ = tokio::process::Command::new(open_cmd).arg(url).spawn();
 
             Ok(ToolResult::mutating(format!(
                 "OAuth flow initiated for MCP server '{server}':\n\
@@ -581,9 +741,16 @@ impl Tool for McpAuthTool {
             )))
         } else {
             // Check stored credentials
-            let cred_path = ctx.project_root.join(".pipit").join("credentials").join(format!("{server}.json"));
+            let cred_path = ctx
+                .project_root
+                .join(".pipit")
+                .join("credentials")
+                .join(format!("{server}.json"));
             if cred_path.exists() {
-                Ok(ToolResult::text(format!("MCP server '{server}' has stored credentials at {}", cred_path.display())))
+                Ok(ToolResult::text(format!(
+                    "MCP server '{server}' has stored credentials at {}",
+                    cred_path.display()
+                )))
             } else {
                 Ok(ToolResult::text(format!(
                     "No credentials for MCP server '{server}'. \
@@ -613,13 +780,17 @@ struct AgentMessage {
 
 impl SendMessageTool {
     pub fn new() -> Self {
-        Self { outbox: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            outbox: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
 #[async_trait]
 impl Tool for SendMessageTool {
-    fn name(&self) -> &str { "send_message" }
+    fn name(&self) -> &str {
+        "send_message"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -645,14 +816,28 @@ impl Tool for SendMessageTool {
         "Send a message to another agent in coordinator mode. The target agent \
          receives the message in its context and can respond via the parent coordinator."
     }
-    fn is_mutating(&self) -> bool { true }
+    fn is_mutating(&self) -> bool {
+        true
+    }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let target = args.get("target_agent").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let target = args
+            .get("target_agent")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("target_agent is required".into()))?;
-        let message = args.get("message").and_then(|v| v.as_str())
+        let message = args
+            .get("message")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("message is required".into()))?;
-        let priority = args.get("priority").and_then(|v| v.as_str()).unwrap_or("normal");
+        let priority = args
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("normal");
 
         let msg = AgentMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -667,7 +852,8 @@ impl Tool for SendMessageTool {
 
         Ok(ToolResult::mutating(format!(
             "Message sent to agent '{target}' (priority: {priority}):\n  {message}\n\
-             Message ID: {}", msg.id
+             Message ID: {}",
+            msg.id
         )))
     }
 }
@@ -682,13 +868,17 @@ pub struct TaskOutputTool {
 
 impl TaskOutputTool {
     pub fn new() -> Self {
-        Self { output_offsets: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            output_offsets: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
 #[async_trait]
 impl Tool for TaskOutputTool {
-    fn name(&self) -> &str { "task_output" }
+    fn name(&self) -> &str {
+        "task_output"
+    }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -709,22 +899,39 @@ impl Tool for TaskOutputTool {
         "Read output from a running or completed background task. Returns new output \
          since last read (incremental). Use 'tail' to get the last N lines."
     }
-    fn is_mutating(&self) -> bool { false }
+    fn is_mutating(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, args: Value, ctx: &ToolContext, _cancel: CancellationToken) -> Result<ToolResult, ToolError> {
-        let task_id = args.get("task_id").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let task_id = args
+            .get("task_id")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgs("task_id is required".into()))?;
-        let tail = args.get("tail").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let tail = args
+            .get("tail")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
 
         // Check for task log file
-        let log_path = ctx.project_root.join(".pipit").join("tasks").join(format!("{task_id}.log"));
+        let log_path = ctx
+            .project_root
+            .join(".pipit")
+            .join("tasks")
+            .join(format!("{task_id}.log"));
         if !log_path.exists() {
             return Err(ToolError::ExecutionFailed(format!(
                 "No output file for task '{task_id}'. Task may not have started or log path not configured."
             )));
         }
 
-        let content = tokio::fs::read_to_string(&log_path).await
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read task log: {e}")))?;
 
         let output = {
@@ -747,9 +954,15 @@ impl Tool for TaskOutputTool {
         }; // MutexGuard dropped here before any await
 
         // Also check if process is still running
-        let pid_path = ctx.project_root.join(".pipit").join("tasks").join(format!("{task_id}.pid"));
+        let pid_path = ctx
+            .project_root
+            .join(".pipit")
+            .join("tasks")
+            .join(format!("{task_id}.pid"));
         let status = if pid_path.exists() {
-            let pid_str = tokio::fs::read_to_string(&pid_path).await.unwrap_or_default();
+            let pid_str = tokio::fs::read_to_string(&pid_path)
+                .await
+                .unwrap_or_default();
             if let Ok(pid) = pid_str.trim().parse::<u32>() {
                 // Check if process is alive
                 let alive = tokio::process::Command::new("kill")
@@ -766,7 +979,9 @@ impl Tool for TaskOutputTool {
             "no-pid"
         };
 
-        Ok(ToolResult::text(format!("[Task {task_id} — {status}]\n{output}")))
+        Ok(ToolResult::text(format!(
+            "[Task {task_id} — {status}]\n{output}"
+        )))
     }
 }
 
@@ -783,6 +998,141 @@ pub fn register_production_tools(registry: &mut crate::ToolRegistry) {
     registry.register(Arc::new(McpAuthTool));
     registry.register(Arc::new(SendMessageTool::new()));
     registry.register(Arc::new(TaskOutputTool::new()));
+    registry.register(Arc::new(A2ADiscoverTool));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  A2A (Agent-to-Agent) Discovery Tool
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub struct A2ADiscoverTool;
+
+#[async_trait]
+impl crate::Tool for A2ADiscoverTool {
+    fn name(&self) -> &str {
+        "a2a_discover"
+    }
+    fn schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["discover", "send_task", "card"],
+                    "description": "discover: find agent at URL, send_task: send a task to an agent, card: show this agent's card"
+                },
+                "url": { "type": "string", "description": "Base URL of the remote agent" },
+                "task": { "type": "string", "description": "Task message to send (for send_task)" }
+            },
+            "required": ["action"]
+        })
+    }
+    fn description(&self) -> &str {
+        "Interact with A2A (Agent-to-Agent) protocol agents. Discover remote agents, send tasks, or view this agent's card."
+    }
+    fn is_mutating(&self) -> bool {
+        false
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &crate::ToolContext,
+        _cancel: CancellationToken,
+    ) -> Result<crate::ToolResult, crate::ToolError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("card");
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| crate::ToolError::ExecutionFailed(format!("HTTP client: {e}")))?;
+
+        match action {
+            "card" => {
+                let card = serde_json::json!({
+                    "name": "pipit",
+                    "description": "AI coding agent with terminal-native tool execution",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "capabilities": { "streaming": true, "pushNotifications": false, "stateTransitionHistory": true },
+                    "skills": [
+                        { "id": "code-edit", "name": "Code Editing", "description": "Edit files with precision" },
+                        { "id": "bash-exec", "name": "Shell Execution", "description": "Execute shell commands" },
+                        { "id": "code-review", "name": "Code Review", "description": "Review changes" },
+                        { "id": "bug-fix", "name": "Bug Fixing", "description": "Diagnose and fix bugs" }
+                    ],
+                    "defaultInputModes": ["text"],
+                    "defaultOutputModes": ["text"]
+                });
+                Ok(crate::ToolResult::text(format!(
+                    "This agent's A2A card:\n{}",
+                    serde_json::to_string_pretty(&card).unwrap()
+                )))
+            }
+            "discover" => {
+                let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+                    crate::ToolError::InvalidArgs("url required for discover".into())
+                })?;
+                let discovery_url = format!("{}/.well-known/agent.json", url.trim_end_matches('/'));
+                match http.get(&discovery_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let body = resp.text().await.unwrap_or_default();
+                        Ok(crate::ToolResult::text(format!(
+                            "Remote agent discovered:\n{}",
+                            body
+                        )))
+                    }
+                    Ok(resp) => Ok(crate::ToolResult::error(format!(
+                        "A2A discovery failed: HTTP {}",
+                        resp.status()
+                    ))),
+                    Err(e) => Ok(crate::ToolResult::error(format!(
+                        "A2A discovery failed: {}",
+                        e
+                    ))),
+                }
+            }
+            "send_task" => {
+                let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+                    crate::ToolError::InvalidArgs("url required for send_task".into())
+                })?;
+                let task_text = args.get("task").and_then(|v| v.as_str()).ok_or_else(|| {
+                    crate::ToolError::InvalidArgs("task required for send_task".into())
+                })?;
+
+                let task_body = serde_json::json!({
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "message": {
+                        "role": "user",
+                        "parts": [{ "type": "text", "text": task_text }]
+                    }
+                });
+                let task_url = format!("{}/tasks/send", url.trim_end_matches('/'));
+                match http.post(&task_url).json(&task_body).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let body = resp.text().await.unwrap_or_default();
+                        Ok(crate::ToolResult::text(format!(
+                            "A2A task sent. Response:\n{}",
+                            body
+                        )))
+                    }
+                    Ok(resp) => Ok(crate::ToolResult::error(format!(
+                        "A2A send_task failed: HTTP {}",
+                        resp.status()
+                    ))),
+                    Err(e) => Ok(crate::ToolResult::error(format!(
+                        "A2A send_task failed: {}",
+                        e
+                    ))),
+                }
+            }
+            other => Ok(crate::ToolResult::error(format!(
+                "Unknown A2A action: {}",
+                other
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -823,8 +1173,16 @@ mod tests {
         ];
         for tool in &tools {
             let schema = tool.schema();
-            assert!(schema.get("type").is_some(), "Tool {} missing type", tool.name());
-            assert!(schema.get("properties").is_some(), "Tool {} missing properties", tool.name());
+            assert!(
+                schema.get("type").is_some(),
+                "Tool {} missing type",
+                tool.name()
+            );
+            assert!(
+                schema.get("properties").is_some(),
+                "Tool {} missing properties",
+                tool.name()
+            );
         }
     }
 
@@ -836,10 +1194,16 @@ mod tests {
         let ctx = ToolContext::new(std::env::temp_dir(), ApprovalMode::FullAuto);
         let cancel = CancellationToken::new();
 
-        let r = enter.execute(serde_json::json!({"reason": "test"}), &ctx, cancel.clone()).await.unwrap();
+        let r = enter
+            .execute(serde_json::json!({"reason": "test"}), &ctx, cancel.clone())
+            .await
+            .unwrap();
         assert!(r.content.contains("Entered plan mode"));
 
-        let r = exit.execute(serde_json::json!({}), &ctx, cancel).await.unwrap();
+        let r = exit
+            .execute(serde_json::json!({}), &ctx, cancel)
+            .await
+            .unwrap();
         assert!(r.content.contains("Exited plan mode"));
     }
 }

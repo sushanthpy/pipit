@@ -167,11 +167,7 @@ impl DeliberationScheduler {
     ///   E[value(d)] = priority · quality_gain(d)
     ///   cost(d) = λ · token_multiplier(d) · pass_cost
     /// Choose d* = argmax_d [E[value] - cost]
-    fn optimal_depth(
-        &self,
-        priority: f64,
-        signals: &DeliberationSignals,
-    ) -> DeliberationDepth {
+    fn optimal_depth(&self, priority: f64, signals: &DeliberationSignals) -> DeliberationDepth {
         let candidates = [
             DeliberationDepth::Shallow,
             DeliberationDepth::Standard,

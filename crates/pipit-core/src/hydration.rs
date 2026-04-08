@@ -35,9 +35,7 @@ pub enum HydrationStage {
 #[derive(Debug, Clone)]
 pub enum HydrationEvent {
     /// A hydration stage has started.
-    StageStarted {
-        stage: HydrationStage,
-    },
+    StageStarted { stage: HydrationStage },
     /// A hydration stage completed successfully.
     StageCompleted {
         stage: HydrationStage,
@@ -90,7 +88,9 @@ pub fn hydrate_session(
     let mut restored_cwd = None;
 
     // ── Stage 1: Ledger Replay ──
-    events.push(HydrationEvent::StageStarted { stage: HydrationStage::LedgerReplay });
+    events.push(HydrationEvent::StageStarted {
+        stage: HydrationStage::LedgerReplay,
+    });
     let stage_start = std::time::Instant::now();
 
     let (event_count, messages) = kernel.resume()?;
@@ -101,7 +101,9 @@ pub fn hydrate_session(
     });
 
     // ── Stage 2: Context Restore ──
-    events.push(HydrationEvent::StageStarted { stage: HydrationStage::ContextRestore });
+    events.push(HydrationEvent::StageStarted {
+        stage: HydrationStage::ContextRestore,
+    });
     let stage_start = std::time::Instant::now();
 
     for msg in &messages {
@@ -115,7 +117,9 @@ pub fn hydrate_session(
     });
 
     // ── Stage 3: Worktree Restore ──
-    events.push(HydrationEvent::StageStarted { stage: HydrationStage::WorktreeRestore });
+    events.push(HydrationEvent::StageStarted {
+        stage: HydrationStage::WorktreeRestore,
+    });
     let stage_start = std::time::Instant::now();
 
     // Check if a worktree session directory exists with cwd state
@@ -144,7 +148,9 @@ pub fn hydrate_session(
     });
 
     // ── Stage 4: Permission Restore ──
-    events.push(HydrationEvent::StageStarted { stage: HydrationStage::PermissionRestore });
+    events.push(HydrationEvent::StageStarted {
+        stage: HydrationStage::PermissionRestore,
+    });
     let stage_start = std::time::Instant::now();
     // Permissions are rebuilt from ledger replay (ToolApproved/ToolDenied events
     // are already reduced into SessionState by the kernel). No separate action needed.
@@ -154,7 +160,9 @@ pub fn hydrate_session(
     });
 
     // ── Stage 5: UI Reattach (no-op here — handled by caller) ──
-    events.push(HydrationEvent::StageStarted { stage: HydrationStage::UiReattach });
+    events.push(HydrationEvent::StageStarted {
+        stage: HydrationStage::UiReattach,
+    });
     events.push(HydrationEvent::StageCompleted {
         stage: HydrationStage::UiReattach,
         duration_ms: 0,

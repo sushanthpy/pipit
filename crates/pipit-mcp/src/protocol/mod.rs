@@ -1,4 +1,3 @@
-
 //! MCP Protocol Extensions — OAuth, WebSocket, Channel Allowlists, Elicitation (Task 4)
 //!
 //! Extends Pipit's MCP layer with production-grade features:
@@ -276,7 +275,8 @@ impl ChannelAllowlist {
     pub fn from_config(config: &serde_json::Value) -> Self {
         let mut allowlist = Self::default();
 
-        if let Some(channels) = config.get("mcp")
+        if let Some(channels) = config
+            .get("mcp")
             .and_then(|m| m.get("channels"))
             .and_then(|c| c.as_object())
         {
@@ -344,7 +344,8 @@ pub fn parse_elicitation_error(
         return None;
     }
 
-    let url = error_data.get("url")
+    let url = error_data
+        .get("url")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -353,7 +354,8 @@ pub fn parse_elicitation_error(
         return None;
     }
 
-    let message = error_data.get("message")
+    let message = error_data
+        .get("message")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -404,7 +406,11 @@ mod tests {
     fn pkce_code_challenge_format() {
         let verifier = generate_code_verifier(43);
         assert!(verifier.len() == 43);
-        assert!(verifier.chars().all(|c| c.is_ascii_alphanumeric() || "-._~".contains(c)));
+        assert!(
+            verifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._~".contains(c))
+        );
 
         let challenge = compute_code_challenge(&verifier);
         // Base64url: no padding, no + or /
@@ -416,14 +422,20 @@ mod tests {
     #[test]
     fn channel_allowlist_filtering() {
         let mut allowlist = ChannelAllowlist::default();
-        allowlist.servers.insert("github".into(), ChannelPolicy {
-            allow: HashSet::from(["create_issue".into(), "list_issues".into()]),
-            deny: HashSet::new(),
-        });
-        allowlist.servers.insert("filesystem".into(), ChannelPolicy {
-            allow: HashSet::new(),
-            deny: HashSet::from(["*".into()]),
-        });
+        allowlist.servers.insert(
+            "github".into(),
+            ChannelPolicy {
+                allow: HashSet::from(["create_issue".into(), "list_issues".into()]),
+                deny: HashSet::new(),
+            },
+        );
+        allowlist.servers.insert(
+            "filesystem".into(),
+            ChannelPolicy {
+                allow: HashSet::new(),
+                deny: HashSet::from(["*".into()]),
+            },
+        );
 
         assert!(allowlist.is_allowed("github", "create_issue"));
         assert!(!allowlist.is_allowed("github", "delete_repo"));
@@ -434,10 +446,13 @@ mod tests {
     #[test]
     fn deny_overrides_allow() {
         let mut allowlist = ChannelAllowlist::default();
-        allowlist.servers.insert("slack".into(), ChannelPolicy {
-            allow: HashSet::from(["send_message".into(), "delete_message".into()]),
-            deny: HashSet::from(["delete_message".into()]),
-        });
+        allowlist.servers.insert(
+            "slack".into(),
+            ChannelPolicy {
+                allow: HashSet::from(["send_message".into(), "delete_message".into()]),
+                deny: HashSet::from(["delete_message".into()]),
+            },
+        );
 
         assert!(allowlist.is_allowed("slack", "send_message"));
         assert!(!allowlist.is_allowed("slack", "delete_message")); // Deny wins
@@ -450,7 +465,12 @@ mod tests {
             "message": "Please authenticate with GitHub"
         });
 
-        let req = parse_elicitation_error(MCP_ELICITATION_ERROR_CODE, &error_data, "github", "create_issue");
+        let req = parse_elicitation_error(
+            MCP_ELICITATION_ERROR_CODE,
+            &error_data,
+            "github",
+            "create_issue",
+        );
         assert!(req.is_some());
         let req = req.unwrap();
         assert!(req.url.contains("auth.example.com"));
@@ -459,9 +479,17 @@ mod tests {
 
     #[test]
     fn transport_auto_selection() {
-        assert_eq!(select_transport("wss://mcp.example.com", None), McpTransportKind::WebSocket);
-        assert_eq!(select_transport("https://mcp.example.com/sse", None), McpTransportKind::Sse);
-        assert_eq!(select_transport("/usr/local/bin/mcp-server", None), McpTransportKind::Stdio);
+        assert_eq!(
+            select_transport("wss://mcp.example.com", None),
+            McpTransportKind::WebSocket
+        );
+        assert_eq!(
+            select_transport("https://mcp.example.com/sse", None),
+            McpTransportKind::Sse
+        );
+        assert_eq!(
+            select_transport("/usr/local/bin/mcp-server", None),
+            McpTransportKind::Stdio
+        );
     }
 }
-

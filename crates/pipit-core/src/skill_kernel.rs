@@ -50,29 +50,17 @@ pub enum SkillTrigger {
     /// Always available (globally loaded into system prompt).
     Always,
     /// Activate when specific file patterns are touched.
-    PathPattern {
-        patterns: Vec<String>,
-    },
+    PathPattern { patterns: Vec<String> },
     /// Activate for specific programming languages.
-    Language {
-        languages: Vec<String>,
-    },
+    Language { languages: Vec<String> },
     /// Activate when specific dependencies are present.
-    Dependency {
-        packages: Vec<String>,
-    },
+    Dependency { packages: Vec<String> },
     /// Activate on explicit user invocation (/skill-name).
-    Explicit {
-        command: String,
-    },
+    Explicit { command: String },
     /// Composite: all sub-triggers must match.
-    All {
-        triggers: Vec<SkillTrigger>,
-    },
+    All { triggers: Vec<SkillTrigger> },
     /// Composite: any sub-trigger matches.
-    Any {
-        triggers: Vec<SkillTrigger>,
-    },
+    Any { triggers: Vec<SkillTrigger> },
 }
 
 /// Sandbox contract: what a skill is allowed to do.
@@ -158,19 +146,14 @@ pub enum SkillValidation {
     /// Valid: all parameters check out, sandbox is compatible.
     Valid,
     /// Invalid input: parameters don't match schema.
-    InvalidInput {
-        errors: Vec<String>,
-    },
+    InvalidInput { errors: Vec<String> },
     /// Capability violation: skill requests more than sandbox allows.
     CapabilityViolation {
         requested: CapabilitySet,
         allowed: CapabilitySet,
     },
     /// Budget violation: not enough tokens remaining.
-    BudgetExceeded {
-        requested: u64,
-        remaining: u64,
-    },
+    BudgetExceeded { requested: u64, remaining: u64 },
     /// Trust violation: skill trust tier insufficient.
     TrustViolation {
         skill_tier: SkillTrustTier,
@@ -208,9 +191,11 @@ impl SkillKernel {
     ) -> SkillValidation {
         let skill = match self.skills.get(skill_id) {
             Some(s) => s,
-            None => return SkillValidation::InvalidInput {
-                errors: vec![format!("Skill '{}' not found", skill_id)],
-            },
+            None => {
+                return SkillValidation::InvalidInput {
+                    errors: vec![format!("Skill '{}' not found", skill_id)],
+                };
+            }
         };
 
         // Trust check
@@ -274,30 +259,23 @@ impl SkillKernel {
         self.skills.len()
     }
 
-    fn trigger_matches(
-        &self,
-        trigger: &SkillTrigger,
-        files: &[&str],
-        languages: &[&str],
-    ) -> bool {
+    fn trigger_matches(&self, trigger: &SkillTrigger, files: &[&str], languages: &[&str]) -> bool {
         match trigger {
             SkillTrigger::Always => true,
-            SkillTrigger::PathPattern { patterns } => {
-                files.iter().any(|f| {
-                    patterns.iter().any(|p| simple_glob_match(p, f))
-                })
-            }
+            SkillTrigger::PathPattern { patterns } => files
+                .iter()
+                .any(|f| patterns.iter().any(|p| simple_glob_match(p, f))),
             SkillTrigger::Language { languages: langs } => {
                 languages.iter().any(|l| langs.iter().any(|sl| sl == l))
             }
             SkillTrigger::Dependency { .. } => false, // Needs project analysis
-            SkillTrigger::Explicit { .. } => false, // Only on explicit invocation
-            SkillTrigger::All { triggers } => {
-                triggers.iter().all(|t| self.trigger_matches(t, files, languages))
-            }
-            SkillTrigger::Any { triggers } => {
-                triggers.iter().any(|t| self.trigger_matches(t, files, languages))
-            }
+            SkillTrigger::Explicit { .. } => false,   // Only on explicit invocation
+            SkillTrigger::All { triggers } => triggers
+                .iter()
+                .all(|t| self.trigger_matches(t, files, languages)),
+            SkillTrigger::Any { triggers } => triggers
+                .iter()
+                .any(|t| self.trigger_matches(t, files, languages)),
         }
     }
 }

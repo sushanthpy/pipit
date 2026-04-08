@@ -10,12 +10,7 @@ use crate::VisualDiff;
 
 /// Compare two screenshots (as raw RGBA pixel buffers).
 /// Returns a VisualDiff with SSIM score and change detection.
-pub fn compare_screenshots(
-    before: &[u8],
-    after: &[u8],
-    width: u32,
-    height: u32,
-) -> VisualDiff {
+pub fn compare_screenshots(before: &[u8], after: &[u8], width: u32, height: u32) -> VisualDiff {
     let total_pixels = (width * height) as usize;
     if before.len() != after.len() || before.len() < total_pixels * 4 {
         return VisualDiff {
@@ -69,12 +64,7 @@ fn luminance(r: u8, g: u8, b: u8) -> f32 {
 
 /// Generate a diff overlay image (RGBA buffer).
 /// Changed pixels are highlighted in red; unchanged are dimmed.
-pub fn generate_diff_overlay(
-    before: &[u8],
-    after: &[u8],
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
+pub fn generate_diff_overlay(before: &[u8], after: &[u8], width: u32, height: u32) -> Vec<u8> {
     let total_pixels = (width * height) as usize;
     let mut overlay = vec![0u8; total_pixels * 4];
 
@@ -90,9 +80,9 @@ pub fn generate_diff_overlay(
 
         if delta > 2.3 {
             // Red highlight for changed pixels
-            overlay[offset] = 255;     // R
-            overlay[offset + 1] = 50;  // G
-            overlay[offset + 2] = 50;  // B
+            overlay[offset] = 255; // R
+            overlay[offset + 1] = 50; // G
+            overlay[offset + 2] = 50; // B
             overlay[offset + 3] = 180; // A
         } else {
             // Dim unchanged pixels

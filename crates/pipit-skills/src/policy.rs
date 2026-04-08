@@ -70,9 +70,7 @@ fn tier_allows_tool(tier: TrustTier, tool: &str) -> bool {
                 || STANDARD_TOOLS.contains(&tool)
                 || ELEVATED_TOOLS.contains(&tool)
         }
-        TrustTier::Standard => {
-            SANDBOX_TOOLS.contains(&tool) || STANDARD_TOOLS.contains(&tool)
-        }
+        TrustTier::Standard => SANDBOX_TOOLS.contains(&tool) || STANDARD_TOOLS.contains(&tool),
         TrustTier::Sandbox => SANDBOX_TOOLS.contains(&tool),
     }
 }
@@ -99,10 +97,7 @@ impl SkillPolicyEngine {
     }
 
     /// Configure the engine with global deny list and auto-approve ceiling.
-    pub fn with_config(
-        global_deny: HashSet<String>,
-        max_auto_approve_tier: TrustTier,
-    ) -> Self {
+    pub fn with_config(global_deny: HashSet<String>, max_auto_approve_tier: TrustTier) -> Self {
         Self {
             global_deny,
             max_auto_approve_tier,
@@ -135,19 +130,12 @@ impl SkillPolicyEngine {
     // ── Enforcement point 2: Per-tool-call ──────────────────────────
 
     /// Check if a skill is allowed to call a specific tool.
-    pub fn check_tool_call(
-        &mut self,
-        package: &SkillPackage,
-        tool_name: &str,
-    ) -> PolicyDecision {
+    pub fn check_tool_call(&mut self, package: &SkillPackage, tool_name: &str) -> PolicyDecision {
         let name = &package.manifest.package.name;
 
         // Global deny overrides everything
         if self.global_deny.contains(tool_name) {
-            let decision = PolicyDecision::Deny(format!(
-                "Tool '{}' is globally denied",
-                tool_name
-            ));
+            let decision = PolicyDecision::Deny(format!("Tool '{}' is globally denied", tool_name));
             self.record(name, &format!("tool:{}", tool_name), decision.clone());
             return decision;
         }
@@ -271,7 +259,12 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    fn make_package(name: &str, tier: TrustTier, allowed: &[&str], denied: &[&str]) -> SkillPackage {
+    fn make_package(
+        name: &str,
+        tier: TrustTier,
+        allowed: &[&str],
+        denied: &[&str],
+    ) -> SkillPackage {
         let meta = SkillMetadata {
             name: name.to_string(),
             description: "test".to_string(),

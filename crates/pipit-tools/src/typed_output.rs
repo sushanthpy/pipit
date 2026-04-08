@@ -13,9 +13,7 @@ use std::path::PathBuf;
 #[serde(tag = "type")]
 pub enum TypedOutput {
     /// Plain text output (most common).
-    Text {
-        content: String,
-    },
+    Text { content: String },
     /// Structured JSON output.
     Json {
         data: serde_json::Value,
@@ -54,9 +52,7 @@ pub enum TypedOutput {
         duration_ms: u64,
     },
     /// Multiple outputs from a single tool call.
-    Multi {
-        items: Vec<TypedOutput>,
-    },
+    Multi { items: Vec<TypedOutput> },
 }
 
 impl TypedOutput {
@@ -138,11 +134,12 @@ impl TypedOutput {
             TypedOutput::ArtifactRef { size, .. } => *size,
             TypedOutput::Table { headers, rows } => {
                 headers.iter().map(|h| h.len()).sum::<usize>()
-                    + rows.iter().flat_map(|r| r.iter().map(|c| c.len())).sum::<usize>()
+                    + rows
+                        .iter()
+                        .flat_map(|r| r.iter().map(|c| c.len()))
+                        .sum::<usize>()
             }
-            TypedOutput::Trace {
-                stdout, stderr, ..
-            } => stdout.len() + stderr.len(),
+            TypedOutput::Trace { stdout, stderr, .. } => stdout.len() + stderr.len(),
             TypedOutput::Multi { items } => items.iter().map(|i| i.content_size()).sum(),
         }
     }

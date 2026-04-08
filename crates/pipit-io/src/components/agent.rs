@@ -4,7 +4,7 @@
 //! summaries, and other AI-agent-specific UI elements.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, List, ListItem, Table, Row, Cell, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap};
 
 use super::text::DiffView;
 
@@ -22,7 +22,13 @@ pub struct ToolCallDisplay<'a> {
 
 impl<'a> ToolCallDisplay<'a> {
     pub fn new(tool_name: &'a str, args: &'a str) -> Self {
-        Self { tool_name, args, result: None, success: true, elapsed_ms: None }
+        Self {
+            tool_name,
+            args,
+            result: None,
+            success: true,
+            elapsed_ms: None,
+        }
     }
 
     pub fn result(mut self, result: &'a str, success: bool) -> Self {
@@ -44,22 +50,26 @@ impl Widget for &ToolCallDisplay<'_> {
         } else {
             "⋯"
         };
-        let icon_color = if self.success { Color::Green } else { Color::Red };
+        let icon_color = if self.success {
+            Color::Green
+        } else {
+            Color::Red
+        };
 
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-                Span::styled(
-                    self.tool_name.to_string(),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
-                if let Some(ms) = self.elapsed_ms {
-                    Span::styled(format!("  {}ms", ms), Style::default().fg(Color::DarkGray))
-                } else {
-                    Span::raw("")
-                },
-            ]),
-        ];
+        let mut lines = vec![Line::from(vec![
+            Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
+            Span::styled(
+                self.tool_name.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            if let Some(ms) = self.elapsed_ms {
+                Span::styled(format!("  {}ms", ms), Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            },
+        ])];
 
         // Args (truncated)
         let args_display: String = self.args.chars().take(120).collect();
@@ -70,18 +80,24 @@ impl Widget for &ToolCallDisplay<'_> {
 
         // Result preview
         if let Some(result) = self.result {
-            let preview: String = result.lines().take(3)
-                .collect::<Vec<_>>()
-                .join("\n  ");
+            let preview: String = result.lines().take(3).collect::<Vec<_>>().join("\n  ");
             if !preview.is_empty() {
                 lines.push(Line::from(Span::styled(
                     format!("  → {}", preview),
-                    Style::default().fg(if self.success { Color::Green } else { Color::Red }),
+                    Style::default().fg(if self.success {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    }),
                 )));
             }
         }
 
-        let border_color = if self.success { Color::DarkGray } else { Color::Red };
+        let border_color = if self.success {
+            Color::DarkGray
+        } else {
+            Color::Red
+        };
         let block = Block::default()
             .borders(Borders::LEFT)
             .border_style(Style::default().fg(border_color));
@@ -103,7 +119,12 @@ pub struct AgentOutput<'a> {
 
 impl<'a> AgentOutput<'a> {
     pub fn new(committed: &'a [String], streaming: &'a str) -> Self {
-        Self { committed_lines: committed, streaming_text: streaming, is_thinking: false, frame: 0 }
+        Self {
+            committed_lines: committed,
+            streaming_text: streaming,
+            is_thinking: false,
+            frame: 0,
+        }
     }
 
     pub fn thinking(mut self, thinking: bool, frame: u64) -> Self {
@@ -139,14 +160,26 @@ impl Widget for &AgentOutput<'_> {
                     format!(" {} ", spinner_frames[idx]),
                     Style::default().fg(Color::Magenta),
                 ),
-                Span::styled("reasoning", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
-                Span::styled(format!(" {}", "·".repeat(dots_n)), Style::default().fg(Color::Magenta)),
+                Span::styled(
+                    "reasoning",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Span::styled(
+                    format!(" {}", "·".repeat(dots_n)),
+                    Style::default().fg(Color::Magenta),
+                ),
             ]));
         }
 
         // Auto-scroll to bottom
         let visible_h = area.height as usize;
-        let start = if lines.len() > visible_h { lines.len() - visible_h } else { 0 };
+        let start = if lines.len() > visible_h {
+            lines.len() - visible_h
+        } else {
+            0
+        };
         let visible: Vec<Line> = lines[start..].to_vec();
 
         Paragraph::new(visible)
@@ -169,7 +202,13 @@ pub struct ToolApprovalCard<'a> {
 
 impl<'a> ToolApprovalCard<'a> {
     pub fn new(tool: &'a str, args: &'a str, risk: &'a str, reason: &'a str) -> Self {
-        Self { tool_name: tool, args_summary: args, risk, reason, selected_allow: false }
+        Self {
+            tool_name: tool,
+            args_summary: args,
+            risk,
+            reason,
+            selected_allow: false,
+        }
     }
 }
 
@@ -186,7 +225,9 @@ impl Widget for &ToolApprovalCard<'_> {
                 Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
                 Span::styled(
                     format!("Approve {}?", self.tool_name),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("  [{}]", self.risk),
@@ -194,21 +235,38 @@ impl Widget for &ToolApprovalCard<'_> {
                 ),
             ]),
             Line::from(""),
-            Line::from(Span::styled(self.args_summary.to_string(), Style::default().fg(Color::DarkGray))),
+            Line::from(Span::styled(
+                self.args_summary.to_string(),
+                Style::default().fg(Color::DarkGray),
+            )),
             Line::from(Span::styled(
                 format!("reason: {}", self.reason),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             )),
             Line::from(""),
             Line::from(vec![
                 if self.selected_allow {
-                    Span::styled(" Allow (y) ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        " Allow (y) ",
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
                     Span::styled(" Allow (y) ", Style::default().fg(Color::DarkGray))
                 },
                 Span::raw("  "),
                 if !self.selected_allow {
-                    Span::styled(" Deny (n) ", Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        " Deny (n) ",
+                        Style::default()
+                            .fg(Color::White)
+                            .bg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
                     Span::styled(" Deny (n) ", Style::default().fg(Color::DarkGray))
                 },
@@ -236,14 +294,17 @@ pub struct FileEditPreview<'a> {
 
 impl<'a> FileEditPreview<'a> {
     pub fn new(file_path: &'a str, old: &'a str, new: &'a str) -> Self {
-        Self { file_path: file_path, old_content: old, new_content: new }
+        Self {
+            file_path: file_path,
+            old_content: old,
+            new_content: new,
+        }
     }
 }
 
 impl Widget for &FileEditPreview<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let diff = DiffView::new(self.old_content, self.new_content)
-            .file_path(self.file_path);
+        let diff = DiffView::new(self.old_content, self.new_content).file_path(self.file_path);
         (&diff).render(area, buf);
     }
 }
@@ -277,22 +338,24 @@ impl<'a> TaskListView<'a> {
 
 impl Widget for &TaskListView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.tasks.iter().map(|task| {
-            let (icon, color) = match task.status {
-                TaskStatus::Pending => ("○", Color::DarkGray),
-                TaskStatus::Running => ("◌", Color::Yellow),
-                TaskStatus::Success => ("●", Color::Green),
-                TaskStatus::Failed => ("✗", Color::Red),
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", icon), Style::default().fg(color)),
-                Span::styled(task.name.clone(), Style::default().fg(Color::White)),
-            ]))
-        }).collect();
+        let items: Vec<ListItem> = self
+            .tasks
+            .iter()
+            .map(|task| {
+                let (icon, color) = match task.status {
+                    TaskStatus::Pending => ("○", Color::DarkGray),
+                    TaskStatus::Running => ("◌", Color::Yellow),
+                    TaskStatus::Success => ("●", Color::Green),
+                    TaskStatus::Failed => ("✗", Color::Red),
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {} ", icon), Style::default().fg(color)),
+                    Span::styled(task.name.clone(), Style::default().fg(Color::White)),
+                ]))
+            })
+            .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" tasks ");
+        let block = Block::default().borders(Borders::ALL).title(" tasks ");
 
         super::render_widget(List::new(items).block(block), area, buf);
     }
@@ -326,21 +389,27 @@ impl<'a> TodoListView<'a> {
 
 impl Widget for &TodoListView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let list_items: Vec<ListItem> = self.items.iter().map(|item| {
-            let (check, color) = match item.status {
-                TodoStatus::NotStarted => ("[ ]", Color::DarkGray),
-                TodoStatus::InProgress => ("[~]", Color::Yellow),
-                TodoStatus::Done => ("[x]", Color::Green),
-            };
-            let text_style = match item.status {
-                TodoStatus::Done => Style::default().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT),
-                _ => Style::default().fg(Color::White),
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", check), Style::default().fg(color)),
-                Span::styled(item.text.clone(), text_style),
-            ]))
-        }).collect();
+        let list_items: Vec<ListItem> = self
+            .items
+            .iter()
+            .map(|item| {
+                let (check, color) = match item.status {
+                    TodoStatus::NotStarted => ("[ ]", Color::DarkGray),
+                    TodoStatus::InProgress => ("[~]", Color::Yellow),
+                    TodoStatus::Done => ("[x]", Color::Green),
+                };
+                let text_style = match item.status {
+                    TodoStatus::Done => Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                    _ => Style::default().fg(Color::White),
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{} ", check), Style::default().fg(color)),
+                    Span::styled(item.text.clone(), text_style),
+                ]))
+            })
+            .collect();
 
         super::render_widget(List::new(list_items), area, buf);
     }
@@ -368,26 +437,31 @@ impl<'a> MemoryView<'a> {
 
 impl Widget for &MemoryView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.sections.iter().map(|sec| {
-            let source_color = match sec.source.as_str() {
-                "project" => Color::Cyan,
-                "global" => Color::Blue,
-                "team" => Color::Magenta,
-                _ => Color::DarkGray,
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", sec.source), Style::default().fg(source_color)),
-                Span::styled(sec.label.clone(), Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("  ({} entries)", sec.entry_count),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-        }).collect();
+        let items: Vec<ListItem> = self
+            .sections
+            .iter()
+            .map(|sec| {
+                let source_color = match sec.source.as_str() {
+                    "project" => Color::Cyan,
+                    "global" => Color::Blue,
+                    "team" => Color::Magenta,
+                    _ => Color::DarkGray,
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", sec.source),
+                        Style::default().fg(source_color),
+                    ),
+                    Span::styled(sec.label.clone(), Style::default().fg(Color::White)),
+                    Span::styled(
+                        format!("  ({} entries)", sec.entry_count),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            })
+            .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" memory ");
+        let block = Block::default().borders(Borders::ALL).title(" memory ");
 
         super::render_widget(List::new(items).block(block), area, buf);
     }
@@ -408,7 +482,14 @@ pub struct SessionSummary<'a> {
 
 impl<'a> SessionSummary<'a> {
     pub fn new(model: &'a str) -> Self {
-        Self { turns: 0, tokens_used: 0, cost: 0.0, files_modified: 0, tools_called: 0, model }
+        Self {
+            turns: 0,
+            tokens_used: 0,
+            cost: 0.0,
+            files_modified: 0,
+            tools_called: 0,
+            model,
+        }
     }
 }
 
@@ -419,27 +500,51 @@ impl Widget for &SessionSummary<'_> {
         let rows = vec![
             Row::new(vec![
                 Cell::from(Span::styled("Model", Style::default().fg(Color::DarkGray))),
-                Cell::from(Span::styled(self.model.to_string(), Style::default().fg(Color::Cyan))),
+                Cell::from(Span::styled(
+                    self.model.to_string(),
+                    Style::default().fg(Color::Cyan),
+                )),
             ]),
             Row::new(vec![
                 Cell::from(Span::styled("Turns", Style::default().fg(Color::DarkGray))),
-                Cell::from(Span::styled(self.turns.to_string(), Style::default().fg(Color::White))),
+                Cell::from(Span::styled(
+                    self.turns.to_string(),
+                    Style::default().fg(Color::White),
+                )),
             ]),
             Row::new(vec![
                 Cell::from(Span::styled("Tokens", Style::default().fg(Color::DarkGray))),
-                Cell::from(Span::styled(format!("{}", self.tokens_used), Style::default().fg(Color::White))),
+                Cell::from(Span::styled(
+                    format!("{}", self.tokens_used),
+                    Style::default().fg(Color::White),
+                )),
             ]),
             Row::new(vec![
                 Cell::from(Span::styled("Cost", Style::default().fg(Color::DarkGray))),
-                Cell::from(Span::styled(format!("${:.4}", self.cost), Style::default().fg(Color::Yellow))),
+                Cell::from(Span::styled(
+                    format!("${:.4}", self.cost),
+                    Style::default().fg(Color::Yellow),
+                )),
             ]),
             Row::new(vec![
-                Cell::from(Span::styled("Files modified", Style::default().fg(Color::DarkGray))),
-                Cell::from(Span::styled(self.files_modified.to_string(), Style::default().fg(Color::Green))),
+                Cell::from(Span::styled(
+                    "Files modified",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Cell::from(Span::styled(
+                    self.files_modified.to_string(),
+                    Style::default().fg(Color::Green),
+                )),
             ]),
             Row::new(vec![
-                Cell::from(Span::styled("Tool calls", Style::default().fg(Color::DarkGray))),
-                Cell::from(Span::styled(self.tools_called.to_string(), Style::default().fg(Color::White))),
+                Cell::from(Span::styled(
+                    "Tool calls",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Cell::from(Span::styled(
+                    self.tools_called.to_string(),
+                    Style::default().fg(Color::White),
+                )),
             ]),
         ];
 
@@ -473,31 +578,33 @@ impl<'a> AgentTree<'a> {
 
 impl Widget for &AgentTree<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.nodes.iter().map(|node| {
-            let indent = "  ".repeat(node.depth as usize);
-            let connector = if node.depth > 0 { "├─ " } else { "" };
+        let items: Vec<ListItem> = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let indent = "  ".repeat(node.depth as usize);
+                let connector = if node.depth > 0 { "├─ " } else { "" };
 
-            let status_color = match node.status.as_str() {
-                "running" => Color::Yellow,
-                "done" => Color::Green,
-                "error" => Color::Red,
-                _ => Color::DarkGray,
-            };
+                let status_color = match node.status.as_str() {
+                    "running" => Color::Yellow,
+                    "done" => Color::Green,
+                    "error" => Color::Red,
+                    _ => Color::DarkGray,
+                };
 
-            ListItem::new(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(connector.to_string(), Style::default().fg(Color::DarkGray)),
-                Span::styled(node.name.clone(), Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format!(" [{}]", node.status),
-                    Style::default().fg(status_color),
-                ),
-            ]))
-        }).collect();
+                ListItem::new(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(connector.to_string(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(node.name.clone(), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        format!(" [{}]", node.status),
+                        Style::default().fg(status_color),
+                    ),
+                ]))
+            })
+            .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" agents ");
+        let block = Block::default().borders(Borders::ALL).title(" agents ");
 
         super::render_widget(List::new(items).block(block), area, buf);
     }
@@ -520,7 +627,10 @@ pub struct SkillBrowser<'a> {
 
 impl<'a> SkillBrowser<'a> {
     pub fn new(skills: &'a [SkillEntry]) -> Self {
-        Self { skills, selected: None }
+        Self {
+            skills,
+            selected: None,
+        }
     }
 
     pub fn selected(mut self, idx: usize) -> Self {
@@ -531,30 +641,39 @@ impl<'a> SkillBrowser<'a> {
 
 impl Widget for &SkillBrowser<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let items: Vec<ListItem> = self.skills.iter().enumerate().map(|(i, skill)| {
-            let active_icon = if skill.active { "●" } else { "○" };
-            let style = if Some(i) == self.selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default()
-            };
+        let items: Vec<ListItem> = self
+            .skills
+            .iter()
+            .enumerate()
+            .map(|(i, skill)| {
+                let active_icon = if skill.active { "●" } else { "○" };
+                let style = if Some(i) == self.selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
 
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", active_icon),
-                    Style::default().fg(if skill.active { Color::Green } else { Color::DarkGray }),
-                ),
-                Span::styled(skill.name.clone(), style),
-                Span::styled(
-                    format!("  {}", skill.description),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-        }).collect();
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", active_icon),
+                        Style::default().fg(if skill.active {
+                            Color::Green
+                        } else {
+                            Color::DarkGray
+                        }),
+                    ),
+                    Span::styled(skill.name.clone(), style),
+                    Span::styled(
+                        format!("  {}", skill.description),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            })
+            .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" skills ");
+        let block = Block::default().borders(Borders::ALL).title(" skills ");
 
         super::render_widget(List::new(items).block(block), area, buf);
     }
@@ -590,24 +709,35 @@ impl<'a> McpServerStatus<'a> {
 
 impl Widget for &McpServerStatus<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let widths = [Constraint::Length(3), Constraint::Min(15), Constraint::Length(8)];
+        let widths = [
+            Constraint::Length(3),
+            Constraint::Min(15),
+            Constraint::Length(8),
+        ];
 
-        let rows: Vec<Row> = self.servers.iter().map(|server| {
-            let (icon, color) = match server.status {
-                McpStatus::Connected => ("●", Color::Green),
-                McpStatus::Disconnected => ("○", Color::DarkGray),
-                McpStatus::Error => ("✗", Color::Red),
-                McpStatus::Starting => ("◌", Color::Yellow),
-            };
-            Row::new(vec![
-                Cell::from(Span::styled(icon.to_string(), Style::default().fg(color))),
-                Cell::from(Span::styled(server.name.clone(), Style::default().fg(Color::White))),
-                Cell::from(Span::styled(
-                    format!("{} tools", server.tool_count),
-                    Style::default().fg(Color::DarkGray),
-                )),
-            ])
-        }).collect();
+        let rows: Vec<Row> = self
+            .servers
+            .iter()
+            .map(|server| {
+                let (icon, color) = match server.status {
+                    McpStatus::Connected => ("●", Color::Green),
+                    McpStatus::Disconnected => ("○", Color::DarkGray),
+                    McpStatus::Error => ("✗", Color::Red),
+                    McpStatus::Starting => ("◌", Color::Yellow),
+                };
+                Row::new(vec![
+                    Cell::from(Span::styled(icon.to_string(), Style::default().fg(color))),
+                    Cell::from(Span::styled(
+                        server.name.clone(),
+                        Style::default().fg(Color::White),
+                    )),
+                    Cell::from(Span::styled(
+                        format!("{} tools", server.tool_count),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ])
+            })
+            .collect();
 
         let block = Block::default()
             .borders(Borders::ALL)

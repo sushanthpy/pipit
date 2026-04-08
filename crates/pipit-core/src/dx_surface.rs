@@ -90,10 +90,7 @@ fn check_project_structure(root: &Path) -> DiagnosticCheck {
 }
 
 fn check_config(root: &Path) -> DiagnosticCheck {
-    let config_paths = [
-        root.join(".pipit/config.toml"),
-        dirs_config_path(),
-    ];
+    let config_paths = [root.join(".pipit/config.toml"), dirs_config_path()];
     for path in &config_paths {
         if path.exists() {
             return DiagnosticCheck {
@@ -113,12 +110,9 @@ fn check_config(root: &Path) -> DiagnosticCheck {
 }
 
 fn check_api_keys() -> DiagnosticCheck {
-    let known_keys = [
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GOOGLE_API_KEY",
-    ];
-    let found: Vec<&str> = known_keys.iter()
+    let known_keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"];
+    let found: Vec<&str> = known_keys
+        .iter()
         .filter(|k| std::env::var(k).is_ok())
         .copied()
         .collect();
@@ -128,7 +122,9 @@ fn check_api_keys() -> DiagnosticCheck {
             name: "API keys".into(),
             status: DiagnosticStatus::Fail,
             message: "No API keys found in environment".into(),
-            fix_hint: Some("Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or run `pipit auth login`".into()),
+            fix_hint: Some(
+                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or run `pipit auth login`".into(),
+            ),
         }
     } else {
         DiagnosticCheck {
@@ -144,9 +140,11 @@ fn check_skills(root: &Path) -> DiagnosticCheck {
     let skills_dir = root.join(".pipit/skills");
     if skills_dir.exists() {
         let count = std::fs::read_dir(&skills_dir)
-            .map(|d| d.filter_map(|e| e.ok()).filter(|e| {
-                e.path().extension().map(|ext| ext == "md").unwrap_or(false)
-            }).count())
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+                    .count()
+            })
             .unwrap_or(0);
         DiagnosticCheck {
             name: "Skills".into(),
@@ -165,10 +163,7 @@ fn check_skills(root: &Path) -> DiagnosticCheck {
 }
 
 fn check_mcp(root: &Path) -> DiagnosticCheck {
-    let mcp_paths = [
-        root.join(".pipit/mcp.json"),
-        root.join("mcp.json"),
-    ];
+    let mcp_paths = [root.join(".pipit/mcp.json"), root.join("mcp.json")];
     for path in &mcp_paths {
         if path.exists() {
             return DiagnosticCheck {
@@ -211,7 +206,10 @@ pub fn format_diagnostics(checks: &[DiagnosticCheck]) -> String {
             output.push_str(&format!("    → {}\n", hint));
         }
     }
-    let pass = checks.iter().filter(|c| c.status == DiagnosticStatus::Pass).count();
+    let pass = checks
+        .iter()
+        .filter(|c| c.status == DiagnosticStatus::Pass)
+        .count();
     let total = checks.len();
     output.push_str(&format!("\n  {}/{} checks passed\n", pass, total));
     output
@@ -256,7 +254,9 @@ impl CostTimeSeries {
 
     /// Render a sparkline of recent costs. Uses Unicode block elements.
     pub fn sparkline(&self, width: usize) -> String {
-        if self.entries.is_empty() { return String::new(); }
+        if self.entries.is_empty() {
+            return String::new();
+        }
 
         let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         let values: Vec<f64> = self.entries.iter().map(|e| e.delta_cost).collect();
@@ -266,7 +266,8 @@ impl CostTimeSeries {
 
         // Take last `width` values
         let start = values.len().saturating_sub(width);
-        values[start..].iter()
+        values[start..]
+            .iter()
             .map(|v| {
                 let idx = ((v - min) / range * 7.0).floor() as usize;
                 blocks[idx.min(7)]
@@ -312,11 +313,11 @@ impl ContextBudgetView {
         let total = self.model_limit as f64;
         let sections = [
             ("SYS", self.system_prompt_tokens, "36"), // cyan
-            ("PIN", self.pinned_tokens, "35"),         // magenta
-            ("ACT", self.active_tokens, "32"),         // green
-            ("HIS", self.historical_tokens, "33"),     // yellow
-            ("EXH", self.exhaust_tokens, "90"),        // gray
-            ("OUT", self.output_reserve, "34"),        // blue
+            ("PIN", self.pinned_tokens, "35"),        // magenta
+            ("ACT", self.active_tokens, "32"),        // green
+            ("HIS", self.historical_tokens, "33"),    // yellow
+            ("EXH", self.exhaust_tokens, "90"),       // gray
+            ("OUT", self.output_reserve, "34"),       // blue
         ];
 
         let mut bar = String::new();
@@ -324,7 +325,9 @@ impl ContextBudgetView {
         for (label, tokens, color) in &sections {
             let section_width = ((*tokens as f64 / total) * width as f64).round() as usize;
             if section_width > 0 {
-                let fill = label.chars().chain(std::iter::repeat('░'))
+                let fill = label
+                    .chars()
+                    .chain(std::iter::repeat('░'))
                     .take(section_width)
                     .collect::<String>();
                 bar.push_str(&format!("\x1b[{}m{}\x1b[0m", color, fill));
@@ -341,8 +344,12 @@ impl ContextBudgetView {
 
     /// Render as a summary table.
     pub fn render_summary(&self) -> String {
-        let used = self.system_prompt_tokens + self.pinned_tokens + self.active_tokens
-            + self.historical_tokens + self.exhaust_tokens + self.output_reserve;
+        let used = self.system_prompt_tokens
+            + self.pinned_tokens
+            + self.active_tokens
+            + self.historical_tokens
+            + self.exhaust_tokens
+            + self.output_reserve;
         let pct = (used as f64 / self.model_limit as f64 * 100.0).round();
         format!(
             "Context Budget ({:.0}% used)\n\
@@ -362,7 +369,8 @@ impl ContextBudgetView {
             self.exhaust_tokens,
             self.output_reserve,
             self.available,
-            used, self.model_limit,
+            used,
+            self.model_limit,
         )
     }
 }
@@ -390,14 +398,14 @@ impl Theme {
     pub fn default_dark() -> Self {
         Self {
             name: "dark".into(),
-            agent_text: "37".into(),     // white
-            user_text: "36".into(),      // cyan
-            tool_name: "33".into(),      // yellow
-            error: "31".into(),          // red
-            warning: "33".into(),        // yellow
-            success: "32".into(),        // green
-            dim: "90".into(),            // gray
-            accent: "35".into(),         // magenta
+            agent_text: "37".into(), // white
+            user_text: "36".into(),  // cyan
+            tool_name: "33".into(),  // yellow
+            error: "31".into(),      // red
+            warning: "33".into(),    // yellow
+            success: "32".into(),    // green
+            dim: "90".into(),        // gray
+            accent: "35".into(),     // magenta
             background: None,
         }
     }
@@ -405,14 +413,14 @@ impl Theme {
     pub fn default_light() -> Self {
         Self {
             name: "light".into(),
-            agent_text: "30".into(),     // black
-            user_text: "34".into(),      // blue
-            tool_name: "33".into(),      // yellow
-            error: "31".into(),          // red
-            warning: "33".into(),        // yellow
-            success: "32".into(),        // green
-            dim: "37".into(),            // light gray
-            accent: "35".into(),         // magenta
+            agent_text: "30".into(), // black
+            user_text: "34".into(),  // blue
+            tool_name: "33".into(),  // yellow
+            error: "31".into(),      // red
+            warning: "33".into(),    // yellow
+            success: "32".into(),    // green
+            dim: "37".into(),        // light gray
+            accent: "35".into(),     // magenta
             background: None,
         }
     }

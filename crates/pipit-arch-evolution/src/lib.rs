@@ -4,10 +4,10 @@
 //! Task 10.2: NSGA-II multi-objective fitness evaluation.
 //! Task 10.3: Architecture-to-code scaffold generation.
 
-pub mod genome;
 pub mod fitness;
+pub mod genome;
 pub mod scaffold;
 
-pub use genome::{ArchGenome, ServiceType, ChannelType, Mutation};
 pub use fitness::{FitnessEngine, FitnessObjectives, ParetoFront};
+pub use genome::{ArchGenome, ChannelType, Mutation, ServiceType};
 pub use scaffold::generate_scaffold;

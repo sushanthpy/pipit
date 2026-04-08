@@ -69,7 +69,10 @@ pub enum PlanAction {
     /// Read files to understand context.
     ReadFiles { paths: Vec<String> },
     /// Edit a file with a description of the change.
-    EditFile { path: String, change_description: String },
+    EditFile {
+        path: String,
+        change_description: String,
+    },
     /// Create a new file.
     CreateFile { path: String, purpose: String },
     /// Delete a file.
@@ -81,9 +84,15 @@ pub enum PlanAction {
     /// Run linter or formatter.
     Lint { scope: String },
     /// Delegate to a subagent.
-    Delegate { description: String, constraints: String },
+    Delegate {
+        description: String,
+        constraints: String,
+    },
     /// Custom action (escape hatch for LLM-generated plans).
-    Custom { tool: String, args_description: String },
+    Custom {
+        tool: String,
+        args_description: String,
+    },
 }
 
 /// How to verify a step succeeded.
@@ -202,9 +211,8 @@ impl PlanIR {
         // Accumulate cost estimates
         for step in &steps {
             self.estimated_tokens += step.estimated_tokens;
-            self.required_capabilities = self
-                .required_capabilities
-                .join(step.required_capabilities);
+            self.required_capabilities =
+                self.required_capabilities.join(step.required_capabilities);
         }
         self.phases.push(PlanPhase {
             name: name.to_string(),
@@ -294,10 +302,7 @@ impl PlanIR {
                     }
                 }
                 if visited < n {
-                    errors.push(format!(
-                        "phase '{}': dependency cycle detected",
-                        phase.name
-                    ));
+                    errors.push(format!("phase '{}': dependency cycle detected", phase.name));
                 }
             }
         }

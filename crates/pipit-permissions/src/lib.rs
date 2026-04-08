@@ -1,4 +1,3 @@
-
 //! Pipit Permissions — Deep Permission Engine (Task 1)
 //!
 //! Architecture: Lattice-based classifier composition.
@@ -12,10 +11,10 @@
 //! Complexity: O(C·R) per decision, C classifiers × R rules.
 
 pub mod classifiers;
-pub mod rules;
 pub mod denial_tracker;
-pub mod shadow_detector;
 pub mod production_classifiers;
+pub mod rules;
+pub mod shadow_detector;
 
 use classifiers::*;
 use denial_tracker::DenialTracker;
@@ -174,7 +173,10 @@ fn extract_paths(args: &serde_json::Value) -> Vec<PathBuf> {
 
 fn extract_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     match tool_name {
-        "bash" | "powershell" => args.get("command").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        "bash" | "powershell" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -212,8 +214,10 @@ impl PermissionEngine {
             for shadow in &shadows {
                 tracing::warn!(
                     "Shadowed permission rule: rule '{}' at line {} is masked by rule '{}' at line {}",
-                    shadow.shadowed_rule, shadow.shadowed_line,
-                    shadow.masking_rule, shadow.masking_line,
+                    shadow.shadowed_rule,
+                    shadow.shadowed_line,
+                    shadow.masking_rule,
+                    shadow.masking_line,
                 );
             }
         }
@@ -336,10 +340,7 @@ fn build_explanation(
         .collect();
 
     if reasons.is_empty() {
-        format!(
-            "Tool '{}' allowed in {} mode",
-            descriptor.tool_name, mode
-        )
+        format!("Tool '{}' allowed in {} mode", descriptor.tool_name, mode)
     } else {
         format!(
             "Tool '{}' {:?} in {} mode. Classifiers: {}",
@@ -444,4 +445,3 @@ mod tests {
         assert_eq!(Decision::Allow.join(Decision::Allow), Decision::Allow);
     }
 }
-

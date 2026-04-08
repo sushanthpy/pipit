@@ -13,8 +13,8 @@ use crate::reporter::Reporter;
 use crate::server;
 use crate::store::DaemonStore;
 
-use anyhow::{anyhow, Result};
-use pipit_channel::{task_channel, ChannelRegistry};
+use anyhow::{Result, anyhow};
+use pipit_channel::{ChannelRegistry, task_channel};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::signal;
@@ -266,8 +266,7 @@ impl DaemonRunner {
             timeout_secs = self.config.daemon.drain_timeout_secs,
             "shutdown phase 2: drain in-flight"
         );
-        let drain_timeout =
-            std::time::Duration::from_secs(self.config.daemon.drain_timeout_secs);
+        let drain_timeout = std::time::Duration::from_secs(self.config.daemon.drain_timeout_secs);
 
         tokio::select! {
             _ = tokio::time::sleep(drain_timeout) => {

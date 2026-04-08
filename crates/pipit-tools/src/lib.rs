@@ -1,20 +1,18 @@
-pub mod registry;
 pub mod builtins;
 pub mod file_history;
 pub mod lazy_index;
 pub mod mcp;
-pub mod typed_output;
+pub mod registry;
 pub mod tool_semantics_bridge;
+pub mod typed_output;
 pub mod typed_tool;
 
+pub use mcp::{McpClient, McpConfig, McpManager, load_mcp_config};
 pub use registry::*;
-pub use mcp::{McpConfig, McpManager, McpClient, load_mcp_config};
 pub use typed_tool::{
-    TypedTool, TypedToolAdapter, TypedToolResult, ToolCard, ToolExample,
-    ToolEvent, ToolSearchIndex, Purity as TypedPurity,
-    CapabilitySet as TypedCapabilitySet, ArtifactKind, OutputStream,
-    RealizedEdit as TypedRealizedEdit,
-    register_typed,
+    ArtifactKind, CapabilitySet as TypedCapabilitySet, OutputStream, Purity as TypedPurity,
+    RealizedEdit as TypedRealizedEdit, ToolCard, ToolEvent, ToolExample, ToolSearchIndex,
+    TypedTool, TypedToolAdapter, TypedToolResult, register_typed,
 };
 
 use async_trait::async_trait;
@@ -104,7 +102,9 @@ impl ToolContext {
         // Canonicalize the project root to resolve symlinks (e.g. /tmp → /private/tmp on macOS).
         // This prevents path-containment checks from failing when file paths are canonical
         // but the project root is a symlink.
-        let canonical_root = project_root.canonicalize().unwrap_or_else(|_| project_root.clone());
+        let canonical_root = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.clone());
         Self {
             cwd: Arc::new(Mutex::new(canonical_root.clone())),
             project_root: canonical_root,
@@ -113,13 +113,27 @@ impl ToolContext {
     }
 
     /// Get the current working directory.
+    ///
+    /// Tolerates a poisoned mutex: if a previous tool panicked while holding
+    /// the lock, we recover the inner value instead of propagating the panic.
+    /// This prevents a single tool failure from cascading to all subsequent
+    /// bash/cd calls in the session.
     pub fn current_dir(&self) -> PathBuf {
-        self.cwd.lock().unwrap().clone()
+        self.cwd
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!("ToolContext cwd mutex was poisoned; recovering");
+                poisoned.into_inner()
+            })
+            .clone()
     }
 
     /// Update the current working directory (called by bash tool on `cd`).
     pub fn set_cwd(&self, new_cwd: PathBuf) {
-        *self.cwd.lock().unwrap() = new_cwd;
+        *self.cwd.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("ToolContext cwd mutex was poisoned; recovering");
+            poisoned.into_inner()
+        }) = new_cwd;
     }
 }
 

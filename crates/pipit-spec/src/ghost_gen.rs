@@ -6,7 +6,7 @@
 //! Output complexity: O(n·m) where n = variables, m = constraints.
 
 use crate::consistency::check_consistency;
-use crate::spec_lang::{Spec, SpecConstraint, SpecRule, SpecType, CompareOp, ConstraintValue};
+use crate::spec_lang::{CompareOp, ConstraintValue, Spec, SpecConstraint, SpecRule, SpecType};
 
 /// Options for ghost code generation.
 #[derive(Debug, Clone)]
@@ -44,7 +44,11 @@ pub fn generate_ghost_code(spec: &Spec, opts: &GhostCodeOptions) -> Option<Strin
     match opts.language {
         TargetLang::Python => Some(generate_python(spec, opts, &consistency.variable_bounds)),
         TargetLang::Rust => Some(generate_rust(spec, opts, &consistency.variable_bounds)),
-        TargetLang::TypeScript => Some(generate_typescript(spec, opts, &consistency.variable_bounds)),
+        TargetLang::TypeScript => Some(generate_typescript(
+            spec,
+            opts,
+            &consistency.variable_bounds,
+        )),
     }
 }
 
@@ -56,17 +60,28 @@ fn generate_python(
     let mut code = String::new();
 
     if opts.include_comments {
-        code.push_str(&format!("\"\"\"Ghost implementation for spec: {}\n", spec.name));
+        code.push_str(&format!(
+            "\"\"\"Ghost implementation for spec: {}\n",
+            spec.name
+        ));
         code.push_str("Auto-generated — proves the specification is satisfiable.\n\"\"\"\n\n");
     }
 
     // Type annotations
-    let params: Vec<String> = spec.types.iter().map(|(name, ty)| {
-        let type_str = python_type(ty);
-        format!("{}: {}", name, type_str)
-    }).collect();
+    let params: Vec<String> = spec
+        .types
+        .iter()
+        .map(|(name, ty)| {
+            let type_str = python_type(ty);
+            format!("{}: {}", name, type_str)
+        })
+        .collect();
 
-    code.push_str(&format!("def {}({}) -> dict:\n", opts.function_name, params.join(", ")));
+    code.push_str(&format!(
+        "def {}({}) -> dict:\n",
+        opts.function_name,
+        params.join(", ")
+    ));
 
     // Invariant checks
     if !spec.invariants.is_empty() {
@@ -115,14 +130,23 @@ fn generate_rust(
     code.push_str("use std::collections::HashMap;\n\n");
 
     if opts.include_comments {
-        code.push_str(&format!("/// Ghost implementation for spec: {}\n", spec.name));
+        code.push_str(&format!(
+            "/// Ghost implementation for spec: {}\n",
+            spec.name
+        ));
     }
 
-    let params: Vec<String> = spec.types.iter().map(|(name, ty)| {
-        format!("{}: {}", name, rust_type(ty))
-    }).collect();
+    let params: Vec<String> = spec
+        .types
+        .iter()
+        .map(|(name, ty)| format!("{}: {}", name, rust_type(ty)))
+        .collect();
 
-    code.push_str(&format!("pub fn {}({}) -> HashMap<String, f64> {{\n", opts.function_name, params.join(", ")));
+    code.push_str(&format!(
+        "pub fn {}({}) -> HashMap<String, f64> {{\n",
+        opts.function_name,
+        params.join(", ")
+    ));
     code.push_str("    let mut result = HashMap::new();\n\n");
 
     let mut sorted_rules: Vec<_> = spec.rules.iter().collect();
@@ -134,7 +158,10 @@ fn generate_rust(
         code.push_str(&format!("    {} {} {{\n", keyword, condition));
         let assignments = postcondition_assignments(&rule.postcondition);
         for (var, val) in assignments {
-            code.push_str(&format!("        result.insert(\"{}\".into(), {});\n", var, val));
+            code.push_str(&format!(
+                "        result.insert(\"{}\".into(), {});\n",
+                var, val
+            ));
         }
     }
     if !spec.rules.is_empty() {
@@ -153,14 +180,23 @@ fn generate_typescript(
     let mut code = String::new();
 
     if opts.include_comments {
-        code.push_str(&format!("/** Ghost implementation for spec: {} */\n", spec.name));
+        code.push_str(&format!(
+            "/** Ghost implementation for spec: {} */\n",
+            spec.name
+        ));
     }
 
-    let params: Vec<String> = spec.types.iter().map(|(name, ty)| {
-        format!("{}: {}", name, ts_type(ty))
-    }).collect();
+    let params: Vec<String> = spec
+        .types
+        .iter()
+        .map(|(name, ty)| format!("{}: {}", name, ts_type(ty)))
+        .collect();
 
-    code.push_str(&format!("function {}({}): Record<string, any> {{\n", opts.function_name, params.join(", ")));
+    code.push_str(&format!(
+        "function {}({}): Record<string, any> {{\n",
+        opts.function_name,
+        params.join(", ")
+    ));
     code.push_str("    const result: Record<string, any> = {};\n\n");
 
     let mut sorted_rules: Vec<_> = spec.rules.iter().collect();
@@ -236,11 +272,21 @@ fn constraint_to_python(c: &SpecConstraint) -> String {
             format!("({})", parts.join(" or "))
         }
         SpecConstraint::Not { inner } => format!("not ({})", constraint_to_python(inner)),
-        SpecConstraint::Linear { terms, bound, comparison } => {
-            let lhs: Vec<_> = terms.iter().map(|(c, v)| {
-                if (*c - 1.0).abs() < f64::EPSILON { v.clone() }
-                else { format!("{}*{}", c, v) }
-            }).collect();
+        SpecConstraint::Linear {
+            terms,
+            bound,
+            comparison,
+        } => {
+            let lhs: Vec<_> = terms
+                .iter()
+                .map(|(c, v)| {
+                    if (*c - 1.0).abs() < f64::EPSILON {
+                        v.clone()
+                    } else {
+                        format!("{}*{}", c, v)
+                    }
+                })
+                .collect();
             let op = cmp_to_python(*comparison);
             format!("{} {} {}", lhs.join(" + "), op, bound)
         }
@@ -269,17 +315,33 @@ fn constraint_to_rust(c: &SpecConstraint) -> String {
 }
 
 fn cmp_to_python(cmp: CompareOp) -> &'static str {
-    match cmp { CompareOp::Eq => "==", CompareOp::Ne => "!=", CompareOp::Lt => "<", CompareOp::Le => "<=", CompareOp::Gt => ">", CompareOp::Ge => ">=" }
+    match cmp {
+        CompareOp::Eq => "==",
+        CompareOp::Ne => "!=",
+        CompareOp::Lt => "<",
+        CompareOp::Le => "<=",
+        CompareOp::Gt => ">",
+        CompareOp::Ge => ">=",
+    }
 }
 
 fn value_to_python(v: &ConstraintValue) -> String {
-    match v { ConstraintValue::Int(i) => i.to_string(), ConstraintValue::Float(f) => format!("{:.2}", f), ConstraintValue::Str(s) => format!("\"{}\"", s), ConstraintValue::Bool(b) => if *b { "True" } else { "False" }.into() }
+    match v {
+        ConstraintValue::Int(i) => i.to_string(),
+        ConstraintValue::Float(f) => format!("{:.2}", f),
+        ConstraintValue::Str(s) => format!("\"{}\"", s),
+        ConstraintValue::Bool(b) => if *b { "True" } else { "False" }.into(),
+    }
 }
 
 /// Extract variable assignments from a postcondition.
 fn postcondition_assignments(c: &SpecConstraint) -> Vec<(String, String)> {
     match c {
-        SpecConstraint::Compare { var, cmp: CompareOp::Eq, value } => {
+        SpecConstraint::Compare {
+            var,
+            cmp: CompareOp::Eq,
+            value,
+        } => {
             vec![(var.clone(), value_to_python(value))]
         }
         SpecConstraint::And { clauses } => {
@@ -297,19 +359,41 @@ mod tests {
 
     fn pricing_spec() -> Spec {
         let mut spec = Spec::new("pricing");
-        spec.types.insert("usage".into(), SpecType::Integer { min: Some(0), max: Some(100000) });
+        spec.types.insert(
+            "usage".into(),
+            SpecType::Integer {
+                min: Some(0),
+                max: Some(100000),
+            },
+        );
         spec.rules.push(SpecRule {
             name: "free".into(),
             description: "Free tier".into(),
-            precondition: SpecConstraint::Compare { var: "usage".into(), cmp: CompareOp::Le, value: ConstraintValue::Int(100) },
-            postcondition: SpecConstraint::Compare { var: "price".into(), cmp: CompareOp::Eq, value: ConstraintValue::Float(0.0) },
+            precondition: SpecConstraint::Compare {
+                var: "usage".into(),
+                cmp: CompareOp::Le,
+                value: ConstraintValue::Int(100),
+            },
+            postcondition: SpecConstraint::Compare {
+                var: "price".into(),
+                cmp: CompareOp::Eq,
+                value: ConstraintValue::Float(0.0),
+            },
             priority: 2,
         });
         spec.rules.push(SpecRule {
             name: "paid".into(),
             description: "Paid tier".into(),
-            precondition: SpecConstraint::Compare { var: "usage".into(), cmp: CompareOp::Gt, value: ConstraintValue::Int(100) },
-            postcondition: SpecConstraint::Compare { var: "price".into(), cmp: CompareOp::Eq, value: ConstraintValue::Float(9.99) },
+            precondition: SpecConstraint::Compare {
+                var: "usage".into(),
+                cmp: CompareOp::Gt,
+                value: ConstraintValue::Int(100),
+            },
+            postcondition: SpecConstraint::Compare {
+                var: "price".into(),
+                cmp: CompareOp::Eq,
+                value: ConstraintValue::Float(9.99),
+            },
             priority: 1,
         });
         spec
@@ -328,7 +412,10 @@ mod tests {
     #[test]
     fn test_generate_rust() {
         let spec = pricing_spec();
-        let opts = GhostCodeOptions { language: TargetLang::Rust, ..Default::default() };
+        let opts = GhostCodeOptions {
+            language: TargetLang::Rust,
+            ..Default::default()
+        };
         let code = generate_ghost_code(&spec, &opts).unwrap();
         assert!(code.contains("pub fn ghost_impl"));
         assert!(code.contains("HashMap"));
@@ -337,8 +424,18 @@ mod tests {
     #[test]
     fn test_inconsistent_spec_returns_none() {
         let mut spec = Spec::new("bad");
-        spec.types.insert("x".into(), SpecType::Integer { min: Some(0), max: Some(5) });
-        spec.invariants.push(SpecConstraint::Compare { var: "x".into(), cmp: CompareOp::Ge, value: ConstraintValue::Int(10) });
+        spec.types.insert(
+            "x".into(),
+            SpecType::Integer {
+                min: Some(0),
+                max: Some(5),
+            },
+        );
+        spec.invariants.push(SpecConstraint::Compare {
+            var: "x".into(),
+            cmp: CompareOp::Ge,
+            value: ConstraintValue::Int(10),
+        });
         assert!(generate_ghost_code(&spec, &GhostCodeOptions::default()).is_none());
     }
 }

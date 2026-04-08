@@ -1,7 +1,7 @@
+use crate::IntelligenceConfig;
 use crate::discovery;
 use crate::graph::ReferenceGraph;
 use crate::tags::{self, FileTag, TagKind};
-use crate::IntelligenceConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -46,16 +46,16 @@ impl RepoMap {
             .as_ref()
             .map(|c| c.file_tags.clone())
             .unwrap_or_default();
-        let cached_mtimes: HashMap<PathBuf, u64> = cached
-            .map(|c| c.file_mtimes)
-            .unwrap_or_default();
+        let cached_mtimes: HashMap<PathBuf, u64> =
+            cached.map(|c| c.file_mtimes).unwrap_or_default();
 
         let mut dirty: Vec<PathBuf> = Vec::new();
         let mut current_mtimes: HashMap<PathBuf, u64> = HashMap::new();
 
         for file in &files {
             let abs = root.join(file);
-            let mtime = abs.metadata()
+            let mtime = abs
+                .metadata()
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -63,7 +63,8 @@ impl RepoMap {
                 .unwrap_or(0);
             current_mtimes.insert(file.clone(), mtime);
 
-            let needs_reparse = cached_mtimes.get(file)
+            let needs_reparse = cached_mtimes
+                .get(file)
                 .map(|&cached_mtime| cached_mtime != mtime)
                 .unwrap_or(true);
 
@@ -167,9 +168,7 @@ impl RepoMap {
                     .iter()
                     .filter(|sym| {
                         self.graph.tags.iter().any(|t| {
-                            t.rel_path == *path
-                                && t.name == **sym
-                                && t.kind == TagKind::Definition
+                            t.rel_path == *path && t.name == **sym && t.kind == TagKind::Definition
                         })
                     })
                     .count() as f64
@@ -191,7 +190,11 @@ impl RepoMap {
             })
             .collect();
 
-        ranked.sort_by(|a, b| b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         ranked
     }
 

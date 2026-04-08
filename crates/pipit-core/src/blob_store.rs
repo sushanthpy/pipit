@@ -38,7 +38,9 @@ impl BlobDescriptor {
     pub fn as_context_text(&self) -> String {
         format!(
             "[Stored result: {} bytes, hash={}]\nSummary: {}",
-            self.size, &self.hash[..12], self.summary
+            self.size,
+            &self.hash[..12],
+            self.summary
         )
     }
 }
@@ -207,8 +209,7 @@ impl BlobStore {
     }
 
     fn touch(&mut self, hash: &str) {
-        self.access_gen
-            .insert(hash.to_string(), self.generation);
+        self.access_gen.insert(hash.to_string(), self.generation);
     }
 }
 
@@ -248,7 +249,9 @@ mod tests {
     fn small_content_stays_inline() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = BlobStore::open(dir.path().to_path_buf()).unwrap();
-        let result = store.store_if_large("small", "bash", "call-1", "summary").unwrap();
+        let result = store
+            .store_if_large("small", "bash", "call-1", "summary")
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -280,8 +283,14 @@ mod tests {
             .with_threshold(10);
 
         let content = "x".repeat(100);
-        let d1 = store.store_if_large(&content, "bash", "c1", "s1").unwrap().unwrap();
-        let d2 = store.store_if_large(&content, "bash", "c2", "s2").unwrap().unwrap();
+        let d1 = store
+            .store_if_large(&content, "bash", "c1", "s1")
+            .unwrap()
+            .unwrap();
+        let d2 = store
+            .store_if_large(&content, "bash", "c2", "s2")
+            .unwrap()
+            .unwrap();
 
         assert_eq!(d1.hash, d2.hash);
         assert_eq!(store.count(), 1); // Only one blob

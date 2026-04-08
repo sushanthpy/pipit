@@ -7,7 +7,7 @@
 //! The editing contract is: every mutation is an EditorAction, every action
 //! produces an EditorEffect, and effects are batched for the runtime.
 
-use crate::vim::{VimMode, VimCommand, VimStateMachine};
+use crate::vim::{VimCommand, VimMode, VimStateMachine};
 use serde::{Deserialize, Serialize};
 
 /// Editor integration mode — how vim interacts with the agent runtime.
@@ -34,17 +34,11 @@ pub enum EditorAction {
         text: Option<String>,
     },
     /// Accept/reject a proposed agent edit.
-    ApprovalResponse {
-        accepted: bool,
-        file: String,
-    },
+    ApprovalResponse { accepted: bool, file: String },
     /// Request verification of recent edits.
     RequestVerification,
     /// Navigate to a specific file/position (from diff view).
-    Navigate {
-        file: String,
-        line: Option<u32>,
-    },
+    Navigate { file: String, line: Option<u32> },
     /// Undo the last agent edit.
     UndoAgentEdit,
     /// Switch editor integration mode.
@@ -87,10 +81,7 @@ pub enum EditRange {
 #[derive(Debug, Clone)]
 pub enum EditorEffect {
     /// Text was modified — notify the runtime.
-    TextModified {
-        file: String,
-        lines_changed: u32,
-    },
+    TextModified { file: String, lines_changed: u32 },
     /// User approved an edit.
     EditApproved { file: String },
     /// User rejected an edit.
@@ -209,8 +200,12 @@ impl EditorController {
 
     fn translate_command(&mut self, command: VimCommand) -> EditorAction {
         match command {
-            VimCommand::EnterInsert | VimCommand::Append | VimCommand::AppendEnd
-            | VimCommand::InsertLineStart | VimCommand::OpenBelow | VimCommand::OpenAbove => {
+            VimCommand::EnterInsert
+            | VimCommand::Append
+            | VimCommand::AppendEnd
+            | VimCommand::InsertLineStart
+            | VimCommand::OpenBelow
+            | VimCommand::OpenAbove => {
                 self.effects.push(EditorEffect::ModeChanged {
                     vim_mode: VimMode::Insert,
                     integration: self.integration,
@@ -233,7 +228,11 @@ impl EditorController {
                 }
                 EditorAction::NoOp
             }
-            VimCommand::OperatorMotion { operator, motion, count } => {
+            VimCommand::OperatorMotion {
+                operator,
+                motion,
+                count,
+            } => {
                 let kind = match operator {
                     crate::vim::Operator::Delete => EditKind::Delete,
                     crate::vim::Operator::Change => EditKind::Change,
@@ -284,9 +283,8 @@ impl EditorController {
         match ch {
             'y' | 'Y' => {
                 if let Some(ref file) = self.current_file {
-                    self.effects.push(EditorEffect::EditApproved {
-                        file: file.clone(),
-                    });
+                    self.effects
+                        .push(EditorEffect::EditApproved { file: file.clone() });
                     EditorAction::ApprovalResponse {
                         accepted: true,
                         file: file.clone(),
@@ -297,9 +295,8 @@ impl EditorController {
             }
             'n' | 'N' => {
                 if let Some(ref file) = self.current_file {
-                    self.effects.push(EditorEffect::EditRejected {
-                        file: file.clone(),
-                    });
+                    self.effects
+                        .push(EditorEffect::EditRejected { file: file.clone() });
                     EditorAction::ApprovalResponse {
                         accepted: false,
                         file: file.clone(),
@@ -367,10 +364,17 @@ mod tests {
         ctrl.set_file("test.rs");
 
         let action = ctrl.process_key('y');
-        assert!(matches!(action, EditorAction::ApprovalResponse { accepted: true, .. }));
+        assert!(matches!(
+            action,
+            EditorAction::ApprovalResponse { accepted: true, .. }
+        ));
 
         let effects = ctrl.drain_effects();
-        assert!(effects.iter().any(|e| matches!(e, EditorEffect::EditApproved { .. })));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, EditorEffect::EditApproved { .. }))
+        );
     }
 
     #[test]
@@ -384,7 +388,10 @@ mod tests {
 
         // Escape exits read-only
         let action = ctrl.process_key('q');
-        assert!(matches!(action, EditorAction::SwitchMode(EditorIntegration::Standalone)));
+        assert!(matches!(
+            action,
+            EditorAction::SwitchMode(EditorIntegration::Standalone)
+        ));
     }
 
     #[test]
@@ -404,13 +411,26 @@ mod tests {
         // Exit insert mode → should emit TextModified
         ctrl.process_key('\x1b');
         let effects = ctrl.drain_effects();
-        assert!(effects.iter().any(|e| matches!(e, EditorEffect::TextModified { .. })));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, EditorEffect::TextModified { .. }))
+        );
     }
 
     #[test]
     fn mode_indicators() {
-        assert_eq!(mode_indicator(VimMode::Normal, EditorIntegration::ApprovalReview), "[REVIEW]");
-        assert_eq!(mode_indicator(VimMode::Insert, EditorIntegration::AgentAssisted), "[INSERT·AI]");
-        assert_eq!(mode_indicator(VimMode::Normal, EditorIntegration::Standalone), "[NORMAL]");
+        assert_eq!(
+            mode_indicator(VimMode::Normal, EditorIntegration::ApprovalReview),
+            "[REVIEW]"
+        );
+        assert_eq!(
+            mode_indicator(VimMode::Insert, EditorIntegration::AgentAssisted),
+            "[INSERT·AI]"
+        );
+        assert_eq!(
+            mode_indicator(VimMode::Normal, EditorIntegration::Standalone),
+            "[NORMAL]"
+        );
     }
 }

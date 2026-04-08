@@ -60,7 +60,12 @@ pub struct CiStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CiState { Pending, Success, Failure, Error }
+pub enum CiState {
+    Pending,
+    Success,
+    Failure,
+    Error,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CiCheck {
@@ -120,7 +125,11 @@ pub trait ForgePort: Send + Sync {
     async fn list_review_comments(&self, pr: &PrHandle) -> Result<Vec<ReviewComment>, ForgeError>;
 
     /// Post a review comment on a PR.
-    async fn post_review_comment(&self, pr: &PrHandle, comment: ReviewCommentSpec) -> Result<(), ForgeError>;
+    async fn post_review_comment(
+        &self,
+        pr: &PrHandle,
+        comment: ReviewCommentSpec,
+    ) -> Result<(), ForgeError>;
 
     /// Get CI status for a commit SHA.
     async fn ci_status(&self, commit_sha: &str) -> Result<CiStatus, ForgeError>;
@@ -147,14 +156,27 @@ pub struct NullForgePort;
 
 #[async_trait]
 impl ForgePort for NullForgePort {
-    fn name(&self) -> &str { "none" }
+    fn name(&self) -> &str {
+        "none"
+    }
     async fn create_pull_request(&self, _: PrSpec) -> Result<PrHandle, ForgeError> {
         Err(ForgeError::Api("No forge configured".into()))
     }
-    async fn list_review_comments(&self, _: &PrHandle) -> Result<Vec<ReviewComment>, ForgeError> { Ok(vec![]) }
-    async fn post_review_comment(&self, _: &PrHandle, _: ReviewCommentSpec) -> Result<(), ForgeError> { Ok(()) }
+    async fn list_review_comments(&self, _: &PrHandle) -> Result<Vec<ReviewComment>, ForgeError> {
+        Ok(vec![])
+    }
+    async fn post_review_comment(
+        &self,
+        _: &PrHandle,
+        _: ReviewCommentSpec,
+    ) -> Result<(), ForgeError> {
+        Ok(())
+    }
     async fn ci_status(&self, _: &str) -> Result<CiStatus, ForgeError> {
-        Ok(CiStatus { state: CiState::Pending, checks: vec![] })
+        Ok(CiStatus {
+            state: CiState::Pending,
+            checks: vec![],
+        })
     }
     async fn create_issue(&self, _: IssueSpec) -> Result<IssueHandle, ForgeError> {
         Err(ForgeError::Api("No forge configured".into()))
@@ -163,7 +185,11 @@ impl ForgePort for NullForgePort {
         Err(ForgeError::Api("No forge configured".into()))
     }
     async fn rate_limit_status(&self) -> Result<RateLimitInfo, ForgeError> {
-        Ok(RateLimitInfo { remaining: 0, limit: 0, reset_at: 0 })
+        Ok(RateLimitInfo {
+            remaining: 0,
+            limit: 0,
+            reset_at: 0,
+        })
     }
 }
 
@@ -234,13 +260,21 @@ pub struct NullMessagingPort;
 
 #[async_trait]
 impl MessagingPort for NullMessagingPort {
-    fn platform(&self) -> &str { "none" }
-    async fn send(&self, _: OutboundMessage) -> Result<String, MessagingError> { Ok(String::new()) }
-    async fn notify(&self, _: &str, _: &str) -> Result<(), MessagingError> { Ok(()) }
+    fn platform(&self) -> &str {
+        "none"
+    }
+    async fn send(&self, _: OutboundMessage) -> Result<String, MessagingError> {
+        Ok(String::new())
+    }
+    async fn notify(&self, _: &str, _: &str) -> Result<(), MessagingError> {
+        Ok(())
+    }
     async fn install(&self, _: &str) -> Result<String, MessagingError> {
         Err(MessagingError::Auth("No messaging configured".into()))
     }
-    async fn map_session(&self, _: &str, _: &str) -> Result<(), MessagingError> { Ok(()) }
+    async fn map_session(&self, _: &str, _: &str) -> Result<(), MessagingError> {
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -316,7 +350,12 @@ pub trait TeamPort: Send + Sync {
     /// Delete a team.
     async fn delete_team(&self, team_id: &str) -> Result<(), TeamError>;
     /// Add a member to a team.
-    async fn add_member(&self, team_id: &str, user_id: &str, role: TeamRole) -> Result<(), TeamError>;
+    async fn add_member(
+        &self,
+        team_id: &str,
+        user_id: &str,
+        role: TeamRole,
+    ) -> Result<(), TeamError>;
     /// Remove a member from a team.
     async fn remove_member(&self, team_id: &str, user_id: &str) -> Result<(), TeamError>;
     /// Get a team by ID.
@@ -324,7 +363,8 @@ pub trait TeamPort: Send + Sync {
     /// List all teams for a user.
     async fn list_teams(&self, user_id: &str) -> Result<Vec<Team>, TeamError>;
     /// Update team settings.
-    async fn update_settings(&self, team_id: &str, settings: TeamSettings) -> Result<(), TeamError>;
+    async fn update_settings(&self, team_id: &str, settings: TeamSettings)
+    -> Result<(), TeamError>;
     /// Evaluate effective capabilities for a user in a team context.
     fn effective_capabilities(&self, user_caps: u32, team: &Team) -> u32 {
         match team.settings.capability_mask {
@@ -342,14 +382,24 @@ impl TeamPort for NullTeamPort {
     async fn create_team(&self, _: &str, _: &str) -> Result<Team, TeamError> {
         Err(TeamError::PermissionDenied("Teams not enabled".into()))
     }
-    async fn delete_team(&self, _: &str) -> Result<(), TeamError> { Ok(()) }
-    async fn add_member(&self, _: &str, _: &str, _: TeamRole) -> Result<(), TeamError> { Ok(()) }
-    async fn remove_member(&self, _: &str, _: &str) -> Result<(), TeamError> { Ok(()) }
+    async fn delete_team(&self, _: &str) -> Result<(), TeamError> {
+        Ok(())
+    }
+    async fn add_member(&self, _: &str, _: &str, _: TeamRole) -> Result<(), TeamError> {
+        Ok(())
+    }
+    async fn remove_member(&self, _: &str, _: &str) -> Result<(), TeamError> {
+        Ok(())
+    }
     async fn get_team(&self, _: &str) -> Result<Team, TeamError> {
         Err(TeamError::NotFound("Teams not enabled".into()))
     }
-    async fn list_teams(&self, _: &str) -> Result<Vec<Team>, TeamError> { Ok(vec![]) }
-    async fn update_settings(&self, _: &str, _: TeamSettings) -> Result<(), TeamError> { Ok(()) }
+    async fn list_teams(&self, _: &str) -> Result<Vec<Team>, TeamError> {
+        Ok(vec![])
+    }
+    async fn update_settings(&self, _: &str, _: TeamSettings) -> Result<(), TeamError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

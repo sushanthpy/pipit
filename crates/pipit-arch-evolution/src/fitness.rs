@@ -75,10 +75,12 @@ impl FitnessEngine {
         let cost_fitness = 1.0 - (cost / self.objectives.max_cost_usd).min(1.0);
 
         // Reliability: product of channel reliabilities × service reliabilities.
-        let svc_reliability: f64 = genome.services.iter()
-            .map(|s| s.reliability).product();
-        let ch_reliability: f64 = if genome.channels.is_empty() { 1.0 }
-            else { genome.channels.iter().map(|c| c.reliability).product() };
+        let svc_reliability: f64 = genome.services.iter().map(|s| s.reliability).product();
+        let ch_reliability: f64 = if genome.channels.is_empty() {
+            1.0
+        } else {
+            genome.channels.iter().map(|c| c.reliability).product()
+        };
         let reliability = svc_reliability * ch_reliability;
         let reliability_fitness = reliability;
 
@@ -93,7 +95,9 @@ impl FitnessEngine {
 
     /// Critical path latency: longest path from any gateway to any database.
     fn compute_critical_path_latency(&self, genome: &ArchGenome) -> f64 {
-        if genome.services.is_empty() { return 0.0; }
+        if genome.services.is_empty() {
+            return 0.0;
+        }
 
         let n = genome.services.len();
         // Build adjacency list with edge latencies
@@ -128,14 +132,17 @@ impl FitnessEngine {
         let mut population: Vec<ArchGenome> = (0..population_size)
             .map(|i| {
                 let mut g = ArchGenome::monolith(&format!("svc-{}", i));
-                for _ in 0..rng.gen_range(1..5) { g.mutate(&mut rng); }
+                for _ in 0..rng.gen_range(1..5) {
+                    g.mutate(&mut rng);
+                }
                 g
             })
             .collect();
 
         for generation in 0..generations {
             // Evaluate fitness
-            let mut scored: Vec<(ArchGenome, FitnessScores)> = population.iter()
+            let mut scored: Vec<(ArchGenome, FitnessScores)> = population
+                .iter()
                 .map(|g| (g.clone(), self.evaluate(g)))
                 .collect();
 
@@ -147,9 +154,11 @@ impl FitnessEngine {
 
             // Selection: keep top N by (rank ASC, crowding DESC)
             scored.sort_by(|a, b| {
-                a.1.pareto_rank.cmp(&b.1.pareto_rank)
-                    .then(b.1.crowding_distance.partial_cmp(&a.1.crowding_distance)
-                        .unwrap_or(std::cmp::Ordering::Equal))
+                a.1.pareto_rank.cmp(&b.1.pareto_rank).then(
+                    b.1.crowding_distance
+                        .partial_cmp(&a.1.crowding_distance)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
             });
             scored.truncate(population_size);
 
@@ -158,7 +167,9 @@ impl FitnessEngine {
             for i in (0..scored.len()).step_by(2) {
                 if i + 1 < scored.len() {
                     let mut child = scored[i].0.crossover(&scored[i + 1].0, &mut rng);
-                    if rng.gen_range(0.0..1.0) < 0.3 { child.mutate(&mut rng); }
+                    if rng.gen_range(0.0..1.0) < 0.3 {
+                        child.mutate(&mut rng);
+                    }
                     offspring.push(child);
                 }
             }
@@ -169,13 +180,15 @@ impl FitnessEngine {
         }
 
         // Final evaluation and Pareto front extraction
-        let mut final_scored: Vec<(ArchGenome, FitnessScores)> = population.iter()
+        let mut final_scored: Vec<(ArchGenome, FitnessScores)> = population
+            .iter()
             .map(|g| (g.clone(), self.evaluate(g)))
             .collect();
         self.non_dominated_sort(&mut final_scored);
 
         ParetoFront {
-            solutions: final_scored.into_iter()
+            solutions: final_scored
+                .into_iter()
                 .filter(|(_, s)| s.pareto_rank == 1)
                 .collect(),
         }
@@ -239,7 +252,9 @@ impl FitnessEngine {
     fn compute_crowding_distance(&self, scored: &mut [(ArchGenome, FitnessScores)]) {
         let n = scored.len();
         if n <= 2 {
-            for (_, s) in scored.iter_mut() { s.crowding_distance = f64::INFINITY; }
+            for (_, s) in scored.iter_mut() {
+                s.crowding_distance = f64::INFINITY;
+            }
             return;
         }
 
@@ -257,11 +272,14 @@ impl FitnessEngine {
 
             let range = Self::objective_value(&scored[indices[n - 1]].1, obj)
                 - Self::objective_value(&scored[indices[0]].1, obj);
-            if range < f64::EPSILON { continue; }
+            if range < f64::EPSILON {
+                continue;
+            }
 
             for i in 1..n - 1 {
                 let dist = (Self::objective_value(&scored[indices[i + 1]].1, obj)
-                    - Self::objective_value(&scored[indices[i - 1]].1, obj)) / range;
+                    - Self::objective_value(&scored[indices[i - 1]].1, obj))
+                    / range;
                 scored[indices[i]].1.crowding_distance += dist;
             }
         }
@@ -277,8 +295,15 @@ impl FitnessEngine {
     }
 }
 
-fn dfs_longest_path(adj: &[Vec<(usize, f64)>], services: &[Service], node: usize, visited: &mut Vec<bool>) -> f64 {
-    if visited[node] { return 0.0; }
+fn dfs_longest_path(
+    adj: &[Vec<(usize, f64)>],
+    services: &[Service],
+    node: usize,
+    visited: &mut Vec<bool>,
+) -> f64 {
+    if visited[node] {
+        return 0.0;
+    }
     visited[node] = true;
 
     let node_latency = services[node].latency_estimate;
@@ -303,16 +328,37 @@ mod tests {
         let genome = ArchGenome::monolith("app");
         let scores = engine.evaluate(&genome);
 
-        assert!(scores.latency_fitness > 0.0, "Should have positive latency fitness");
-        assert!(scores.cost_fitness > 0.0, "Should have positive cost fitness");
-        assert!(scores.reliability_fitness > 0.0, "Should have positive reliability");
+        assert!(
+            scores.latency_fitness > 0.0,
+            "Should have positive latency fitness"
+        );
+        assert!(
+            scores.cost_fitness > 0.0,
+            "Should have positive cost fitness"
+        );
+        assert!(
+            scores.reliability_fitness > 0.0,
+            "Should have positive reliability"
+        );
     }
 
     #[test]
     fn test_dominance() {
         let engine = FitnessEngine::new(FitnessObjectives::default());
-        let a = FitnessScores { latency_fitness: 0.9, cost_fitness: 0.8, reliability_fitness: 0.7, pareto_rank: 0, crowding_distance: 0.0 };
-        let b = FitnessScores { latency_fitness: 0.8, cost_fitness: 0.7, reliability_fitness: 0.6, pareto_rank: 0, crowding_distance: 0.0 };
+        let a = FitnessScores {
+            latency_fitness: 0.9,
+            cost_fitness: 0.8,
+            reliability_fitness: 0.7,
+            pareto_rank: 0,
+            crowding_distance: 0.0,
+        };
+        let b = FitnessScores {
+            latency_fitness: 0.8,
+            cost_fitness: 0.7,
+            reliability_fitness: 0.6,
+            pareto_rank: 0,
+            crowding_distance: 0.0,
+        };
         assert!(engine.dominates(&a, &b), "a should dominate b");
         assert!(!engine.dominates(&b, &a), "b should not dominate a");
     }
@@ -321,12 +367,18 @@ mod tests {
     fn test_evolution_produces_pareto_front() {
         let engine = FitnessEngine::new(FitnessObjectives::default());
         let front = engine.evolve(20, 10);
-        assert!(!front.solutions.is_empty(), "Should find Pareto-optimal solutions");
+        assert!(
+            !front.solutions.is_empty(),
+            "Should find Pareto-optimal solutions"
+        );
         assert!(front.solutions.len() <= 20, "Front can't exceed population");
 
         // All solutions should be rank 1
         for (_, scores) in &front.solutions {
-            assert_eq!(scores.pareto_rank, 1, "All Pareto front members should be rank 1");
+            assert_eq!(
+                scores.pareto_rank, 1,
+                "All Pareto front members should be rank 1"
+            );
         }
     }
 }

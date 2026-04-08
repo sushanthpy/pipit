@@ -1,13 +1,13 @@
-mod types;
 pub mod credentials;
 pub mod feature_flags;
 pub mod model_routing;
+mod types;
 
-pub use types::*;
 pub use credentials::{
-    CredentialStore, StoredCredential, OAuthFlow,
-    OAuthDeviceConfig, oauth_device_flow, oauth_device_config_for,
+    CredentialStore, OAuthDeviceConfig, OAuthFlow, StoredCredential, oauth_device_config_for,
+    oauth_device_flow,
 };
+pub use types::*;
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -57,8 +57,7 @@ pub fn resolve_config(
     if let Some(root) = project_root {
         let project_path = root.join(".pipit").join("config.toml");
         if project_path.exists() {
-            let layer: PipitConfigLayer =
-                toml::from_str(&std::fs::read_to_string(&project_path)?)?;
+            let layer: PipitConfigLayer = toml::from_str(&std::fs::read_to_string(&project_path)?)?;
             config.merge(layer);
         }
     }
@@ -185,7 +184,8 @@ pub fn has_user_config() -> bool {
 /// Write a config layer to the user config file (`~/.config/pipit/config.toml`).
 /// Creates the directory if it doesn't exist.
 pub fn write_user_config(layer: &PipitConfigLayer) -> Result<(), ConfigError> {
-    let dir = user_config_dir().ok_or_else(|| ConfigError::Other("Cannot determine config directory".into()))?;
+    let dir = user_config_dir()
+        .ok_or_else(|| ConfigError::Other("Cannot determine config directory".into()))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let toml_str = toml::to_string_pretty(layer)?;

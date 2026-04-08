@@ -1,6 +1,6 @@
+use crate::SkillError;
 use crate::frontmatter::{AgentConfig, SkillFrontmatter, SkillMetadata, SkillSource};
 use crate::loader::LoadedSkill;
-use crate::SkillError;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -55,7 +55,11 @@ impl SkillRegistry {
                 }
             } else if path.extension().map(|e| e == "md").unwrap_or(false) {
                 // Single-file skill (name.md)
-                if let Ok(metadata) = parse_skill_metadata(&path, &path.parent().unwrap_or(dir).to_path_buf(), source.clone()) {
+                if let Ok(metadata) = parse_skill_metadata(
+                    &path,
+                    &path.parent().unwrap_or(dir).to_path_buf(),
+                    source.clone(),
+                ) {
                     self.skills.insert(metadata.name.clone(), metadata);
                 }
             }

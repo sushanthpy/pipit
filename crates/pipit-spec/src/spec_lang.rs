@@ -24,13 +24,29 @@ pub struct Spec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SpecType {
-    Integer { min: Option<i64>, max: Option<i64> },
-    Float { min: Option<f64>, max: Option<f64> },
-    String { max_length: Option<usize>, pattern: Option<String> },
+    Integer {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
+    Float {
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    String {
+        max_length: Option<usize>,
+        pattern: Option<String>,
+    },
     Boolean,
-    Enum { variants: Vec<String> },
-    Struct { fields: HashMap<String, String> }, // field_name → type_name
-    Array { element_type: String, max_length: Option<usize> },
+    Enum {
+        variants: Vec<String>,
+    },
+    Struct {
+        fields: HashMap<String, String>,
+    }, // field_name → type_name
+    Array {
+        element_type: String,
+        max_length: Option<usize>,
+    },
 }
 
 /// A behavioral rule: if precondition → then postcondition.
@@ -117,7 +133,9 @@ impl Spec {
         // For each type, check if all valid values are covered by at least one rule
         let mut gaps = Vec::new();
         for (type_name, type_def) in &self.types {
-            let covering_rules: Vec<_> = self.rules.iter()
+            let covering_rules: Vec<_> = self
+                .rules
+                .iter()
                 .filter(|r| constraint_references_var(&r.precondition, type_name))
                 .collect();
 
@@ -126,14 +144,21 @@ impl Spec {
             }
 
             // Check for boundary gaps in integer types
-            if let SpecType::Integer { min: Some(lo), max: Some(hi) } = type_def {
+            if let SpecType::Integer {
+                min: Some(lo),
+                max: Some(hi),
+            } = type_def
+            {
                 let boundary_values = vec![*lo, *lo + 1, (*lo + *hi) / 2, *hi - 1, *hi];
                 for val in boundary_values {
-                    let covered = covering_rules.iter().any(|r| {
-                        constraint_admits_value(&r.precondition, type_name, val as f64)
-                    });
+                    let covered = covering_rules
+                        .iter()
+                        .any(|r| constraint_admits_value(&r.precondition, type_name, val as f64));
                     if !covered {
-                        gaps.push(format!("Value {}={} not covered by any rule", type_name, val));
+                        gaps.push(format!(
+                            "Value {}={} not covered by any rule",
+                            type_name, val
+                        ));
                     }
                 }
             }
@@ -176,12 +201,21 @@ fn constraint_admits_value(c: &SpecConstraint, var: &str, val: f64) -> bool {
             }
         }
         SpecConstraint::Compare { .. } => true, // Different var, doesn't constrain
-        SpecConstraint::And { clauses } => clauses.iter().all(|cl| constraint_admits_value(cl, var, val)),
-        SpecConstraint::Or { clauses } => clauses.iter().any(|cl| constraint_admits_value(cl, var, val)),
+        SpecConstraint::And { clauses } => clauses
+            .iter()
+            .all(|cl| constraint_admits_value(cl, var, val)),
+        SpecConstraint::Or { clauses } => clauses
+            .iter()
+            .any(|cl| constraint_admits_value(cl, var, val)),
         SpecConstraint::Not { inner } => !constraint_admits_value(inner, var, val),
-        SpecConstraint::Linear { terms, bound, comparison } => {
+        SpecConstraint::Linear {
+            terms,
+            bound,
+            comparison,
+        } => {
             // Partial evaluation: substitute known var, leave others as 0
-            let partial_sum: f64 = terms.iter()
+            let partial_sum: f64 = terms
+                .iter()
                 .map(|(coeff, v)| if v == var { coeff * val } else { 0.0 })
                 .sum();
             match comparison {
@@ -203,7 +237,13 @@ mod tests {
     #[test]
     fn test_spec_serialization_roundtrip() {
         let mut spec = Spec::new("pricing");
-        spec.types.insert("price".into(), SpecType::Float { min: Some(0.0), max: Some(10000.0) });
+        spec.types.insert(
+            "price".into(),
+            SpecType::Float {
+                min: Some(0.0),
+                max: Some(10000.0),
+            },
+        );
         spec.rules.push(SpecRule {
             name: "free_tier".into(),
             description: "Free tier for low usage".into(),

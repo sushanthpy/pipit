@@ -3,10 +3,10 @@
 //! Task 5.1: Specification language for invariants, pre/post-conditions.
 //! Task 5.2: Deterministic ghost code generation (LLM-free).
 
-pub mod spec_lang;
 pub mod consistency;
 pub mod ghost_gen;
+pub mod spec_lang;
 
-pub use spec_lang::{Spec, SpecConstraint, SpecType, SpecRule};
-pub use consistency::{check_consistency, ConsistencyResult};
-pub use ghost_gen::{generate_ghost_code, GhostCodeOptions};
+pub use consistency::{ConsistencyResult, check_consistency};
+pub use ghost_gen::{GhostCodeOptions, generate_ghost_code};
+pub use spec_lang::{Spec, SpecConstraint, SpecRule, SpecType};

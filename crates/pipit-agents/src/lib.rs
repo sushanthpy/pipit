@@ -1,4 +1,3 @@
-
 //! Pipit Agents — Built-In Agent Catalog with Coordinator Mode (Task 7)
 //!
 //! 5 purpose-built agents with curated system prompts, tool whitelists,
@@ -401,4 +400,3 @@ mod tests {
         assert!((merged.parallel_speedup - 1.5).abs() < 0.01);
     }
 }
-

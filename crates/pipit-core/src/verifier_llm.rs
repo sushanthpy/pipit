@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::pev::{
-    ExecutionResult, ModelRole, ModelRouter, PlanSpec, VerificationReport, Verdict,
+    ExecutionResult, ModelRole, ModelRouter, PlanSpec, Verdict, VerificationReport,
     verifier_evidence_prompt, verifier_system_prompt,
 };
 use crate::planner::{VerificationSource, VerifyStrategy};
@@ -102,15 +102,9 @@ impl LlmVerifier {
             })
             .collect();
 
-        let has_test_pass = evidence.iter().any(|a| {
-            matches!(
-                a,
-                EvidenceArtifact::CommandResult {
-                    success: true,
-                    ..
-                }
-            )
-        });
+        let has_test_pass = evidence
+            .iter()
+            .any(|a| matches!(a, EvidenceArtifact::CommandResult { success: true, .. }));
 
         ExecutionResult {
             modified_files,

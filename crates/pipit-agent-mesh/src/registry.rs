@@ -79,11 +79,7 @@ impl MeshRegistry {
             .iter()
             .map(|entry| {
                 let agent = entry.value().clone();
-                let agent_set = build_capability_set(
-                    &agent.tools,
-                    &agent.languages,
-                    &agent.tags,
-                );
+                let agent_set = build_capability_set(&agent.tools, &agent.languages, &agent.tags);
                 let agent_size = agent_set.len() as f64;
                 if agent_size == 0.0 {
                     return (agent, 0.0);
@@ -158,9 +154,24 @@ mod tests {
     fn test_register_and_discover() {
         let registry = MeshRegistry::new();
 
-        registry.register(make_agent("rust-expert", &["bash", "cargo"], &["rust"], &["performance"]));
-        registry.register(make_agent("python-expert", &["bash", "pytest"], &["python"], &["testing"]));
-        registry.register(make_agent("fullstack", &["bash"], &["rust", "python", "typescript"], &[]));
+        registry.register(make_agent(
+            "rust-expert",
+            &["bash", "cargo"],
+            &["rust"],
+            &["performance"],
+        ));
+        registry.register(make_agent(
+            "python-expert",
+            &["bash", "pytest"],
+            &["python"],
+            &["testing"],
+        ));
+        registry.register(make_agent(
+            "fullstack",
+            &["bash"],
+            &["rust", "python", "typescript"],
+            &[],
+        ));
 
         let query = AgentCapability {
             required_tools: ["pytest"].iter().map(|s| s.to_string()).collect(),
@@ -170,7 +181,10 @@ mod tests {
 
         let results = registry.discover(&query);
         assert!(!results.is_empty());
-        assert_eq!(results[0].0.id, "python-expert", "Python expert should rank first");
+        assert_eq!(
+            results[0].0.id, "python-expert",
+            "Python expert should rank first"
+        );
     }
 
     #[test]
@@ -178,7 +192,12 @@ mod tests {
         let registry = MeshRegistry::new();
 
         // Agent with 2/3 matching capabilities
-        registry.register(make_agent("good", &["bash", "pytest"], &["python"], &["testing"]));
+        registry.register(make_agent(
+            "good",
+            &["bash", "pytest"],
+            &["python"],
+            &["testing"],
+        ));
         // Agent with 1/3 matching capabilities
         registry.register(make_agent("weak", &["bash"], &["go"], &[]));
 
@@ -190,6 +209,9 @@ mod tests {
 
         let results = registry.discover(&query);
         assert!(results.len() >= 2);
-        assert!(results[0].1 > results[1].1, "Good match should score higher");
+        assert!(
+            results[0].1 > results[1].1,
+            "Good match should score higher"
+        );
     }
 }

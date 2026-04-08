@@ -1,0 +1,2 @@
+[alias]
+pipit = "run -p pipit-cli --bin pipit --"

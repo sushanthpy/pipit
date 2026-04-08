@@ -36,10 +36,16 @@ impl Message {
         }
     }
 
-    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        call_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         let cid = call_id.into();
         Self {
-            role: Role::ToolResult { call_id: cid.clone() },
+            role: Role::ToolResult {
+                call_id: cid.clone(),
+            },
             content: vec![ContentBlock::ToolResult {
                 call_id: cid,
                 content: content.into(),
@@ -110,12 +116,19 @@ impl Message {
                     words += content.split_whitespace().count();
                     punct += content.chars().filter(|c| c.is_ascii_punctuation()).count();
                 }
-                ContentBlock::Thinking(t) => { bytes += t.len(); words += t.split_whitespace().count(); }
-                ContentBlock::Image { data, .. } => { bytes += data.len(); }
+                ContentBlock::Thinking(t) => {
+                    bytes += t.len();
+                    words += t.split_whitespace().count();
+                }
+                ContentBlock::Image { data, .. } => {
+                    bytes += data.len();
+                }
                 ContentBlock::CacheBreakpoint => {}
             }
         }
-        if bytes == 0 { return 0; }
+        if bytes == 0 {
+            return 0;
+        }
 
         // Compute a dynamic divisor based on content characteristics
         let punct_ratio = punct as f64 / bytes as f64;
@@ -202,8 +215,12 @@ pub struct ToolDeclaration {
 /// Events streamed from the LLM provider.
 #[derive(Debug, Clone)]
 pub enum ContentEvent {
-    ContentDelta { text: String },
-    ThinkingDelta { text: String },
+    ContentDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
     ToolCallDelta {
         call_id: String,
         tool_name: String,
@@ -299,6 +316,9 @@ pub struct AssistantResponse {
     pub tool_calls: Vec<ToolCall>,
     pub stop_reason: Option<StopReason>,
     pub usage: UsageMetadata,
+    /// Time-to-first-token in milliseconds, measured from request dispatch
+    /// to first ContentDelta or ThinkingDelta event.
+    pub ttft_ms: Option<u64>,
 }
 
 impl AssistantResponse {
@@ -314,12 +334,7 @@ impl AssistantResponse {
         self.thinking.push_str(text);
     }
 
-    pub fn push_tool_call(
-        &mut self,
-        call_id: String,
-        tool_name: String,
-        args: serde_json::Value,
-    ) {
+    pub fn push_tool_call(&mut self, call_id: String, tool_name: String, args: serde_json::Value) {
         self.tool_calls.push(ToolCall {
             call_id,
             tool_name,
@@ -377,18 +392,11 @@ impl AssistantResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CacheEdit {
     /// Remove a tool result by its call_id from the cache.
-    RemoveToolResult {
-        call_id: String,
-    },
+    RemoveToolResult { call_id: String },
     /// Remove a message by index from the cache.
-    RemoveMessage {
-        index: usize,
-    },
+    RemoveMessage { index: usize },
     /// Replace a message's content in the cache (for summarization).
-    ReplaceContent {
-        index: usize,
-        new_content: String,
-    },
+    ReplaceContent { index: usize, new_content: String },
 }
 
 /// Receipt from a cache-edit operation.

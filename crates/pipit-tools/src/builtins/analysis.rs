@@ -22,7 +22,9 @@ pub struct SymbolXrefTool;
 
 #[async_trait]
 impl Tool for SymbolXrefTool {
-    fn name(&self) -> &str { "symbol_xref" }
+    fn name(&self) -> &str {
+        "symbol_xref"
+    }
 
     fn schema(&self) -> Value {
         serde_json::json!({
@@ -53,7 +55,8 @@ impl Tool for SymbolXrefTool {
         ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        let symbol = args["symbol"].as_str()
+        let symbol = args["symbol"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing 'symbol'".into()))?;
         let pattern = args["file_pattern"].as_str().unwrap_or("*");
 
@@ -68,7 +71,10 @@ impl Tool for SymbolXrefTool {
         let lines: Vec<&str> = stdout.lines().take(100).collect();
 
         if lines.is_empty() {
-            return Ok(ToolResult::text(format!("No references found for '{}'", symbol)));
+            return Ok(ToolResult::text(format!(
+                "No references found for '{}'",
+                symbol
+            )));
         }
 
         // Parse into structured reference list
@@ -104,7 +110,9 @@ pub struct ChangeImpactTool;
 
 #[async_trait]
 impl Tool for ChangeImpactTool {
-    fn name(&self) -> &str { "change_impact" }
+    fn name(&self) -> &str {
+        "change_impact"
+    }
 
     fn schema(&self) -> Value {
         serde_json::json!({
@@ -130,7 +138,8 @@ impl Tool for ChangeImpactTool {
         ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        let path = args["path"].as_str()
+        let path = args["path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing 'path'".into()))?;
 
         // Find files that reference/import this file
@@ -140,9 +149,17 @@ impl Tool for ChangeImpactTool {
             .unwrap_or(path);
 
         let output = tokio::process::Command::new("grep")
-            .args(["-rln", "--include=*.rs", "--include=*.py", "--include=*.ts",
-                   "--include=*.js", "--include=*.go", "--include=*.java",
-                   stem, "."])
+            .args([
+                "-rln",
+                "--include=*.rs",
+                "--include=*.py",
+                "--include=*.ts",
+                "--include=*.js",
+                "--include=*.go",
+                "--include=*.java",
+                stem,
+                ".",
+            ])
             .current_dir(&ctx.project_root)
             .output()
             .await
@@ -176,9 +193,25 @@ impl Tool for ChangeImpactTool {
              Blast radius: {} files potentially affected",
             path,
             dependents.len(),
-            if dependents.is_empty() { "  (none found)".to_string() } else { dependents.iter().map(|d| format!("  {}", d)).collect::<Vec<_>>().join("\n") },
+            if dependents.is_empty() {
+                "  (none found)".to_string()
+            } else {
+                dependents
+                    .iter()
+                    .map(|d| format!("  {}", d))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
             test_files.len(),
-            if test_files.is_empty() { "  (none found)".to_string() } else { test_files.iter().map(|t| format!("  {}", t)).collect::<Vec<_>>().join("\n") },
+            if test_files.is_empty() {
+                "  (none found)".to_string()
+            } else {
+                test_files
+                    .iter()
+                    .map(|t| format!("  {}", t))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
             dependents.len() + test_files.len(),
         );
 
@@ -195,7 +228,9 @@ pub struct TestSelectorTool;
 
 #[async_trait]
 impl Tool for TestSelectorTool {
-    fn name(&self) -> &str { "test_selector" }
+    fn name(&self) -> &str {
+        "test_selector"
+    }
 
     fn schema(&self) -> Value {
         serde_json::json!({
@@ -222,7 +257,8 @@ impl Tool for TestSelectorTool {
         ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        let changed = args["changed_files"].as_array()
+        let changed = args["changed_files"]
+            .as_array()
             .ok_or_else(|| ToolError::InvalidArgs("missing 'changed_files'".into()))?;
 
         let mut test_files = HashSet::new();
@@ -246,10 +282,7 @@ impl Tool for TestSelectorTool {
                     format!("test_{}.rs", stem),
                     format!("{}_test.rs", stem),
                 ],
-                "py" => vec![
-                    format!("test_{}.py", stem),
-                    format!("{}_test.py", stem),
-                ],
+                "py" => vec![format!("test_{}.py", stem), format!("{}_test.py", stem)],
                 "ts" | "js" => vec![
                     format!("{}.test.{}", stem, ext),
                     format!("{}.spec.{}", stem, ext),
@@ -293,10 +326,24 @@ impl Tool for TestSelectorTool {
              Suggested commands:\n{}",
             changed.len(),
             test_files.len(),
-            if test_files.is_empty() { "  (no specific test files found)".to_string() }
-            else { test_files.iter().map(|f| format!("  {}", f)).collect::<Vec<_>>().join("\n") },
-            if test_commands.is_empty() { "  (no specific commands — run full test suite)".to_string() }
-            else { test_commands.iter().map(|c| format!("  $ {}", c)).collect::<Vec<_>>().join("\n") },
+            if test_files.is_empty() {
+                "  (no specific test files found)".to_string()
+            } else {
+                test_files
+                    .iter()
+                    .map(|f| format!("  {}", f))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+            if test_commands.is_empty() {
+                "  (no specific commands — run full test suite)".to_string()
+            } else {
+                test_commands
+                    .iter()
+                    .map(|c| format!("  $ {}", c))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
         );
 
         Ok(ToolResult::text(summary))
@@ -336,7 +383,9 @@ pub struct ApiSurfaceTool;
 
 #[async_trait]
 impl Tool for ApiSurfaceTool {
-    fn name(&self) -> &str { "api_surface" }
+    fn name(&self) -> &str {
+        "api_surface"
+    }
 
     fn schema(&self) -> Value {
         serde_json::json!({
@@ -362,19 +411,27 @@ impl Tool for ApiSurfaceTool {
         ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        let path = args["path"].as_str()
+        let path = args["path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing 'path'".into()))?;
 
         let abs_path = ctx.project_root.join(path);
         if !abs_path.exists() {
-            return Err(ToolError::ExecutionFailed(format!("Path not found: {}", path)));
+            return Err(ToolError::ExecutionFailed(format!(
+                "Path not found: {}",
+                path
+            )));
         }
 
         // Extract public declarations using grep
         let output = tokio::process::Command::new("grep")
-            .args(["-rn", "--include=*.rs",
-                   "-E", r"^\s*pub\s+(fn|struct|enum|trait|type|const|static|mod)\s",
-                   path])
+            .args([
+                "-rn",
+                "--include=*.rs",
+                "-E",
+                r"^\s*pub\s+(fn|struct|enum|trait|type|const|static|mod)\s",
+                path,
+            ])
             .current_dir(&ctx.project_root)
             .output()
             .await
@@ -385,20 +442,29 @@ impl Tool for ApiSurfaceTool {
 
         if lines.is_empty() {
             return Ok(ToolResult::text(format!(
-                "No public API surface found in '{}'", path
+                "No public API surface found in '{}'",
+                path
             )));
         }
 
         let mut api_items: HashMap<&str, Vec<String>> = HashMap::new();
         for line in &lines {
             let trimmed = line.trim();
-            let kind = if trimmed.contains("pub fn ") { "Functions" }
-                else if trimmed.contains("pub struct ") { "Structs" }
-                else if trimmed.contains("pub enum ") { "Enums" }
-                else if trimmed.contains("pub trait ") { "Traits" }
-                else if trimmed.contains("pub type ") { "Types" }
-                else if trimmed.contains("pub mod ") { "Modules" }
-                else { "Other" };
+            let kind = if trimmed.contains("pub fn ") {
+                "Functions"
+            } else if trimmed.contains("pub struct ") {
+                "Structs"
+            } else if trimmed.contains("pub enum ") {
+                "Enums"
+            } else if trimmed.contains("pub trait ") {
+                "Traits"
+            } else if trimmed.contains("pub type ") {
+                "Types"
+            } else if trimmed.contains("pub mod ") {
+                "Modules"
+            } else {
+                "Other"
+            };
             api_items.entry(kind).or_default().push(line.to_string());
         }
 

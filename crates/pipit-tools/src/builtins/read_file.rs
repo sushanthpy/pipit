@@ -1,5 +1,5 @@
-use crate::{Tool, ToolContext, ToolError, ToolResult};
 use crate::builtins::extended::production_tools::FileStateCache;
+use crate::{Tool, ToolContext, ToolError, ToolResult};
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use pipit_config::ApprovalMode;
@@ -74,10 +74,9 @@ impl Tool for ReadFileTool {
             .canonicalize()
             .map_err(|e| ToolError::ExecutionFailed(format!("Cannot resolve path: {}", e)))?;
 
-        let project_canonical = ctx
-            .project_root
-            .canonicalize()
-            .map_err(|e| ToolError::ExecutionFailed(format!("Cannot resolve project root: {}", e)))?;
+        let project_canonical = ctx.project_root.canonicalize().map_err(|e| {
+            ToolError::ExecutionFailed(format!("Cannot resolve project root: {}", e))
+        })?;
 
         if !canonical.starts_with(&project_canonical) {
             return Err(ToolError::PermissionDenied(

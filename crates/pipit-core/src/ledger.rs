@@ -216,8 +216,8 @@ impl SessionLedger {
             payload,
         };
 
-        let line = serde_json::to_string(&event)
-            .map_err(|e| LedgerError::Serialization(e.to_string()))?;
+        let line =
+            serde_json::to_string(&event).map_err(|e| LedgerError::Serialization(e.to_string()))?;
 
         if let Some(ref mut writer) = self.writer {
             writeln!(writer, "{}", line)?;
@@ -255,7 +255,9 @@ impl SessionLedger {
     }
 
     /// Replay from the last snapshot, returning only events after it.
-    pub fn replay_from_snapshot(path: &Path) -> Result<(Option<EventSeq>, Vec<LedgerEvent>), LedgerError> {
+    pub fn replay_from_snapshot(
+        path: &Path,
+    ) -> Result<(Option<EventSeq>, Vec<LedgerEvent>), LedgerError> {
         let all_events = Self::replay(path)?;
 
         // Find last Snapshot event
@@ -296,10 +298,7 @@ impl SessionLedger {
             }
             let computed = hash_event(event.seq, event.prev_hash, &event.payload);
             if event.hash != computed {
-                tracing::error!(
-                    "Integrity violation at seq {}: hash mismatch",
-                    event.seq
-                );
+                tracing::error!("Integrity violation at seq {}: hash mismatch", event.seq);
                 return Ok(false);
             }
             expected_prev = event.hash;
@@ -328,9 +327,10 @@ impl SessionLedger {
             return (0, 0);
         }
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        let last_event = content.lines().rev().find_map(|line| {
-            serde_json::from_str::<LedgerEvent>(line).ok()
-        });
+        let last_event = content
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str::<LedgerEvent>(line).ok());
         match last_event {
             Some(event) => (event.seq, event.hash),
             None => (0, 0),
@@ -421,12 +421,20 @@ impl SessionState {
 
         match &event.payload {
             // ── Session lifecycle ──
-            SessionEvent::SessionStarted { session_id, model, provider } => {
+            SessionEvent::SessionStarted {
+                session_id,
+                model,
+                provider,
+            } => {
                 self.session_id = Some(session_id.clone());
                 self.model = Some(model.clone());
                 self.provider = Some(provider.clone());
             }
-            SessionEvent::SessionEnded { turns, total_tokens, cost } => {
+            SessionEvent::SessionEnded {
+                turns,
+                total_tokens,
+                cost,
+            } => {
                 self.current_turn = *turns;
                 self.total_tokens = *total_tokens;
                 self.total_cost = *cost;
@@ -531,10 +539,7 @@ impl SessionState {
     /// Rebuild state from a snapshot + suffix events.
     /// The snapshot provides the base state at sequence `snap_seq`,
     /// and suffix events are replayed on top.
-    pub fn from_snapshot_and_suffix(
-        snapshot: Self,
-        suffix: &[LedgerEvent],
-    ) -> Self {
+    pub fn from_snapshot_and_suffix(snapshot: Self, suffix: &[LedgerEvent]) -> Self {
         let mut state = snapshot;
         for event in suffix {
             state.reduce(event);
@@ -583,15 +588,19 @@ mod tests {
 
         let mut ledger = SessionLedger::open(path.clone()).unwrap();
 
-        ledger.append(SessionEvent::SessionStarted {
-            session_id: "test-1".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-            provider: "anthropic".to_string(),
-        }).unwrap();
+        ledger
+            .append(SessionEvent::SessionStarted {
+                session_id: "test-1".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                provider: "anthropic".to_string(),
+            })
+            .unwrap();
 
-        ledger.append(SessionEvent::UserMessageAccepted {
-            content: "Hello".to_string(),
-        }).unwrap();
+        ledger
+            .append(SessionEvent::UserMessageAccepted {
+                content: "Hello".to_string(),
+            })
+            .unwrap();
 
         assert_eq!(ledger.current_seq(), 2);
 
@@ -609,12 +618,16 @@ mod tests {
         drop(tmp);
 
         let mut ledger = SessionLedger::open(path.clone()).unwrap();
-        ledger.append(SessionEvent::UserMessageAccepted {
-            content: "first".to_string(),
-        }).unwrap();
-        ledger.append(SessionEvent::UserMessageAccepted {
-            content: "second".to_string(),
-        }).unwrap();
+        ledger
+            .append(SessionEvent::UserMessageAccepted {
+                content: "first".to_string(),
+            })
+            .unwrap();
+        ledger
+            .append(SessionEvent::UserMessageAccepted {
+                content: "second".to_string(),
+            })
+            .unwrap();
 
         assert!(SessionLedger::verify_integrity(&path).unwrap());
     }

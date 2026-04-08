@@ -9,8 +9,8 @@
 //! Bounded priority queue: O(log n) insert, O(1) top-event read.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BinaryHeap;
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 // ─── Triage Events ──────────────────────────────────────────────────────
 
@@ -67,20 +67,11 @@ pub enum TriageEventKind {
         summary: String,
     },
     /// Verification failed — agent may be stuck.
-    VerificationFailure {
-        attempt: u32,
-        reason: String,
-    },
+    VerificationFailure { attempt: u32, reason: String },
     /// Loop detected — agent is repeating actions.
-    LoopWarning {
-        tool_name: String,
-        count: u32,
-    },
+    LoopWarning { tool_name: String, count: u32 },
     /// Permission prompt pending — user action needed.
-    ApprovalPending {
-        tool_name: String,
-        reason: String,
-    },
+    ApprovalPending { tool_name: String, reason: String },
     /// Context pressure — approaching token limit.
     ContextPressure {
         used_pct: f64,
@@ -188,7 +179,11 @@ impl TriageCoprocessor {
             // is higher priority than the minimum
             let events: Vec<_> = std::mem::take(&mut self.queue).into_vec();
             let mut sorted = events;
-            sorted.sort_by(|a, b| a.0.priority.partial_cmp(&b.0.priority).unwrap_or(Ordering::Equal));
+            sorted.sort_by(|a, b| {
+                a.0.priority
+                    .partial_cmp(&b.0.priority)
+                    .unwrap_or(Ordering::Equal)
+            });
             // Remove the lowest-priority event
             if let Some(lowest) = sorted.first() {
                 if event.priority > lowest.0.priority {
@@ -211,7 +206,10 @@ impl TriageCoprocessor {
     /// Pop and mark the highest-priority event as displayed.
     pub fn pop_display(&mut self) -> Option<TriageEvent> {
         self.queue.pop().map(|pe| {
-            let kind_str = format!("{:?}", pe.0.kind).chars().take(30).collect::<String>();
+            let kind_str = format!("{:?}", pe.0.kind)
+                .chars()
+                .take(30)
+                .collect::<String>();
             self.displayed_kinds.push(kind_str);
             if self.displayed_kinds.len() > self.max_displayed {
                 self.displayed_kinds.drain(..10);
@@ -242,51 +240,47 @@ impl TriageCoprocessor {
     /// p(e) = w_risk·r_risk + w_latency·r_latency + w_relevance·r_relevance - w_noise·r_noise
     fn compute_priority(&self, kind: &TriageEventKind) -> f64 {
         let (risk, latency, relevance, noise) = match kind {
-            TriageEventKind::RiskEscalation { to_level, .. } => {
-                (*to_level, 0.3, 0.9, 0.05)
-            }
-            TriageEventKind::ApprovalPending { .. } => {
-                (0.5, 0.8, 1.0, 0.0)
-            }
+            TriageEventKind::RiskEscalation { to_level, .. } => (*to_level, 0.3, 0.9, 0.05),
+            TriageEventKind::ApprovalPending { .. } => (0.5, 0.8, 1.0, 0.0),
             TriageEventKind::VerificationFailure { attempt, .. } => {
                 (0.6, 0.4, 0.8, if *attempt > 2 { 0.2 } else { 0.0 })
             }
-            TriageEventKind::BudgetWarning { used_pct, .. } => {
-                (0.3, 0.2, *used_pct, 0.1)
-            }
+            TriageEventKind::BudgetWarning { used_pct, .. } => (0.3, 0.2, *used_pct, 0.1),
             TriageEventKind::LoopWarning { count, .. } => {
                 (0.4, 0.3, 0.7, if *count > 5 { 0.3 } else { 0.0 })
             }
-            TriageEventKind::PlanDivergence { confidence_delta, .. } => {
-                (0.3, 0.2, confidence_delta.abs(), 0.1)
-            }
-            TriageEventKind::ToolPending { elapsed_ms, expected_ms, .. } => {
+            TriageEventKind::PlanDivergence {
+                confidence_delta, ..
+            } => (0.3, 0.2, confidence_delta.abs(), 0.1),
+            TriageEventKind::ToolPending {
+                elapsed_ms,
+                expected_ms,
+                ..
+            } => {
                 let ratio = *elapsed_ms as f64 / (*expected_ms as f64).max(1.0);
                 (0.1, ratio.min(1.0), 0.5, 0.2)
             }
             TriageEventKind::TaskCompleted { success, .. } => {
                 (0.0, 0.1, 0.6, if *success { 0.3 } else { 0.0 })
             }
-            TriageEventKind::ContextPressure { used_pct, .. } => {
-                (0.2, 0.1, *used_pct, 0.15)
-            }
+            TriageEventKind::ContextPressure { used_pct, .. } => (0.2, 0.1, *used_pct, 0.15),
         };
 
         let w = &self.weights;
-        let score = w.risk * risk + w.latency * latency + w.relevance * relevance
-            - w.noise_penalty * noise;
+        let score =
+            w.risk * risk + w.latency * latency + w.relevance * relevance - w.noise_penalty * noise;
         score.clamp(0.0, 1.0)
     }
 
     /// Default TTL for each event kind.
     fn default_ttl(&self, kind: &TriageEventKind) -> u64 {
         match kind {
-            TriageEventKind::ToolPending { .. } => 30_000,       // 30s
-            TriageEventKind::ApprovalPending { .. } => 0,        // permanent until handled
-            TriageEventKind::BudgetWarning { .. } => 60_000,     // 1 min
-            TriageEventKind::TaskCompleted { .. } => 15_000,     // 15s
-            TriageEventKind::LoopWarning { .. } => 20_000,       // 20s
-            TriageEventKind::ContextPressure { .. } => 45_000,   // 45s
+            TriageEventKind::ToolPending { .. } => 30_000,   // 30s
+            TriageEventKind::ApprovalPending { .. } => 0,    // permanent until handled
+            TriageEventKind::BudgetWarning { .. } => 60_000, // 1 min
+            TriageEventKind::TaskCompleted { .. } => 15_000, // 15s
+            TriageEventKind::LoopWarning { .. } => 20_000,   // 20s
+            TriageEventKind::ContextPressure { .. } => 45_000, // 45s
             _ => 30_000,
         }
     }

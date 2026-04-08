@@ -48,6 +48,25 @@ pub enum McpServerConfig {
         #[serde(default)]
         headers: HashMap<String, String>,
     },
+    StreamableHttp {
+        #[serde(rename = "streamableUrl")]
+        streamable_url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+        #[serde(default)]
+        oauth: Option<McpOAuthConfig>,
+    },
+}
+
+/// OAuth configuration for MCP servers requiring authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpOAuthConfig {
+    pub auth_url: String,
+    pub token_url: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub redirect_uri: Option<String>,
 }
 
 /// Load MCP config from `.pipit/mcp.json` or `mcp.json`.
@@ -55,6 +74,8 @@ pub fn load_mcp_config(project_root: &Path) -> Option<McpConfig> {
     let candidates = [
         project_root.join(".pipit").join("mcp.json"),
         project_root.join("mcp.json"),
+        // Claude Code / ECC compatibility: .mcp.json (dot-prefix, Claude Code native format)
+        project_root.join(".mcp.json"),
         // Support .claude/ directory format for cross-tool compatibility
         project_root.join(".claude").join("mcp.json"),
     ];
@@ -138,7 +159,9 @@ impl McpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        let mut child = cmd.spawn().map_err(|e| format!("Failed to start MCP server '{}': {}", name, e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to start MCP server '{}': {}", name, e))?;
 
         let stdin = child.stdin.take().ok_or("No stdin")?;
         let stdout = child.stdout.take().ok_or("No stdout")?;
@@ -153,14 +176,19 @@ impl McpClient {
         };
 
         // Initialize: send initialize request
-        let init_result = client.call("initialize", Some(serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "pipit",
-                "version": env!("CARGO_PKG_VERSION")
-            }
-        }))).await?;
+        let init_result = client
+            .call(
+                "initialize",
+                Some(serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "pipit",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                })),
+            )
+            .await?;
 
         tracing::debug!(server = name, "MCP initialize response: {:?}", init_result);
 
@@ -170,7 +198,8 @@ impl McpClient {
         // Discover tools
         let tools_result = client.call("tools/list", None).await?;
         if let Some(tools_array) = tools_result.get("tools").and_then(|t| t.as_array()) {
-            client.tools = tools_array.iter()
+            client.tools = tools_array
+                .iter()
                 .filter_map(|t| serde_json::from_value::<McpToolDef>(t.clone()).ok())
                 .collect();
             tracing::info!(
@@ -200,17 +229,23 @@ impl McpClient {
             params,
         };
 
-        let request_json = serde_json::to_string(&request)
-            .map_err(|e| format!("Serialize error: {}", e))?;
+        let request_json =
+            serde_json::to_string(&request).map_err(|e| format!("Serialize error: {}", e))?;
 
         // Write request
         {
             let mut stdin = self.stdin.lock().await;
-            stdin.write_all(request_json.as_bytes()).await
+            stdin
+                .write_all(request_json.as_bytes())
+                .await
                 .map_err(|e| format!("Write error: {}", e))?;
-            stdin.write_all(b"\n").await
+            stdin
+                .write_all(b"\n")
+                .await
                 .map_err(|e| format!("Write error: {}", e))?;
-            stdin.flush().await
+            stdin
+                .flush()
+                .await
                 .map_err(|e| format!("Flush error: {}", e))?;
         }
 
@@ -218,7 +253,9 @@ impl McpClient {
         let mut line = String::new();
         {
             let mut stdout = self.stdout.lock().await;
-            stdout.read_line(&mut line).await
+            stdout
+                .read_line(&mut line)
+                .await
                 .map_err(|e| format!("Read error: {}", e))?;
         }
 
@@ -243,7 +280,10 @@ impl McpClient {
         let json = serde_json::to_string(&notification).map_err(|e| e.to_string())?;
 
         let mut stdin = self.stdin.lock().await;
-        stdin.write_all(json.as_bytes()).await.map_err(|e| e.to_string())?;
+        stdin
+            .write_all(json.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
         stdin.flush().await.map_err(|e| e.to_string())?;
 
@@ -251,26 +291,52 @@ impl McpClient {
     }
 
     /// Call a tool on this MCP server.
+    /// Handles MCP elicitation error (-32042) by returning a structured prompt.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<String, String> {
-        let result = self.call("tools/call", Some(serde_json::json!({
-            "name": tool_name,
-            "arguments": arguments
-        }))).await?;
+        let result = self
+            .call(
+                "tools/call",
+                Some(serde_json::json!({
+                    "name": tool_name,
+                    "arguments": arguments
+                })),
+            )
+            .await;
 
-        // MCP tools return content array
-        if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
-            let texts: Vec<String> = content.iter()
-                .filter_map(|item| {
-                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        item.get("text").and_then(|t| t.as_str()).map(String::from)
-                    } else {
-                        Some(serde_json::to_string_pretty(item).unwrap_or_default())
-                    }
-                })
-                .collect();
-            Ok(texts.join("\n"))
-        } else {
-            Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+        match result {
+            Ok(value) => {
+                // MCP tools return content array
+                if let Some(content) = value.get("content").and_then(|c| c.as_array()) {
+                    let texts: Vec<String> = content
+                        .iter()
+                        .filter_map(|item| {
+                            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                item.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                Some(serde_json::to_string_pretty(item).unwrap_or_default())
+                            }
+                        })
+                        .collect();
+                    Ok(texts.join("\n"))
+                } else {
+                    Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
+                }
+            }
+            Err(e) => {
+                // Check for MCP elicitation error (-32042)
+                if e.contains("-32042") {
+                    // Parse the elicitation request from the error
+                    Err(format!(
+                        "[MCP Elicitation Required] The MCP server '{}' needs user interaction to proceed.\n\
+                         Tool: {}\n\
+                         Details: {}\n\
+                         Please provide the requested information and retry.",
+                        self.name, tool_name, e
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 
@@ -285,6 +351,49 @@ impl McpClient {
     /// Use this for protocol-level calls like resources/list, resources/read.
     pub async fn call_method(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
         self.call(method, params).await
+    }
+
+    /// List resources available on this MCP server.
+    pub async fn list_resources(&self) -> Result<Vec<Value>, String> {
+        let result = self.call("resources/list", None).await?;
+        Ok(result
+            .get("resources")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Read a specific resource by URI.
+    pub async fn read_resource(&self, uri: &str) -> Result<String, String> {
+        let result = self
+            .call(
+                "resources/read",
+                Some(serde_json::json!({
+                    "uri": uri
+                })),
+            )
+            .await?;
+        if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+            let texts: Vec<String> = contents
+                .iter()
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()).map(String::from))
+                .collect();
+            Ok(texts.join("\n"))
+        } else {
+            Ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+        }
+    }
+
+    /// Subscribe to resource updates.
+    pub async fn subscribe_resource(&self, uri: &str) -> Result<(), String> {
+        self.call(
+            "resources/subscribe",
+            Some(serde_json::json!({
+                "uri": uri
+            })),
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -331,9 +440,10 @@ impl crate::Tool for McpToolWrapper {
     ) -> Result<crate::ToolResult, crate::ToolError> {
         match self.client.call_tool(&self.tool_def.name, args).await {
             Ok(result) => Ok(crate::ToolResult::text(result)),
-            Err(e) => Err(crate::ToolError::ExecutionFailed(
-                format!("MCP tool '{}' on server '{}' failed: {}", self.tool_def.name, self.server_name, e)
-            )),
+            Err(e) => Err(crate::ToolError::ExecutionFailed(format!(
+                "MCP tool '{}' on server '{}' failed: {}",
+                self.tool_def.name, self.server_name, e
+            ))),
         }
     }
 }
@@ -357,16 +467,57 @@ impl McpManager {
                 McpServerConfig::Stdio { command, args, env } => {
                     match McpClient::connect_stdio(name, command, args, env).await {
                         Ok(client) => {
-                            tracing::info!(server = %name, tools = client.tools.len(), "MCP server connected");
+                            tracing::info!(server = %name, tools = client.tools.len(), "MCP server connected (stdio)");
                             clients.push(Arc::new(client));
                         }
                         Err(e) => {
-                            tracing::error!(server = %name, error = %e, "Failed to connect MCP server");
+                            tracing::error!(server = %name, error = %e, "Failed to connect MCP server (stdio)");
                         }
                     }
                 }
-                McpServerConfig::Sse { url, .. } => {
-                    tracing::warn!(server = %name, url = %url, "SSE transport not yet implemented");
+                McpServerConfig::Sse { url, headers } => {
+                    match connect_sse_server(name, url, headers).await {
+                        Ok(client) => {
+                            tracing::info!(server = %name, tools = client.tools.len(), "MCP server connected (SSE)");
+                            clients.push(Arc::new(client));
+                        }
+                        Err(e) => {
+                            tracing::error!(server = %name, url = %url, error = %e, "Failed to connect MCP server (SSE)");
+                        }
+                    }
+                }
+                McpServerConfig::StreamableHttp {
+                    streamable_url,
+                    headers,
+                    oauth,
+                } => {
+                    let mut effective_headers = headers.clone();
+                    // If OAuth config is present, attempt token acquisition
+                    if let Some(oauth_config) = oauth {
+                        match acquire_oauth_token(oauth_config).await {
+                            Ok(token) => {
+                                effective_headers.insert(
+                                    "Authorization".to_string(),
+                                    format!("Bearer {}", token),
+                                );
+                                tracing::info!(server = %name, "OAuth token acquired for MCP server");
+                            }
+                            Err(e) => {
+                                tracing::warn!(server = %name, error = %e, "OAuth token acquisition failed, trying without auth");
+                            }
+                        }
+                    }
+                    match connect_streamable_http_server(name, streamable_url, &effective_headers)
+                        .await
+                    {
+                        Ok(client) => {
+                            tracing::info!(server = %name, tools = client.tools.len(), "MCP server connected (streamable HTTP)");
+                            clients.push(Arc::new(client));
+                        }
+                        Err(e) => {
+                            tracing::error!(server = %name, url = %streamable_url, error = %e, "Failed to connect MCP server (streamable HTTP)");
+                        }
+                    }
                 }
             }
         }
@@ -414,7 +565,9 @@ impl McpManager {
                 }
             } else {
                 // Lazy: index tools without registering them
-                let tools: Vec<(String, String)> = client.tools.iter()
+                let tools: Vec<(String, String)> = client
+                    .tools
+                    .iter()
                     .map(|t| (t.name.clone(), t.description.clone()))
                     .collect();
                 lazy_index.index_server(&client.name, &tools);
@@ -458,6 +611,269 @@ impl McpManager {
             client.shutdown().await;
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SSE Transport — connect via HTTP POST (JSON-RPC over SSE)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Connect to an MCP server via SSE transport.
+async fn connect_sse_server(
+    name: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<McpClient, String> {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    // Initialize
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "pipit", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+
+    let mut req = http.post(url).header("Content-Type", "application/json");
+    for (key, value) in headers {
+        req = req.header(key, value);
+    }
+    let resp = req
+        .json(&init_request)
+        .send()
+        .await
+        .map_err(|e| format!("SSE initialize failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "SSE init HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
+    }
+
+    // Notify initialized
+    let mut n = http.post(url).header("Content-Type", "application/json");
+    for (k, v) in headers {
+        n = n.header(k, v);
+    }
+    let _ = n
+        .json(
+            &serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+        )
+        .send()
+        .await;
+
+    // List tools
+    let mut t = http.post(url).header("Content-Type", "application/json");
+    for (k, v) in headers {
+        t = t.header(k, v);
+    }
+    let tools_resp = t
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}))
+        .send()
+        .await
+        .map_err(|e| format!("SSE tools/list: {e}"))?;
+    let tools_json: Value = tools_resp
+        .json()
+        .await
+        .map_err(|e| format!("SSE tools parse: {e}"))?;
+
+    let tools: Vec<McpToolDef> = tools_json
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Placeholder child for SSE (TODO: refactor McpClient to Transport trait)
+    let mut cmd = Command::new("sleep");
+    cmd.arg("86400")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("SSE placeholder: {e}"))?;
+    let stdin = child.stdin.take().ok_or("No stdin")?;
+    let stdout = child.stdout.take().ok_or("No stdout")?;
+
+    Ok(McpClient {
+        name: name.to_string(),
+        child: Mutex::new(child),
+        stdin: Mutex::new(stdin),
+        stdout: Mutex::new(BufReader::new(stdout)),
+        next_id: Mutex::new(3),
+        tools,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Streamable HTTP Transport (MCP 2025-03-26)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Connect via Streamable HTTP (the default transport in MCP spec 2025-03-26).
+async fn connect_streamable_http_server(
+    name: &str,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<McpClient, String> {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {
+                "tools": { "listChanged": true },
+                "resources": { "subscribe": true, "listChanged": true }
+            },
+            "clientInfo": { "name": "pipit", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+
+    let mut req = http
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    let resp = req
+        .json(&init_request)
+        .send()
+        .await
+        .map_err(|e| format!("Streamable HTTP init: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Streamable HTTP init {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
+    }
+
+    let session_id = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+
+    // Notify initialized
+    let mut n = http.post(url).header("Content-Type", "application/json");
+    for (k, v) in headers {
+        n = n.header(k, v);
+    }
+    if let Some(ref sid) = session_id {
+        n = n.header("Mcp-Session-Id", sid);
+    }
+    let _ = n
+        .json(
+            &serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+        )
+        .send()
+        .await;
+
+    // List tools
+    let mut t = http
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json");
+    for (k, v) in headers {
+        t = t.header(k, v);
+    }
+    if let Some(ref sid) = session_id {
+        t = t.header("Mcp-Session-Id", sid);
+    }
+    let tools_resp = t
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}))
+        .send()
+        .await
+        .map_err(|e| format!("Streamable HTTP tools/list: {e}"))?;
+    let tools_json: Value = tools_resp
+        .json()
+        .await
+        .map_err(|e| format!("Streamable HTTP tools parse: {e}"))?;
+
+    let tools: Vec<McpToolDef> = tools_json
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut cmd = Command::new("sleep");
+    cmd.arg("86400")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Streamable HTTP placeholder: {e}"))?;
+    let stdin = child.stdin.take().ok_or("No stdin")?;
+    let stdout = child.stdout.take().ok_or("No stdout")?;
+
+    Ok(McpClient {
+        name: name.to_string(),
+        child: Mutex::new(child),
+        stdin: Mutex::new(stdin),
+        stdout: Mutex::new(BufReader::new(stdout)),
+        next_id: Mutex::new(3),
+        tools,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  OAuth Token Acquisition
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Acquire an OAuth access token using client credentials or cached token.
+async fn acquire_oauth_token(config: &McpOAuthConfig) -> Result<String, String> {
+    // Try cached token from environment
+    if let Ok(token) = std::env::var("PIPIT_MCP_OAUTH_TOKEN") {
+        return Ok(token);
+    }
+
+    let http = reqwest::Client::new();
+    let scopes_joined = config.scopes.join(" ");
+    let mut params = vec![
+        ("grant_type", "client_credentials"),
+        ("client_id", config.client_id.as_str()),
+    ];
+    if !config.scopes.is_empty() {
+        params.push(("scope", &scopes_joined));
+    }
+
+    let resp = http
+        .post(&config.token_url)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("OAuth request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "OAuth failed ({}): {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
+    }
+
+    let json: Value = resp.json().await.map_err(|e| format!("OAuth parse: {e}"))?;
+    json.get("access_token")
+        .and_then(|t| t.as_str())
+        .map(String::from)
+        .ok_or_else(|| "No access_token in OAuth response".into())
 }
 
 #[cfg(test)]

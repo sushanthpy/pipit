@@ -26,7 +26,9 @@ pub struct WebSearchInput {
     pub max_results: u32,
 }
 
-fn default_max_results() -> u32 { 5 }
+fn default_max_results() -> u32 {
+    5
+}
 
 /// Multi-provider web search tool.
 pub struct TypedWebSearchTool;
@@ -34,13 +36,13 @@ pub struct TypedWebSearchTool;
 #[async_trait]
 impl TypedTool for TypedWebSearchTool {
     type Input = WebSearchInput;
-    const NAME: &'static str = "web_search_typed";
+    const NAME: &'static str = "web_search";
     const CAPABILITIES: CapabilitySet = CapabilitySet::NETWORK_READ;
     const PURITY: Purity = Purity::Idempotent;
 
     fn describe() -> ToolCard {
         ToolCard {
-            name: "web_search_typed".into(),
+            name: "web_search".into(),
             summary: "Search the web using configured search provider".into(),
             when_to_use: "When you need current information from the web, such as documentation, API references, or recent developments.".into(),
             examples: vec![
@@ -110,18 +112,29 @@ async fn brave_search(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(ToolError::ExecutionFailed(format!("Brave API error {status}: {body}")));
+        return Err(ToolError::ExecutionFailed(format!(
+            "Brave API error {status}: {body}"
+        )));
     }
 
-    let json: serde_json::Value = response.json().await
+    let json: serde_json::Value = response
+        .json()
+        .await
         .map_err(|e| ToolError::ExecutionFailed(format!("Brave JSON parse error: {e}")))?;
 
     let mut results = Vec::new();
-    if let Some(web) = json.get("web").and_then(|w| w.get("results")).and_then(|r| r.as_array()) {
+    if let Some(web) = json
+        .get("web")
+        .and_then(|w| w.get("results"))
+        .and_then(|r| r.as_array())
+    {
         for item in web.iter().take(max_results as usize) {
             let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            let desc = item.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let desc = item
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             results.push(format!("**{}**\n{}\n{}\n", title, url, desc));
         }
     }
@@ -129,7 +142,12 @@ async fn brave_search(
     Ok(TypedToolResult::text(if results.is_empty() {
         format!("No results found for '{query}' (Brave Search)")
     } else {
-        format!("Web search results for '{}' ({} results, Brave):\n\n{}", query, results.len(), results.join("\n"))
+        format!(
+            "Web search results for '{}' ({} results, Brave):\n\n{}",
+            query,
+            results.len(),
+            results.join("\n")
+        )
     }))
 }
 
@@ -157,10 +175,14 @@ async fn tavily_search(
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(ToolError::ExecutionFailed(format!("Tavily API error: {body}")));
+        return Err(ToolError::ExecutionFailed(format!(
+            "Tavily API error: {body}"
+        )));
     }
 
-    let json: serde_json::Value = response.json().await
+    let json: serde_json::Value = response
+        .json()
+        .await
         .map_err(|e| ToolError::ExecutionFailed(format!("Tavily JSON parse error: {e}")))?;
 
     let mut results = Vec::new();
@@ -176,7 +198,12 @@ async fn tavily_search(
     Ok(TypedToolResult::text(if results.is_empty() {
         format!("No results found for '{query}' (Tavily)")
     } else {
-        format!("Web search results for '{}' ({} results, Tavily):\n\n{}", query, results.len(), results.join("\n"))
+        format!(
+            "Web search results for '{}' ({} results, Tavily):\n\n{}",
+            query,
+            results.len(),
+            results.join("\n")
+        )
     }))
 }
 
@@ -190,7 +217,9 @@ async fn serpapi_search(
 ) -> Result<TypedToolResult, ToolError> {
     let url = format!(
         "https://serpapi.com/search.json?q={}&api_key={}&num={}",
-        urlencoding::encode(query), api_key, max_results,
+        urlencoding::encode(query),
+        api_key,
+        max_results,
     );
 
     let response = tokio::select! {
@@ -205,7 +234,9 @@ async fn serpapi_search(
         return Err(ToolError::ExecutionFailed(format!("SerpAPI error: {body}")));
     }
 
-    let json: serde_json::Value = response.json().await
+    let json: serde_json::Value = response
+        .json()
+        .await
         .map_err(|e| ToolError::ExecutionFailed(format!("SerpAPI JSON parse error: {e}")))?;
 
     let mut results = Vec::new();
@@ -221,7 +252,12 @@ async fn serpapi_search(
     Ok(TypedToolResult::text(if results.is_empty() {
         format!("No results found for '{query}' (SerpAPI)")
     } else {
-        format!("Web search results for '{}' ({} results, SerpAPI):\n\n{}", query, results.len(), results.join("\n"))
+        format!(
+            "Web search results for '{}' ({} results, SerpAPI):\n\n{}",
+            query,
+            results.len(),
+            results.join("\n")
+        )
     }))
 }
 
@@ -245,7 +281,9 @@ async fn ddg_search(
         _ = cancel.cancelled() => return Err(ToolError::ExecutionFailed("Cancelled".into())),
     };
 
-    let html = response.text().await
+    let html = response
+        .text()
+        .await
         .map_err(|e| ToolError::ExecutionFailed(format!("DuckDuckGo read error: {e}")))?;
 
     // Parse result links from lite HTML
@@ -253,14 +291,19 @@ async fn ddg_search(
     for line in html.lines() {
         let trimmed = line.trim();
         // DuckDuckGo lite wraps results in <a> tags with class="result-link"
-        if trimmed.contains("result-link") || (trimmed.starts_with("<a") && trimmed.contains("href=\"http")) {
+        if trimmed.contains("result-link")
+            || (trimmed.starts_with("<a") && trimmed.contains("href=\"http"))
+        {
             // Extract href
             if let Some(href_start) = trimmed.find("href=\"") {
                 let rest = &trimmed[href_start + 6..];
                 if let Some(href_end) = rest.find('"') {
                     let url = &rest[..href_end];
                     // Extract link text
-                    let text = rest.find('>').and_then(|s| rest[s+1..].find('<').map(|e| &rest[s+1..s+1+e])).unwrap_or("");
+                    let text = rest
+                        .find('>')
+                        .and_then(|s| rest[s + 1..].find('<').map(|e| &rest[s + 1..s + 1 + e]))
+                        .unwrap_or("");
                     if !url.is_empty() && url.starts_with("http") {
                         results.push(format!("**{}**\n{}\n", text, url));
                     }
@@ -277,7 +320,9 @@ async fn ddg_search(
     } else {
         format!(
             "Web search results for '{}' ({} results, DuckDuckGo — set BRAVE_SEARCH_API_KEY or TAVILY_API_KEY for better results):\n\n{}",
-            query, results.len(), results.join("\n")
+            query,
+            results.len(),
+            results.join("\n")
         )
     }))
 }

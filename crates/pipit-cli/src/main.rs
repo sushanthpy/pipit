@@ -1,7 +1,9 @@
 mod auth;
+mod init;
 mod migrations;
 mod persistence;
 mod persistence_v2;
+mod plugin;
 mod prompt_builder;
 mod setup;
 mod tui;
@@ -11,15 +13,15 @@ mod workflow;
 use persistence::{LoadedPlanningState, PlanningStateSource};
 
 use anyhow::{Context, Result};
-use clap::Parser;
 use clap::CommandFactory;
+use clap::Parser;
 use pipit_config::{ApprovalMode, CliOverrides, ProviderKind};
 use pipit_context::{ContextManager, budget::ContextSettings};
 use pipit_core::{AgentLoop, AgentLoopConfig, AgentOutcome, PlanningState};
 use pipit_extensions::HookExtensionRunner;
 use pipit_intelligence::RepoMap;
-use pipit_io::input::{classify_input, read_input, SlashCommand, UserInput};
-use pipit_io::{PipitUi, InteractiveApprovalHandler, StatusBarState};
+use pipit_io::input::{SlashCommand, UserInput, classify_input, read_input};
+use pipit_io::{InteractiveApprovalHandler, PipitUi, StatusBarState};
 use pipit_provider::LlmProvider;
 use pipit_skills::SkillRegistry;
 use pipit_tools::ToolRegistry;
@@ -156,7 +158,6 @@ struct Cli {
     timing: bool,
 
     // ── Expert: role model overrides (hidden from default --help) ──
-
     /// [expert] Planner model override (for custom mode)
     #[arg(long, hide = true)]
     planner_model: Option<String>,
@@ -202,6 +203,41 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Initialize a new project with framework-specific configuration
+    Init {
+        /// Framework profile: react, nextjs, node, python, rust, go, typescript, minimal
+        #[arg(long, default_value = "minimal")]
+        profile: String,
+        /// Project directory (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    /// Manage plugins (install, uninstall, list, search)
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum PluginAction {
+    /// Install a plugin from a local path or registry URL
+    Install {
+        /// Source: local path or registry plugin name (e.g., "tdd-workflow" or "./my-plugin")
+        source: String,
+    },
+    /// Uninstall a plugin
+    Uninstall {
+        /// Plugin name
+        name: String,
+    },
+    /// List installed plugins
+    List,
+    /// Search the remote registry
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -246,9 +282,104 @@ fn env_var_for(provider: ProviderKind) -> &'static str {
     }
 }
 
+// ─── Subagent executor ─────────────────────────────────────────────────────
+//
+// Implements SubagentExecutor by spawning a child pipit process with
+// --max-turns and full_auto approval. This is the simplest correct approach:
+// - No circular dependency on pipit-core's AgentLoop
+// - Process isolation prevents tool/context leakage
+// - Child inherits the same provider/model/API-key env
+// - Bounded by --max-turns to prevent runaway subagents
+//
+// The LLM sees a `subagent` tool it can call to delegate focused subtasks
+// (e.g., "write tests for module X" or "review security of auth.rs").
+
+struct CliSubagentExecutor;
+
+#[async_trait::async_trait]
+impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
+    async fn run_subagent(
+        &self,
+        task: String,
+        _context: String,
+        _allowed_tools: Vec<String>,
+        project_root: std::path::PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<String, String> {
+        // Find the current executable path so we spawn the same binary
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("Cannot find pipit executable: {}", e))?;
+
+        let mut cmd = tokio::process::Command::new(&exe);
+        cmd.arg("--root")
+            .arg(project_root.display().to_string())
+            .arg("-a")
+            .arg("full_auto")
+            .arg("--max-turns")
+            .arg("15") // Bounded execution for subagents
+            .arg(&task)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            // Suppress the subagent's own MCP init to avoid port conflicts
+            .env("PIPIT_SUBAGENT", "1");
+
+        let child = cmd.spawn().map_err(|e| format!("Failed to spawn subagent: {}", e))?;
+
+        // Wait for completion or cancellation
+        let output = tokio::select! {
+            result = child.wait_with_output() => {
+                result.map_err(|e| format!("Subagent process error: {}", e))?
+            }
+            _ = cancel.cancelled() => {
+                return Err("Subagent cancelled".to_string());
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if output.status.success() || !stdout.is_empty() {
+            // Extract the agent's final response (content between last "pipit›" markers)
+            let response = stdout
+                .lines()
+                .rev()
+                .take_while(|l| !l.starts_with("Proof packet") && !l.starts_with("Stopped:"))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if response.trim().is_empty() {
+                Ok(format!("Subagent completed (exit {}). Output:\n{}", output.status, stdout))
+            } else {
+                Ok(response)
+            }
+        } else {
+            Err(format!(
+                "Subagent failed (exit {}). stderr:\n{}",
+                output.status, stderr
+            ))
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let startup_start = std::time::Instant::now();
+
+    // Prevent git from spawning a pager (less, more) which would hang
+    // std::process::Command calls. This is process-wide so all git
+    // invocations (slash commands, hooks, agent tools) benefit.
+    // Also set GIT_TERMINAL_PROMPT=0 to prevent git from prompting for
+    // credentials interactively — if auth fails, it should fail fast
+    // rather than blocking the process waiting for stdin.
+    //
+    // SAFETY: set_var is safe here because we are at the very start of main(),
+    // before any threads are spawned by the tokio runtime.
+    unsafe {
+        std::env::set_var("GIT_PAGER", "cat");
+        std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+    }
 
     // Initialize tracing with a TUI-safe writer that suppresses output
     // while the full-screen ratatui alternate screen is active.
@@ -272,7 +403,10 @@ async fn main() -> Result<()> {
         let _ = std::fs::write("/tmp/pipit-debug.log", "");
         dbg_log("=== pipit startup (--debug) ===");
         dbg_log(&format!("version: {}", env!("CARGO_PKG_VERSION")));
-        dbg_log(&format!("classic: {}, mode: {}, repomap: {}", cli.classic, cli.mode, cli.repomap));
+        dbg_log(&format!(
+            "classic: {}, mode: {}, repomap: {}",
+            cli.classic, cli.mode, cli.repomap
+        ));
     }
 
     // Handle subcommands early (before provider resolution)
@@ -284,6 +418,12 @@ async fn main() -> Result<()> {
             let mut cmd = <Cli as clap::CommandFactory>::command();
             clap_complete::generate(*shell, &mut cmd, "pipit", &mut std::io::stdout());
             return Ok(());
+        }
+        Some(Commands::Init { profile, path }) => {
+            return init::run_init(profile, path);
+        }
+        Some(Commands::Plugin { action }) => {
+            return plugin::handle_plugin_action(action).await;
         }
         None => {}
     }
@@ -309,7 +449,7 @@ async fn main() -> Result<()> {
         .as_deref()
         .map(str::parse)
         .transpose()
-.map_err(|e: String| anyhow::anyhow!("Invalid provider: {}", e))?;
+        .map_err(|e: String| anyhow::anyhow!("Invalid provider: {}", e))?;
 
     // Resolve config
     let project_root = cli
@@ -331,14 +471,21 @@ async fn main() -> Result<()> {
 
     dbg_log(&format!("[2/12] project_root={}", project_root.display()));
 
-    let config =
-        pipit_config::resolve_config(Some(&project_root), overrides).context("Config resolution failed")?;
+    let config = pipit_config::resolve_config(Some(&project_root), overrides)
+        .context("Config resolution failed")?;
 
     let provider_kind = config.provider.default;
-    dbg_log(&format!("[3/12] config resolved, provider={}", provider_kind));
+    dbg_log(&format!(
+        "[3/12] config resolved, provider={}",
+        provider_kind
+    ));
 
     // Resolve API key — offer interactive setup if missing
-    let api_key = match cli.api_key.clone().or_else(|| pipit_config::resolve_api_key(provider_kind)) {
+    let api_key = match cli
+        .api_key
+        .clone()
+        .or_else(|| pipit_config::resolve_api_key(provider_kind))
+    {
         Some(key) => key,
         None => {
             if provider_kind == ProviderKind::Ollama {
@@ -346,7 +493,10 @@ async fn main() -> Result<()> {
                 "ollama".to_string()
             } else {
                 eprintln!();
-                eprintln!("  \x1b[1;31m✗ No API key found for {}\x1b[0m", provider_kind);
+                eprintln!(
+                    "  \x1b[1;31m✗ No API key found for {}\x1b[0m",
+                    provider_kind
+                );
                 eprintln!();
                 eprintln!("  \x1b[1;33mLet's set up your configuration.\x1b[0m");
                 eprintln!();
@@ -354,15 +504,17 @@ async fn main() -> Result<()> {
                 setup::run()?;
 
                 // Retry after setup
-                let prov2 = pipit_config::resolve_config(Some(&project_root), CliOverrides::default())
-                    .map(|c| c.provider.default)
-                    .unwrap_or(provider_kind);
-                pipit_config::resolve_api_key(prov2)
-                    .ok_or_else(|| anyhow::anyhow!(
+                let prov2 =
+                    pipit_config::resolve_config(Some(&project_root), CliOverrides::default())
+                        .map(|c| c.provider.default)
+                        .unwrap_or(provider_kind);
+                pipit_config::resolve_api_key(prov2).ok_or_else(|| {
+                    anyhow::anyhow!(
                         "Still no API key after setup.\n\
                          Set it via: export {}=<key>",
                         env_var_for(provider_kind),
-                    ))?
+                    )
+                })?
             }
         }
     };
@@ -377,7 +529,10 @@ async fn main() -> Result<()> {
 
     // Create provider — on failure, offer interactive setup instead of dying
     let provider: Arc<dyn LlmProvider> = match pipit_provider::create_provider(
-        provider_kind, &model, &api_key, base_url.as_deref(),
+        provider_kind,
+        &model,
+        &api_key,
+        base_url.as_deref(),
     ) {
         Ok(p) => Arc::from(p),
         Err(e) => {
@@ -395,7 +550,9 @@ async fn main() -> Result<()> {
             let overrides2 = CliOverrides {
                 provider: cli_provider,
                 model: Some(model.clone()),
-                approval_mode: cli.approval.as_deref()
+                approval_mode: cli
+                    .approval
+                    .as_deref()
                     .map(str::parse)
                     .transpose()
                     .map_err(|e: String| anyhow::anyhow!(e))?,
@@ -416,17 +573,25 @@ async fn main() -> Result<()> {
         }
     };
 
-    dbg_log(&format!("[5/12] provider created: {} / {}", provider_kind, model));
+    dbg_log(&format!(
+        "[5/12] provider created: {} / {}",
+        provider_kind, model
+    ));
 
     // Build model router based on agent mode
-    let agent_mode: pipit_core::AgentMode = cli.mode.parse()
+    let agent_mode: pipit_core::AgentMode = cli
+        .mode
+        .parse()
         .map_err(|e: String| anyhow::anyhow!("{}", e))?;
 
     // Auto-promote to Custom if role overrides are specified
     let agent_mode = if agent_mode != pipit_core::AgentMode::Custom
-        && (cli.planner_model.is_some() || cli.planner_provider.is_some()
-            || cli.verifier_model.is_some() || cli.verifier_provider.is_some()
-            || cli.planner_base_url.is_some() || cli.verifier_base_url.is_some())
+        && (cli.planner_model.is_some()
+            || cli.planner_provider.is_some()
+            || cli.verifier_model.is_some()
+            || cli.verifier_provider.is_some()
+            || cli.planner_base_url.is_some()
+            || cli.verifier_base_url.is_some())
     {
         pipit_core::AgentMode::Custom
     } else {
@@ -436,14 +601,17 @@ async fn main() -> Result<()> {
     let pev_config = agent_mode.to_pev_config();
 
     let models = if agent_mode == pipit_core::AgentMode::Custom {
-        use pipit_core::{ModelRouter, RoleProvider, ModelRole};
+        use pipit_core::{ModelRole, ModelRouter, RoleProvider};
 
         let planner_model_id = cli.planner_model.as_deref().unwrap_or(&model);
         let verifier_model_id = cli.verifier_model.as_deref().unwrap_or(&model);
 
         // Warn if planner/verifier uses a non-reasoning model
         let non_reasoning_hints = ["non-reasoning", "fast", "mini", "instant", "flash", "haiku"];
-        for (role, model_id) in [("planner", planner_model_id), ("verifier", verifier_model_id)] {
+        for (role, model_id) in [
+            ("planner", planner_model_id),
+            ("verifier", verifier_model_id),
+        ] {
             let lower = model_id.to_lowercase();
             if non_reasoning_hints.iter().any(|h| lower.contains(h)) {
                 eprintln!(
@@ -461,39 +629,72 @@ async fn main() -> Result<()> {
             }
         }
 
-        let make_provider = |role_model: &str, role_provider_str: Option<&str>, role_base_url: Option<&str>| -> Result<Arc<dyn LlmProvider>, anyhow::Error> {
+        let make_provider = |role_model: &str,
+                             role_provider_str: Option<&str>,
+                             role_base_url: Option<&str>|
+         -> Result<Arc<dyn LlmProvider>, anyhow::Error> {
             let rp_kind: ProviderKind = if let Some(p) = role_provider_str {
                 p.parse().map_err(|e: String| anyhow::anyhow!("{}", e))?
             } else {
                 provider_kind
             };
-            let rp_key = pipit_config::resolve_api_key(rp_kind)
-                .unwrap_or_else(|| api_key.clone());
+            let rp_key = pipit_config::resolve_api_key(rp_kind).unwrap_or_else(|| api_key.clone());
             let rp_base = role_base_url.or(base_url.as_deref());
-            Ok(Arc::from(pipit_provider::create_provider(rp_kind, role_model, &rp_key, rp_base)
-                .map_err(|e| anyhow::anyhow!("Provider creation for {} failed: {}", role_model, e))?))
+            Ok(Arc::from(
+                pipit_provider::create_provider(rp_kind, role_model, &rp_key, rp_base).map_err(
+                    |e| anyhow::anyhow!("Provider creation for {} failed: {}", role_model, e),
+                )?,
+            ))
         };
 
-        let planner_provider = if cli.planner_model.is_some() || cli.planner_provider.is_some() || cli.planner_base_url.is_some() {
-            make_provider(planner_model_id, cli.planner_provider.as_deref(), cli.planner_base_url.as_deref())?
+        let planner_provider = if cli.planner_model.is_some()
+            || cli.planner_provider.is_some()
+            || cli.planner_base_url.is_some()
+        {
+            make_provider(
+                planner_model_id,
+                cli.planner_provider.as_deref(),
+                cli.planner_base_url.as_deref(),
+            )?
         } else {
             provider.clone()
         };
 
-        let verifier_provider = if cli.verifier_model.is_some() || cli.verifier_provider.is_some() || cli.verifier_base_url.is_some() {
-            make_provider(verifier_model_id, cli.verifier_provider.as_deref(), cli.verifier_base_url.as_deref())?
+        let verifier_provider = if cli.verifier_model.is_some()
+            || cli.verifier_provider.is_some()
+            || cli.verifier_base_url.is_some()
+        {
+            make_provider(
+                verifier_model_id,
+                cli.verifier_provider.as_deref(),
+                cli.verifier_base_url.as_deref(),
+            )?
         } else {
             provider.clone()
         };
 
         let router = ModelRouter::new(
-            RoleProvider { provider: planner_provider, model_id: planner_model_id.to_string(), role: ModelRole::Planner },
-            RoleProvider { provider: provider.clone(), model_id: model.clone(), role: ModelRole::Executor },
-            RoleProvider { provider: verifier_provider, model_id: verifier_model_id.to_string(), role: ModelRole::Verifier },
+            RoleProvider {
+                provider: planner_provider,
+                model_id: planner_model_id.to_string(),
+                role: ModelRole::Planner,
+            },
+            RoleProvider {
+                provider: provider.clone(),
+                model_id: model.clone(),
+                role: ModelRole::Executor,
+            },
+            RoleProvider {
+                provider: verifier_provider,
+                model_id: verifier_model_id.to_string(),
+                role: ModelRole::Verifier,
+            },
         );
 
-        eprintln!("pipit› mode: custom | planner: {} | executor: {} | verifier: {}",
-            planner_model_id, model, verifier_model_id);
+        eprintln!(
+            "pipit› mode: custom | planner: {} | executor: {} | verifier: {}",
+            planner_model_id, model, verifier_model_id
+        );
 
         router
     } else {
@@ -514,6 +715,11 @@ async fn main() -> Result<()> {
     // Register browser tools (CDP-backed)
     pipit_browser::extension_bridge::register_browser_tools(&mut tools);
 
+    // Register subagent tool — enables the LLM to delegate subtasks to a
+    // child pipit process with bounded scope and isolated execution.
+    let subagent_executor = Arc::new(CliSubagentExecutor);
+    tools.register_subagent(subagent_executor);
+
     let workflow_assets = WorkflowAssets::discover(&project_root);
 
     // Discover skills (#21: progressive disclosure)
@@ -523,7 +729,11 @@ async fn main() -> Result<()> {
         tracing::info!("Skills: {} discovered", skills.count());
     }
 
-    dbg_log(&format!("[7/12] tools={}, skills={}, workflow_assets loaded", tools.tool_names().len(), skills.count()));
+    dbg_log(&format!(
+        "[7/12] tools={}, skills={}, workflow_assets loaded",
+        tools.tool_names().len(),
+        skills.count()
+    ));
 
     // Build system prompt (with skill index injected as Tier 1)
     let system_prompt = prompt_builder::build_system_prompt(
@@ -553,15 +763,28 @@ async fn main() -> Result<()> {
 
     // Build RepoMap — skip if project_root is not a git repo (e.g. user's home dir)
     // to avoid scanning millions of files and hanging forever.
-    let is_git_repo = project_root.join(".git").exists();
+    // Detect git repo using `git rev-parse` which correctly handles subdirectories
+    // of git repos (walking up to find .git/), unlike checking project_root.join(".git").
+    let is_git_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(&project_root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     let repo_map_text = if cli.repomap && is_git_repo {
-        dbg_log(&format!("[8.5] building repomap for {}", project_root.display()));
+        dbg_log(&format!(
+            "[8.5] building repomap for {}",
+            project_root.display()
+        ));
         let intelligence_config = pipit_intelligence::IntelligenceConfig::default();
         let repo_map = RepoMap::build(&project_root, intelligence_config);
         if repo_map.file_count() > 0 {
             let map = repo_map.render(&[], 4096);
             tracing::info!("RepoMap: {} files indexed", repo_map.file_count());
-            dbg_log(&format!("[8.5] repomap: {} files indexed", repo_map.file_count()));
+            dbg_log(&format!(
+                "[8.5] repomap: {} files indexed",
+                repo_map.file_count()
+            ));
             context.update_repo_map_tokens((map.len() as u64) / 4);
             Some(map)
         } else {
@@ -570,7 +793,10 @@ async fn main() -> Result<()> {
     } else {
         if cli.repomap && !is_git_repo {
             dbg_log("[8.5] skipping repomap — not a git repo");
-            tracing::info!("RepoMap skipped — {} is not a git repository", project_root.display());
+            tracing::info!(
+                "RepoMap skipped — {} is not a git repository",
+                project_root.display()
+            );
         }
         None
     };
@@ -637,7 +863,11 @@ async fn main() -> Result<()> {
                         "Resumed session: {} events replayed, {} messages restored{}",
                         result.events_replayed,
                         result.messages_restored.len(),
-                        if result.worktree_restored { ", worktree restored" } else { "" },
+                        if result.worktree_restored {
+                            ", worktree restored"
+                        } else {
+                            ""
+                        },
                     );
                     if let Some(cwd) = result.restored_cwd {
                         agent.tool_context_mut().set_cwd(cwd);
@@ -683,21 +913,28 @@ async fn main() -> Result<()> {
 
     // Show update notification if available.
     // Use a short timeout so a slow/unreachable GitHub API never stalls startup.
-    let _update_notice = match tokio::time::timeout(
-        std::time::Duration::from_millis(800),
-        update_msg,
-    ).await {
-        Ok(Ok(Some(msg))) => {
-            eprintln!("\x1b[33m{}\x1b[0m\n", msg);
-            Some(msg)
-        }
-        _ => None,
-    };
+    let _update_notice =
+        match tokio::time::timeout(std::time::Duration::from_millis(800), update_msg).await {
+            Ok(Ok(Some(msg))) => {
+                eprintln!("\x1b[33m{}\x1b[0m\n", msg);
+                Some(msg)
+            }
+            _ => None,
+        };
 
     // Single-shot mode (or JSON mode)
     if let Some(prompt) = cli.prompt {
         let cancel = CancellationToken::new();
         let json_mode = cli.json;
+
+        // Wire Ctrl-C to the cancellation token so single-shot mode gets a
+        // graceful shutdown instead of an abrupt process kill.  This ensures
+        // telemetry is flushed and the ledger is persisted before exit.
+        let cancel_for_ctrlc = cancel.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            cancel_for_ctrlc.cancel();
+        });
 
         // Spawn event handler
         let _ui_handle = tokio::spawn(async move {
@@ -706,22 +943,30 @@ async fn main() -> Result<()> {
                 while let Ok(event) = event_rx.recv().await {
                     // Format events as JSON objects with type + data
                     let json = match &event {
-                        pipit_core::AgentEvent::TurnStart { turn_number } =>
-                            serde_json::json!({"event": "turn_start", "turn": turn_number}),
-                        pipit_core::AgentEvent::TurnEnd { turn_number, .. } =>
-                            serde_json::json!({"event": "turn_end", "turn": turn_number}),
-                        pipit_core::AgentEvent::ContentDelta { text } =>
-                            serde_json::json!({"event": "content_delta", "text": text}),
-                        pipit_core::AgentEvent::ContentComplete { full_text } =>
-                            serde_json::json!({"event": "content_complete", "text": full_text}),
-                        pipit_core::AgentEvent::ToolCallStart { call_id, name, .. } =>
-                            serde_json::json!({"event": "tool_start", "call_id": call_id, "name": name}),
-                        pipit_core::AgentEvent::ToolCallEnd { call_id, name, .. } =>
-                            serde_json::json!({"event": "tool_end", "call_id": call_id, "name": name}),
-                        pipit_core::AgentEvent::TokenUsageUpdate { used, limit, cost } =>
-                            serde_json::json!({"event": "token_usage", "used": used, "limit": limit, "cost": cost}),
-                        pipit_core::AgentEvent::Waiting { label } =>
-                            serde_json::json!({"event": "waiting", "label": label}),
+                        pipit_core::AgentEvent::TurnStart { turn_number } => {
+                            serde_json::json!({"event": "turn_start", "turn": turn_number})
+                        }
+                        pipit_core::AgentEvent::TurnEnd { turn_number, .. } => {
+                            serde_json::json!({"event": "turn_end", "turn": turn_number})
+                        }
+                        pipit_core::AgentEvent::ContentDelta { text } => {
+                            serde_json::json!({"event": "content_delta", "text": text})
+                        }
+                        pipit_core::AgentEvent::ContentComplete { full_text } => {
+                            serde_json::json!({"event": "content_complete", "text": full_text})
+                        }
+                        pipit_core::AgentEvent::ToolCallStart { call_id, name, .. } => {
+                            serde_json::json!({"event": "tool_start", "call_id": call_id, "name": name})
+                        }
+                        pipit_core::AgentEvent::ToolCallEnd { call_id, name, .. } => {
+                            serde_json::json!({"event": "tool_end", "call_id": call_id, "name": name})
+                        }
+                        pipit_core::AgentEvent::TokenUsageUpdate { used, limit, cost } => {
+                            serde_json::json!({"event": "token_usage", "used": used, "limit": limit, "cost": cost})
+                        }
+                        pipit_core::AgentEvent::Waiting { label } => {
+                            serde_json::json!({"event": "waiting", "label": label})
+                        }
                         _ => serde_json::json!({"event": "other"}),
                     };
                     eprintln!("{}", json);
@@ -739,8 +984,15 @@ async fn main() -> Result<()> {
         if json_mode {
             // Structured JSON result to stdout
             let result = match &outcome {
-                AgentOutcome::Completed { turns, cost, proof, total_tokens } => {
-                    let files_modified: Vec<String> = proof.realized_edits.iter()
+                AgentOutcome::Completed {
+                    turns,
+                    cost,
+                    proof,
+                    total_tokens,
+                } => {
+                    let files_modified: Vec<String> = proof
+                        .realized_edits
+                        .iter()
                         .map(|e| e.path.clone())
                         .collect();
                     let confidence = &proof.confidence;
@@ -780,7 +1032,11 @@ async fn main() -> Result<()> {
                         "exit_code": 2,
                     })
                 }
-                AgentOutcome::BudgetExhausted { turns, cost, budget } => {
+                AgentOutcome::BudgetExhausted {
+                    turns,
+                    cost,
+                    budget,
+                } => {
                     serde_json::json!({
                         "status": "budget_exhausted",
                         "turns": turns,
@@ -803,7 +1059,10 @@ async fn main() -> Result<()> {
                     })
                 }
             };
-            println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).unwrap_or_default()
+            );
 
             let exit_code = result["exit_code"].as_i64().unwrap_or(0);
             if exit_code != 0 {
@@ -813,7 +1072,9 @@ async fn main() -> Result<()> {
         }
 
         match outcome {
-            AgentOutcome::Completed { turns, cost, proof, .. } => {
+            AgentOutcome::Completed {
+                turns, cost, proof, ..
+            } => {
                 let proof_path = persistence::persist_proof_packet(&project_root, &proof).ok();
                 if let Some(planning_state) = agent.planning_state() {
                     persistence::persist_planning_snapshot(
@@ -828,7 +1089,8 @@ async fn main() -> Result<()> {
             }
             AgentOutcome::Error(e) => {
                 if let Some(planning_state) = agent.planning_state() {
-                    persistence::persist_planning_snapshot(&project_root, &planning_state, None).ok();
+                    persistence::persist_planning_snapshot(&project_root, &planning_state, None)
+                        .ok();
                 }
                 // Capture work-in-progress git diff before exiting
                 let wip_diff = std::process::Command::new("git")
@@ -847,7 +1109,8 @@ async fn main() -> Result<()> {
             }
             _ => {
                 if let Some(planning_state) = agent.planning_state() {
-                    persistence::persist_planning_snapshot(&project_root, &planning_state, None).ok();
+                    persistence::persist_planning_snapshot(&project_root, &planning_state, None)
+                        .ok();
                 }
             }
         }
@@ -943,8 +1206,12 @@ async fn main() -> Result<()> {
                                 source: PlanningStateSource::Live,
                                 proof_summary: None,
                             })
-                            .or_else(|| persistence::load_planning_snapshot(&project_root).ok().flatten());
-                       persistence::print_plans(state);
+                            .or_else(|| {
+                                persistence::load_planning_snapshot(&project_root)
+                                    .ok()
+                                    .flatten()
+                            });
+                        persistence::print_plans(state);
                         continue;
                     }
                     SlashCommand::Quit => break,
@@ -959,8 +1226,7 @@ async fn main() -> Result<()> {
                             Ok(stats) => {
                                 eprintln!(
                                     "\x1b[2mContext compacted: removed {} messages, freed {} tokens\x1b[0m",
-                                    stats.messages_removed,
-                                    stats.tokens_freed,
+                                    stats.messages_removed, stats.tokens_freed,
                                 );
                             }
                             Err(err) => {
@@ -1011,7 +1277,10 @@ async fn main() -> Result<()> {
                     }
                     SlashCommand::Plan(topic) => {
                         let prompt = if let Some(t) = topic {
-                            format!("Create a plan for: {}. Do NOT make any changes yet — only discuss the approach, list the files involved, and outline the steps.", t)
+                            format!(
+                                "Create a plan for: {}. Do NOT make any changes yet — only discuss the approach, list the files involved, and outline the steps.",
+                                t
+                            )
                         } else {
                             "Summarize the current plan and what the next steps are. Do NOT make any changes.".to_string()
                         };
@@ -1033,7 +1302,10 @@ async fn main() -> Result<()> {
                                 files_in_context.push(path.clone());
                             }
                             // Read the file through the agent so it enters the context window
-                            let prompt = format!("Read the file {} and keep it in context for our discussion.", path);
+                            let prompt = format!(
+                                "Read the file {} and keep it in context for our discussion.",
+                                path
+                            );
                             let cancel = CancellationToken::new();
                             let _ = agent.run(prompt, cancel).await;
                         }
@@ -1050,7 +1322,11 @@ async fn main() -> Result<()> {
                     }
                     SlashCommand::Undo | SlashCommand::Rewind => {
                         if let Some((ref sha, ref files)) = last_rollback {
-                            eprintln!("\x1b[33mRolling back {} file(s) to {}\x1b[0m", files.len(), &sha[..8.min(sha.len())]);
+                            eprintln!(
+                                "\x1b[33mRolling back {} file(s) to {}\x1b[0m",
+                                files.len(),
+                                &sha[..8.min(sha.len())]
+                            );
                             let mut success = 0;
                             let mut failed = 0;
                             for file in files {
@@ -1097,7 +1373,9 @@ async fn main() -> Result<()> {
                         });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::Aside(question) => {
@@ -1148,7 +1426,9 @@ async fn main() -> Result<()> {
                         });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::Tdd(topic) => {
@@ -1160,17 +1440,23 @@ async fn main() -> Result<()> {
                                  3. Write the MINIMAL code to make the test pass (GREEN).\n\
                                  4. Run the test again to confirm it PASSES.\n\
                                  5. Refactor if needed while keeping tests green.\n\
-                                 Aim for 80%+ coverage.", t
+                                 Aim for 80%+ coverage.",
+                                t
                             )
                         } else {
                             "Show the current test coverage and suggest what tests are missing. Do NOT write code yet — just analyze.".to_string()
                         };
                         let cancel = CancellationToken::new();
                         let cancel_clone = cancel.clone();
-                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let ctrlc_handle = tokio::spawn(async move {
+                            tokio::signal::ctrl_c().await.ok();
+                            cancel_clone.cancel();
+                        });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::CodeReview => {
@@ -1181,10 +1467,15 @@ async fn main() -> Result<()> {
                             4. Summary: total findings by severity, overall assessment, ready-to-merge verdict.".to_string();
                         let cancel = CancellationToken::new();
                         let cancel_clone = cancel.clone();
-                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let ctrlc_handle = tokio::spawn(async move {
+                            tokio::signal::ctrl_c().await.ok();
+                            cancel_clone.cancel();
+                        });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::BuildFix => {
@@ -1194,13 +1485,19 @@ async fn main() -> Result<()> {
                             3. Fix ONE error at a time — the first/root error.\n\
                             4. Re-run the build to verify the fix.\n\
                             5. Repeat until the build succeeds or report what's unresolvable.\n\
-                            Make minimal, surgical fixes. Do not refactor.".to_string();
+                            Make minimal, surgical fixes. Do not refactor."
+                            .to_string();
                         let cancel = CancellationToken::new();
                         let cancel_clone = cancel.clone();
-                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let ctrlc_handle = tokio::spawn(async move {
+                            tokio::signal::ctrl_c().await.ok();
+                            cancel_clone.cancel();
+                        });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::Threat => {
@@ -1214,10 +1511,15 @@ async fn main() -> Result<()> {
                             Output a structured threat report.".to_string();
                         let cancel = CancellationToken::new();
                         let cancel_clone = cancel.clone();
-                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let ctrlc_handle = tokio::spawn(async move {
+                            tokio::signal::ctrl_c().await.ok();
+                            cancel_clone.cancel();
+                        });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::Evolve(target) => {
@@ -1229,13 +1531,20 @@ async fn main() -> Result<()> {
                              2. Implement the solution.\n\
                              3. Run tests to verify.\n\
                              4. Report: correctness, diff size, and complexity.\n\
-                             Recommend the best approach with rationale.", target_desc);
+                             Recommend the best approach with rationale.",
+                            target_desc
+                        );
                         let cancel = CancellationToken::new();
                         let cancel_clone = cancel.clone();
-                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let ctrlc_handle = tokio::spawn(async move {
+                            tokio::signal::ctrl_c().await.ok();
+                            cancel_clone.cancel();
+                        });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::Env(subcommand) => {
@@ -1265,10 +1574,15 @@ async fn main() -> Result<()> {
                         };
                         let cancel = CancellationToken::new();
                         let cancel_clone = cancel.clone();
-                        let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                        let ctrlc_handle = tokio::spawn(async move {
+                            tokio::signal::ctrl_c().await.ok();
+                            cancel_clone.cancel();
+                        });
                         let outcome = agent.run(prompt, cancel).await;
                         ctrlc_handle.abort();
-                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                        if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                            last_rollback = Some(rb);
+                        }
                         continue;
                     }
                     SlashCommand::Spec(spec_arg) => {
@@ -1297,7 +1611,9 @@ async fn main() -> Result<()> {
                             match found {
                                 Some(content) => content,
                                 None => {
-                                    eprintln!("No spec file found. Create PIPIT.md with ## Task sections, or run /spec <file>");
+                                    eprintln!(
+                                        "No spec file found. Create PIPIT.md with ## Task sections, or run /spec <file>"
+                                    );
                                     continue;
                                 }
                             }
@@ -1313,7 +1629,10 @@ async fn main() -> Result<()> {
                         eprintln!("Tasks: {}", plan.tasks.len());
                         let groups = plan.parallelizable_groups();
                         for (i, group) in groups.iter().enumerate() {
-                            let names: Vec<_> = group.iter().map(|t| format!("#{} {}", t.id, t.title)).collect();
+                            let names: Vec<_> = group
+                                .iter()
+                                .map(|t| format!("#{} {}", t.id, t.title))
+                                .collect();
                             let parallel = if group.len() > 1 { " (parallel)" } else { "" };
                             eprintln!("  Phase {}: {}{}", i + 1, names.join(", "), parallel);
                         }
@@ -1328,10 +1647,17 @@ async fn main() -> Result<()> {
                             let prompt = plan.task_prompt(task);
                             let cancel = CancellationToken::new();
                             let cancel_clone = cancel.clone();
-                            let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                            let ctrlc_handle = tokio::spawn(async move {
+                                tokio::signal::ctrl_c().await.ok();
+                                cancel_clone.cancel();
+                            });
                             let outcome = agent.run(prompt, cancel).await;
                             ctrlc_handle.abort();
-                            if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                            if let Some(rb) =
+                                handle_agent_outcome(&project_root, &mut agent, outcome)
+                            {
+                                last_rollback = Some(rb);
+                            }
                         }
                         continue;
                     }
@@ -1361,9 +1687,15 @@ async fn main() -> Result<()> {
                                     },
                                 });
                                 let meta_file = session_subdir.join("metadata.json");
-                                let _ = std::fs::write(&meta_file, serde_json::to_string_pretty(&meta).unwrap_or_default());
+                                let _ = std::fs::write(
+                                    &meta_file,
+                                    serde_json::to_string_pretty(&meta).unwrap_or_default(),
+                                );
                                 let msg_count = agent.context_usage().total;
-                                eprintln!("\x1b[32mSession '{}' saved ({} tokens)\x1b[0m", name, msg_count);
+                                eprintln!(
+                                    "\x1b[32mSession '{}' saved ({} tokens)\x1b[0m",
+                                    name, msg_count
+                                );
                             }
                             Err(e) => eprintln!("\x1b[31mFailed to save session: {}\x1b[0m", e),
                         }
@@ -1376,15 +1708,25 @@ async fn main() -> Result<()> {
                             // Restore conversation history
                             match agent.load_session(&session_subdir) {
                                 Ok(msg_count) => {
-                                    eprintln!("\x1b[32mRestored {} messages from session '{}'\x1b[0m", msg_count, name);
+                                    eprintln!(
+                                        "\x1b[32mRestored {} messages from session '{}'\x1b[0m",
+                                        msg_count, name
+                                    );
                                     // Also restore metadata (files_in_context)
                                     let meta_file = session_subdir.join("metadata.json");
                                     if let Ok(content) = std::fs::read_to_string(&meta_file) {
-                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) {
-                                            if let Some(files) = data.get("files_in_context").and_then(|v| v.as_array()) {
+                                        if let Ok(data) =
+                                            serde_json::from_str::<serde_json::Value>(&content)
+                                        {
+                                            if let Some(files) = data
+                                                .get("files_in_context")
+                                                .and_then(|v| v.as_array())
+                                            {
                                                 for f in files {
                                                     if let Some(path) = f.as_str() {
-                                                        if !files_in_context.contains(&path.to_string()) {
+                                                        if !files_in_context
+                                                            .contains(&path.to_string())
+                                                        {
                                                             files_in_context.push(path.to_string());
                                                         }
                                                     }
@@ -1393,7 +1735,9 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
-                                Err(e) => eprintln!("\x1b[31mFailed to resume session: {}\x1b[0m", e),
+                                Err(e) => {
+                                    eprintln!("\x1b[31mFailed to resume session: {}\x1b[0m", e)
+                                }
                             }
                         } else {
                             // List available sessions
@@ -1405,15 +1749,33 @@ async fn main() -> Result<()> {
                                     for entry in sessions {
                                         let path = entry.path();
                                         if path.is_dir() {
-                                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                                            let name = path
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy();
                                             let meta_file = path.join("metadata.json");
-                                            let detail = if let Ok(c) = std::fs::read_to_string(&meta_file) {
-                                                if let Ok(d) = serde_json::from_str::<serde_json::Value>(&c) {
-                                                    let model = d.get("model").and_then(|m| m.as_str()).unwrap_or("?");
-                                                    let cost = d.get("token_usage").and_then(|t| t.get("cost")).and_then(|c| c.as_f64()).unwrap_or(0.0);
+                                            let detail = if let Ok(c) =
+                                                std::fs::read_to_string(&meta_file)
+                                            {
+                                                if let Ok(d) =
+                                                    serde_json::from_str::<serde_json::Value>(&c)
+                                                {
+                                                    let model = d
+                                                        .get("model")
+                                                        .and_then(|m| m.as_str())
+                                                        .unwrap_or("?");
+                                                    let cost = d
+                                                        .get("token_usage")
+                                                        .and_then(|t| t.get("cost"))
+                                                        .and_then(|c| c.as_f64())
+                                                        .unwrap_or(0.0);
                                                     format!(" ({}, ${:.4})", model, cost)
-                                                } else { String::new() }
-                                            } else { String::new() };
+                                                } else {
+                                                    String::new()
+                                                }
+                                            } else {
+                                                String::new()
+                                            };
                                             eprintln!("  {}{}", name, detail);
                                         }
                                     }
@@ -1479,8 +1841,14 @@ async fn main() -> Result<()> {
                         }
                         // If nothing changed
                         if staged.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(true)
-                            && unstaged.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(true)
-                            && untracked.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(true)
+                            && unstaged
+                                .as_ref()
+                                .map(|o| o.stdout.is_empty())
+                                .unwrap_or(true)
+                            && untracked
+                                .as_ref()
+                                .map(|o| o.stdout.is_empty())
+                                .unwrap_or(true)
                         {
                             eprintln!("\x1b[2mNo uncommitted changes\x1b[0m");
                         }
@@ -1493,7 +1861,8 @@ async fn main() -> Result<()> {
                             .args(["diff", "--staged", "--stat"])
                             .current_dir(&project_root)
                             .output();
-                        let has_staged = staged.as_ref()
+                        let has_staged = staged
+                            .as_ref()
                             .map(|o| !o.stdout.is_empty())
                             .unwrap_or(false);
                         if !has_staged {
@@ -1536,7 +1905,21 @@ async fn main() -> Result<()> {
                                          Types: feat, fix, refactor, docs, test, chore, perf\n\
                                          Reply with ONLY the commit message, nothing else.\n\n\
                                          ```diff\n{}\n```",
-                                        if diff_text.len() > 8000 { &diff_text[..8000] } else { &diff_text }
+                                        {
+                                            // Safe UTF-8 truncation — don't split mid-codepoint
+                                            let max = 8000;
+                                            if diff_text.len() > max {
+                                                let safe_end = diff_text
+                                                    .char_indices()
+                                                    .take_while(|(i, _)| *i < max)
+                                                    .last()
+                                                    .map(|(i, c)| i + c.len_utf8())
+                                                    .unwrap_or(0);
+                                                &diff_text[..safe_end]
+                                            } else {
+                                                &diff_text
+                                            }
+                                        }
                                     );
                                     let cancel = CancellationToken::new();
                                     let cancel_clone = cancel.clone();
@@ -1548,24 +1931,42 @@ async fn main() -> Result<()> {
                                     ctrlc_handle.abort();
                                     // Extract the generated message from the agent's last response
                                     if let AgentOutcome::Completed { .. } = &outcome {
-                                        // Get the last assistant message
-                                        if let Some(last_msg) = agent.context_usage().total.checked_sub(0) {
-                                            let _ = last_msg; // Message was already printed by the agent
-                                            eprintln!("\n\x1b[33mCommit with this message? [y/N]\x1b[0m");
+                                        // Get the last assistant message text from the agent
+                                        let generated_msg = agent
+                                            .last_assistant_text()
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
+                                        if generated_msg.is_empty() {
+                                            eprintln!("\x1b[31mNo commit message generated\x1b[0m");
+                                        } else {
+                                            eprintln!(
+                                                "\n\x1b[33mCommit with this message? [y/N]\x1b[0m"
+                                            );
                                             if let Some(answer) = read_input() {
-                                                if answer.trim().eq_ignore_ascii_case("y") || answer.trim().eq_ignore_ascii_case("yes") {
-                                                    // Use the last content line from the agent as commit message
-                                                    let msg_output = std::process::Command::new("git")
-                                                        .args(["commit", "--no-edit"])
-                                                        .current_dir(&project_root)
-                                                        .output();
+                                                if answer.trim().eq_ignore_ascii_case("y")
+                                                    || answer.trim().eq_ignore_ascii_case("yes")
+                                                {
+                                                    // Use the extracted message directly
+                                                    let msg_output =
+                                                        std::process::Command::new("git")
+                                                            .args(["commit", "-m", &generated_msg])
+                                                            .current_dir(&project_root)
+                                                            .output();
                                                     match msg_output {
                                                         Ok(o) if o.status.success() => {
-                                                            eprintln!("\x1b[32mCommitted!\x1b[0m");
+                                                            eprintln!(
+                                                                "\x1b[32mCommitted: {}\x1b[0m",
+                                                                generated_msg
+                                                            );
                                                         }
                                                         Ok(o) => {
-                                                            let err = String::from_utf8_lossy(&o.stderr);
-                                                            eprintln!("\x1b[31m{}\x1b[0m", err.trim());
+                                                            let err =
+                                                                String::from_utf8_lossy(&o.stderr);
+                                                            eprintln!(
+                                                                "\x1b[31m{}\x1b[0m",
+                                                                err.trim()
+                                                            );
                                                         }
                                                         Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                                                     }
@@ -1609,7 +2010,10 @@ async fn main() -> Result<()> {
                                             eprintln!("{}", line);
                                         }
                                         if lines.len() > shown {
-                                            eprintln!("\x1b[2m... and {} more results\x1b[0m", lines.len() - shown);
+                                            eprintln!(
+                                                "\x1b[2m... and {} more results\x1b[0m",
+                                                lines.len() - shown
+                                            );
                                         }
                                     }
                                 }
@@ -1621,7 +2025,9 @@ async fn main() -> Result<()> {
                                         .output();
                                     match rg {
                                         Ok(o) => eprint!("{}", String::from_utf8_lossy(&o.stdout)),
-                                        Err(_) => eprintln!("\x1b[31mNeither grep nor rg available\x1b[0m"),
+                                        Err(_) => eprintln!(
+                                            "\x1b[31mNeither grep nor rg available\x1b[0m"
+                                        ),
                                     }
                                 }
                             }
@@ -1635,7 +2041,9 @@ async fn main() -> Result<()> {
                         } else {
                             let args_str = args.as_deref().unwrap_or("");
                             // Parse optional interval
-                            let (interval, prompt) = if let Some(rest) = args_str.strip_prefix(|c: char| c.is_ascii_digit()) {
+                            let (interval, prompt) = if let Some(rest) =
+                                args_str.strip_prefix(|c: char| c.is_ascii_digit())
+                            {
                                 let num: String = std::iter::once(args_str.chars().next().unwrap())
                                     .chain(rest.chars().take_while(|c| c.is_ascii_digit()))
                                     .collect();
@@ -1648,7 +2056,10 @@ async fn main() -> Result<()> {
                             if prompt.is_empty() {
                                 eprintln!("\x1b[33mUsage: /loop [interval_secs] <prompt>\x1b[0m");
                             } else {
-                                eprintln!("\x1b[2mLooping every {}s (Ctrl-C to stop): {}\x1b[0m", interval, prompt);
+                                eprintln!(
+                                    "\x1b[2mLooping every {}s (Ctrl-C to stop): {}\x1b[0m",
+                                    interval, prompt
+                                );
                                 let prompt_owned = prompt.to_string();
                                 loop {
                                     let cancel = CancellationToken::new();
@@ -1659,14 +2070,19 @@ async fn main() -> Result<()> {
                                     });
                                     let outcome = agent.run(prompt_owned.clone(), cancel).await;
                                     ctrlc_handle.abort();
-                                    if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                    if let Some(rb) =
+                                        handle_agent_outcome(&project_root, &mut agent, outcome)
+                                    {
+                                        last_rollback = Some(rb);
+                                    }
                                     // Check if user pressed Ctrl-C
                                     if ctrlc_handle.is_finished() {
                                         eprintln!("\x1b[2mLoop stopped\x1b[0m");
                                         break;
                                     }
                                     eprintln!("\x1b[2m──── sleeping {}s ────\x1b[0m", interval);
-                                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                                    tokio::time::sleep(std::time::Duration::from_secs(interval))
+                                        .await;
                                 }
                             }
                         }
@@ -1678,12 +2094,21 @@ async fn main() -> Result<()> {
                             None | Some("list") | Some("ls") => {
                                 // List stored knowledge
                                 if !knowledge_dir.exists() {
-                                    eprintln!("\x1b[2mNo stored knowledge yet. Use /memory add <concept> to add.\x1b[0m");
+                                    eprintln!(
+                                        "\x1b[2mNo stored knowledge yet. Use /memory add <concept> to add.\x1b[0m"
+                                    );
                                 } else if let Ok(entries) = std::fs::read_dir(&knowledge_dir) {
                                     eprintln!("\n\x1b[1;33mStored Knowledge\x1b[0m\n");
                                     for entry in entries.flatten() {
-                                        if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
-                                            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                        if entry
+                                            .path()
+                                            .extension()
+                                            .map(|e| e == "json")
+                                            .unwrap_or(false)
+                                        {
+                                            if let Ok(content) =
+                                                std::fs::read_to_string(entry.path())
+                                            {
                                                 if let Ok(unit) = serde_json::from_str::<pipit_context::knowledge_injection::InjectedKnowledge>(&content) {
                                                     eprintln!("  \x1b[36m{}\x1b[0m — {}", unit.concept, unit.outcome);
                                                 }
@@ -1704,7 +2129,8 @@ async fn main() -> Result<()> {
                                     concept: knowledge_text.to_string(),
                                     approach: String::new(),
                                     outcome: "User-provided knowledge".to_string(),
-                                    source_project: project_root.file_name()
+                                    source_project: project_root
+                                        .file_name()
                                         .and_then(|n| n.to_str())
                                         .unwrap_or("unknown")
                                         .to_string(),
@@ -1733,32 +2159,54 @@ async fn main() -> Result<()> {
                         if let Some(task) = prompt {
                             // Check if daemon is running
                             let daemon_running = std::process::Command::new("curl")
-                                .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:3141/health"])
+                                .args([
+                                    "-s",
+                                    "-o",
+                                    "/dev/null",
+                                    "-w",
+                                    "%{http_code}",
+                                    "http://127.0.0.1:3141/health",
+                                ])
                                 .output()
                                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
                                 .unwrap_or(false);
                             if daemon_running {
                                 // Submit task to daemon
                                 let submit = std::process::Command::new("curl")
-                                    .args(["-s", "-X", "POST", "http://127.0.0.1:3141/tasks",
-                                        "-H", "Content-Type: application/json",
-                                        "-d", &serde_json::json!({"prompt": task}).to_string()])
+                                    .args([
+                                        "-s",
+                                        "-X",
+                                        "POST",
+                                        "http://127.0.0.1:3141/tasks",
+                                        "-H",
+                                        "Content-Type: application/json",
+                                        "-d",
+                                        &serde_json::json!({"prompt": task}).to_string(),
+                                    ])
                                     .output();
                                 match submit {
                                     Ok(o) if o.status.success() => {
                                         let resp = String::from_utf8_lossy(&o.stdout);
-                                        eprintln!("\x1b[32mTask submitted to background daemon\x1b[0m");
+                                        eprintln!(
+                                            "\x1b[32mTask submitted to background daemon\x1b[0m"
+                                        );
                                         eprintln!("\x1b[2m{}\x1b[0m", resp.trim());
                                     }
-                                    _ => eprintln!("\x1b[31mFailed to submit task to daemon\x1b[0m"),
+                                    _ => {
+                                        eprintln!("\x1b[31mFailed to submit task to daemon\x1b[0m")
+                                    }
                                 }
                             } else {
                                 eprintln!("\x1b[33mDaemon not running. Start with: pipitd\x1b[0m");
-                                eprintln!("\x1b[2mThe task will run in the foreground instead.\x1b[0m");
+                                eprintln!(
+                                    "\x1b[2mThe task will run in the foreground instead.\x1b[0m"
+                                );
                             }
                         } else {
                             eprintln!("\x1b[33mUsage: /bg <prompt>\x1b[0m");
-                            eprintln!("\x1b[2mRun a task in the background via the pipit daemon.\x1b[0m");
+                            eprintln!(
+                                "\x1b[2mRun a task in the background via the pipit daemon.\x1b[0m"
+                            );
                         }
                         continue;
                     }
@@ -1768,27 +2216,40 @@ async fn main() -> Result<()> {
                                 let suites = pipit_bench::load_custom_suites(&project_root);
                                 eprintln!("\n\x1b[1;33mBenchmark Suites\x1b[0m\n");
                                 if suites.is_empty() {
-                                    eprintln!("  \x1b[2mNo custom suites. Add tasks to .pipit/benchmarks/<name>/\x1b[0m");
-                                    eprintln!("  \x1b[2mEach task needs: instruction.md, test.sh, optional Dockerfile\x1b[0m");
+                                    eprintln!(
+                                        "  \x1b[2mNo custom suites. Add tasks to .pipit/benchmarks/<name>/\x1b[0m"
+                                    );
+                                    eprintln!(
+                                        "  \x1b[2mEach task needs: instruction.md, test.sh, optional Dockerfile\x1b[0m"
+                                    );
                                 } else {
                                     for suite in &suites {
-                                        eprintln!("  \x1b[36m{}\x1b[0m — {} tasks", suite.name, suite.tasks.len());
+                                        eprintln!(
+                                            "  \x1b[36m{}\x1b[0m — {} tasks",
+                                            suite.name,
+                                            suite.tasks.len()
+                                        );
                                     }
                                 }
                                 eprintln!();
                             }
                             Some("history") => {
-                                let history = pipit_bench::history::BenchHistory::load(&project_root);
+                                let history =
+                                    pipit_bench::history::BenchHistory::load(&project_root);
                                 let sparkline = history.sparkline("custom", 40);
                                 eprintln!("\n\x1b[1;33mBenchmark History\x1b[0m\n");
                                 eprintln!("  Pass rate: {}", sparkline);
                                 eprintln!();
                             }
                             Some(sub) if sub.starts_with("run") => {
-                                eprintln!("\x1b[33mBenchmark runner requires Docker. Use: pipit bench run --suite <name>\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mBenchmark runner requires Docker. Use: pipit bench run --suite <name>\x1b[0m"
+                                );
                             }
                             Some(_) => {
-                                eprintln!("\x1b[33mUsage: /bench [list|run|history|compare]\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /bench [list|run|history|compare]\x1b[0m"
+                                );
                             }
                         }
                         continue;
@@ -1797,19 +2258,29 @@ async fn main() -> Result<()> {
                         match action.as_deref() {
                             Some(url) if url.starts_with("http") => {
                                 eprintln!("\x1b[36mBrowser: navigating to {}\x1b[0m", url);
-                                eprintln!("\x1b[2mHeadless Chrome required. Install Chrome and ensure it's accessible.\x1b[0m");
+                                eprintln!(
+                                    "\x1b[2mHeadless Chrome required. Install Chrome and ensure it's accessible.\x1b[0m"
+                                );
                                 // The actual browser integration happens via tools registered in the agent
                                 let prompt = format!(
                                     "Navigate to {} using the browser_navigate tool. \
                                      Take a screenshot and report what you see. \
-                                     Check for any console errors.", url
+                                     Check for any console errors.",
+                                    url
                                 );
                                 let cancel = CancellationToken::new();
                                 let cancel_clone = cancel.clone();
-                                let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                                let ctrlc_handle = tokio::spawn(async move {
+                                    tokio::signal::ctrl_c().await.ok();
+                                    cancel_clone.cancel();
+                                });
                                 let outcome = agent.run(prompt, cancel).await;
                                 ctrlc_handle.abort();
-                                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                if let Some(rb) =
+                                    handle_agent_outcome(&project_root, &mut agent, outcome)
+                                {
+                                    last_rollback = Some(rb);
+                                }
                             }
                             Some("test") => {
                                 let prompt = "Auto-detect the dev server (check package.json scripts for 'dev' or 'start'), \
@@ -1817,10 +2288,17 @@ async fn main() -> Result<()> {
                                               and report any console errors or failed network requests.".to_string();
                                 let cancel = CancellationToken::new();
                                 let cancel_clone = cancel.clone();
-                                let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                                let ctrlc_handle = tokio::spawn(async move {
+                                    tokio::signal::ctrl_c().await.ok();
+                                    cancel_clone.cancel();
+                                });
                                 let outcome = agent.run(prompt, cancel).await;
                                 ctrlc_handle.abort();
-                                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                if let Some(rb) =
+                                    handle_agent_outcome(&project_root, &mut agent, outcome)
+                                {
+                                    last_rollback = Some(rb);
+                                }
                             }
                             Some("a11y") | Some("accessibility") => {
                                 let prompt = "Run an accessibility audit on the running web app. \
@@ -1828,16 +2306,27 @@ async fn main() -> Result<()> {
                                               keyboard navigation, ARIA roles.".to_string();
                                 let cancel = CancellationToken::new();
                                 let cancel_clone = cancel.clone();
-                                let ctrlc_handle = tokio::spawn(async move { tokio::signal::ctrl_c().await.ok(); cancel_clone.cancel(); });
+                                let ctrlc_handle = tokio::spawn(async move {
+                                    tokio::signal::ctrl_c().await.ok();
+                                    cancel_clone.cancel();
+                                });
                                 let outcome = agent.run(prompt, cancel).await;
                                 ctrlc_handle.abort();
-                                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                if let Some(rb) =
+                                    handle_agent_outcome(&project_root, &mut agent, outcome)
+                                {
+                                    last_rollback = Some(rb);
+                                }
                             }
                             None => {
-                                eprintln!("\x1b[33mUsage: /browse <url> | /browse test | /browse a11y\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /browse <url> | /browse test | /browse a11y\x1b[0m"
+                                );
                             }
                             Some(_) => {
-                                eprintln!("\x1b[33mUsage: /browse <url> | /browse test | /browse a11y\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /browse <url> | /browse test | /browse a11y\x1b[0m"
+                                );
                             }
                         }
                         continue;
@@ -1846,12 +2335,18 @@ async fn main() -> Result<()> {
                         match action.as_deref() {
                             None | Some("status") => {
                                 eprintln!("\n\x1b[1;33mMesh Status\x1b[0m\n");
-                                eprintln!("  \x1b[2mMesh daemon not running. Start with: pipit mesh start\x1b[0m");
-                                eprintln!("  \x1b[2mMesh enables distributed multi-agent task delegation.\x1b[0m");
+                                eprintln!(
+                                    "  \x1b[2mMesh daemon not running. Start with: pipit mesh start\x1b[0m"
+                                );
+                                eprintln!(
+                                    "  \x1b[2mMesh enables distributed multi-agent task delegation.\x1b[0m"
+                                );
                                 eprintln!();
                             }
                             Some("nodes") => {
-                                eprintln!("\x1b[2mNo mesh nodes discovered. Use /mesh join <seed> to connect.\x1b[0m");
+                                eprintln!(
+                                    "\x1b[2mNo mesh nodes discovered. Use /mesh join <seed> to connect.\x1b[0m"
+                                );
                             }
                             Some(sub) if sub.starts_with("join") => {
                                 let seed = sub.strip_prefix("join").map(|s| s.trim()).unwrap_or("");
@@ -1859,11 +2354,15 @@ async fn main() -> Result<()> {
                                     eprintln!("\x1b[33mUsage: /mesh join <seed_address>\x1b[0m");
                                 } else {
                                     eprintln!("\x1b[36mConnecting to mesh seed: {}\x1b[0m", seed);
-                                    eprintln!("\x1b[2mMesh protocol (SWIM) will discover other nodes automatically.\x1b[0m");
+                                    eprintln!(
+                                        "\x1b[2mMesh protocol (SWIM) will discover other nodes automatically.\x1b[0m"
+                                    );
                                 }
                             }
                             Some(_) => {
-                                eprintln!("\x1b[33mUsage: /mesh [status|nodes|join <addr>|delegate <task>]\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /mesh [status|nodes|join <addr>|delegate <task>]\x1b[0m"
+                                );
                             }
                         }
                         continue;
@@ -1872,7 +2371,9 @@ async fn main() -> Result<()> {
                         match action.as_deref() {
                             Some("deps") => {
                                 eprintln!("\x1b[36mStarting dependency health monitor...\x1b[0m");
-                                eprintln!("\x1b[2mWill check for vulnerabilities and outdated packages periodically.\x1b[0m");
+                                eprintln!(
+                                    "\x1b[2mWill check for vulnerabilities and outdated packages periodically.\x1b[0m"
+                                );
                             }
                             Some("tests") => {
                                 eprintln!("\x1b[36mStarting test watcher...\x1b[0m");
@@ -1880,20 +2381,28 @@ async fn main() -> Result<()> {
                             }
                             Some("security") => {
                                 eprintln!("\x1b[36mStarting security monitor...\x1b[0m");
-                                eprintln!("\x1b[2mWill run taint analysis on modified files.\x1b[0m");
+                                eprintln!(
+                                    "\x1b[2mWill run taint analysis on modified files.\x1b[0m"
+                                );
                             }
                             Some("start") => {
                                 eprintln!("\x1b[36mAmbient file watcher started.\x1b[0m");
-                                eprintln!("\x1b[2mWill notify on external changes and suggest actions.\x1b[0m");
+                                eprintln!(
+                                    "\x1b[2mWill notify on external changes and suggest actions.\x1b[0m"
+                                );
                             }
                             Some("stop") => {
                                 eprintln!("\x1b[33mAll watchers stopped.\x1b[0m");
                             }
                             None => {
-                                eprintln!("\x1b[33mUsage: /watch [start|stop|deps|tests|security]\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /watch [start|stop|deps|tests|security]\x1b[0m"
+                                );
                             }
                             Some(_) => {
-                                eprintln!("\x1b[33mUsage: /watch [start|stop|deps|tests|security]\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /watch [start|stop|deps|tests|security]\x1b[0m"
+                                );
                             }
                         }
                         continue;
@@ -1903,14 +2412,19 @@ async fn main() -> Result<()> {
                         // Run synchronously for now — async would need runtime
                         let ecosystems = pipit_deps::scanner::detect_ecosystems(&project_root);
                         if ecosystems.is_empty() {
-                            eprintln!("\x1b[2mNo package manifests found (Cargo.toml, package.json, etc.)\x1b[0m");
+                            eprintln!(
+                                "\x1b[2mNo package manifests found (Cargo.toml, package.json, etc.)\x1b[0m"
+                            );
                         } else {
-                            let names: Vec<&str> = ecosystems.iter().map(|e| match e {
-                                pipit_deps::scanner::Ecosystem::Cargo => "Cargo",
-                                pipit_deps::scanner::Ecosystem::Npm => "npm",
-                                pipit_deps::scanner::Ecosystem::Python => "Python",
-                                pipit_deps::scanner::Ecosystem::Go => "Go",
-                            }).collect();
+                            let names: Vec<&str> = ecosystems
+                                .iter()
+                                .map(|e| match e {
+                                    pipit_deps::scanner::Ecosystem::Cargo => "Cargo",
+                                    pipit_deps::scanner::Ecosystem::Npm => "npm",
+                                    pipit_deps::scanner::Ecosystem::Python => "Python",
+                                    pipit_deps::scanner::Ecosystem::Go => "Go",
+                                })
+                                .collect();
                             eprintln!("\x1b[2mDetected ecosystems: {}\x1b[0m", names.join(", "));
                             eprintln!("\x1b[2mRunning vulnerability scan via OSV API...\x1b[0m");
                             // Note: full async scan runs in the background; results shown in next prompt
@@ -1922,7 +2436,12 @@ async fn main() -> Result<()> {
                             eprintln!("\x1b[2mCurrent model: {}\x1b[0m", model);
                             eprintln!("\x1b[2mUsage: /model <model_name>\x1b[0m");
                         } else {
-                            match agent.set_model(provider_kind, new_model, &api_key, base_url.as_deref()) {
+                            match agent.set_model(
+                                provider_kind,
+                                new_model,
+                                &api_key,
+                                base_url.as_deref(),
+                            ) {
                                 Ok(()) => {
                                     model = new_model.clone();
                                     ui.status_mut().model = model.clone();
@@ -1943,7 +2462,10 @@ async fn main() -> Result<()> {
                                 .output();
                             match output {
                                 Ok(o) if o.status.success() => {
-                                    eprintln!("\x1b[32mCreated and switched to branch '{}'\x1b[0m", branch_name);
+                                    eprintln!(
+                                        "\x1b[32mCreated and switched to branch '{}'\x1b[0m",
+                                        branch_name
+                                    );
                                     ui.status_mut().branch = branch_name.clone();
                                 }
                                 Ok(o) => {
@@ -1990,11 +2512,14 @@ async fn main() -> Result<()> {
                                 .args(["status", "--porcelain"])
                                 .current_dir(&project_root)
                                 .output();
-                            let has_dirty = status.as_ref()
+                            let has_dirty = status
+                                .as_ref()
                                 .map(|o| !o.stdout.is_empty())
                                 .unwrap_or(false);
                             if has_dirty {
-                                eprintln!("\x1b[33mWarning: you have uncommitted changes. Stashing first...\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mWarning: you have uncommitted changes. Stashing first...\x1b[0m"
+                                );
                                 let _ = std::process::Command::new("git")
                                     .args(["stash", "push", "-m", "pipit-auto-stash"])
                                     .current_dir(&project_root)
@@ -2009,7 +2534,9 @@ async fn main() -> Result<()> {
                                     eprintln!("\x1b[32mSwitched to branch '{}'\x1b[0m", target);
                                     ui.status_mut().branch = target.clone();
                                     if has_dirty {
-                                        eprintln!("\x1b[2mYour changes were stashed. Use `!git stash pop` to restore.\x1b[0m");
+                                        eprintln!(
+                                            "\x1b[2mYour changes were stashed. Use `!git stash pop` to restore.\x1b[0m"
+                                        );
                                     }
                                 }
                                 Ok(o) => {
@@ -2041,13 +2568,24 @@ async fn main() -> Result<()> {
                         eprintln!();
                         eprintln!("  \x1b[1;33mConfiguration\x1b[0m");
                         eprintln!();
-                        eprintln!("  \x1b[90mConfig file: \x1b[0m{} {}", config_path, if has_config { "\x1b[32m✓\x1b[0m" } else { "\x1b[31m✗ not found\x1b[0m" });
+                        eprintln!(
+                            "  \x1b[90mConfig file: \x1b[0m{} {}",
+                            config_path,
+                            if has_config {
+                                "\x1b[32m✓\x1b[0m"
+                            } else {
+                                "\x1b[31m✗ not found\x1b[0m"
+                            }
+                        );
                         eprintln!("  \x1b[90mProvider:    \x1b[0m{}", provider_kind);
                         eprintln!("  \x1b[90mModel:       \x1b[0m{}", model);
                         if let Some(ref url) = base_url {
                             eprintln!("  \x1b[90mBase URL:    \x1b[0m{}", url);
                         }
-                        eprintln!("  \x1b[90mApproval:    \x1b[0m{}", ui.status_mut().approval_mode);
+                        eprintln!(
+                            "  \x1b[90mApproval:    \x1b[0m{}",
+                            ui.status_mut().approval_mode
+                        );
                         eprintln!("  \x1b[90mMax turns:   \x1b[0m{}", config.context.max_turns);
                         eprintln!();
                         eprintln!("  \x1b[90mEdit: \x1b[0m{}", config_path);
@@ -2059,17 +2597,30 @@ async fn main() -> Result<()> {
                         eprintln!();
                         eprintln!("  \x1b[1;33mSystem Health Check\x1b[0m");
                         eprintln!();
-                        eprintln!("  \x1b[90mProvider:    \x1b[0m{} \x1b[32m✓\x1b[0m", provider_kind);
+                        eprintln!(
+                            "  \x1b[90mProvider:    \x1b[0m{} \x1b[32m✓\x1b[0m",
+                            provider_kind
+                        );
                         eprintln!("  \x1b[90mModel:       \x1b[0m{}", model);
                         if let Some(ref url) = base_url {
                             eprintln!("  \x1b[90mEndpoint:    \x1b[0m{}", url);
                         }
                         let usage = agent.context_usage();
-                        let pct = if usage.limit > 0 { usage.total * 100 / usage.limit } else { 0 };
-                        eprintln!("  \x1b[90mTokens:      \x1b[0m{}/{} ({}%)", usage.total, usage.limit, pct);
+                        let pct = if usage.limit > 0 {
+                            usage.total * 100 / usage.limit
+                        } else {
+                            0
+                        };
+                        eprintln!(
+                            "  \x1b[90mTokens:      \x1b[0m{}/{} ({}%)",
+                            usage.total, usage.limit, pct
+                        );
                         eprintln!("  \x1b[90mCost:        \x1b[0m${:.4}", usage.cost);
                         eprintln!("  \x1b[90mSkills:      \x1b[0m{}", skills.count());
-                        eprintln!("  \x1b[90mHooks:       \x1b[0m{}", workflow_assets.hook_files.len());
+                        eprintln!(
+                            "  \x1b[90mHooks:       \x1b[0m{}",
+                            workflow_assets.hook_files.len()
+                        );
                         eprintln!();
                         continue;
                     }
@@ -2078,7 +2629,9 @@ async fn main() -> Result<()> {
                         eprintln!("  \x1b[1;33mSkills\x1b[0m");
                         eprintln!();
                         if skills.count() == 0 {
-                            eprintln!("  \x1b[90mNo skills found. Add .pipit/skills/<name>/SKILL.md\x1b[0m");
+                            eprintln!(
+                                "  \x1b[90mNo skills found. Add .pipit/skills/<name>/SKILL.md\x1b[0m"
+                            );
                         } else {
                             for name in skills.list() {
                                 eprintln!("  \x1b[36m/{}\x1b[0m", name);
@@ -2092,12 +2645,12 @@ async fn main() -> Result<()> {
                         eprintln!("  \x1b[1;33mHooks\x1b[0m");
                         eprintln!();
                         if workflow_assets.hook_files.is_empty() {
-                            eprintln!("  \x1b[90mNo hooks found. Add .pipit/hooks/<event>.sh\x1b[0m");
+                            eprintln!(
+                                "  \x1b[90mNo hooks found. Add .pipit/hooks/<event>.sh\x1b[0m"
+                            );
                         } else {
                             for hook in &workflow_assets.hook_files {
-                                let name = hook.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("?");
+                                let name = hook.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                                 eprintln!("  \x1b[36m{}\x1b[0m", name);
                             }
                         }
@@ -2111,7 +2664,9 @@ async fn main() -> Result<()> {
                         match pipit_tools::load_mcp_config(&project_root) {
                             Some(mcp_config) => {
                                 if mcp_config.mcp_servers.is_empty() {
-                                    eprintln!("  \x1b[90mConfig found but no servers defined\x1b[0m");
+                                    eprintln!(
+                                        "  \x1b[90mConfig found but no servers defined\x1b[0m"
+                                    );
                                 } else {
                                     for (name, _server) in &mcp_config.mcp_servers {
                                         eprintln!("  \x1b[36m{}\x1b[0m", name);
@@ -2119,15 +2674,19 @@ async fn main() -> Result<()> {
                                 }
                             }
                             None => {
-                                eprintln!("  \x1b[90mNo MCP config found. Add .pipit/mcp.json\x1b[0m");
+                                eprintln!(
+                                    "  \x1b[90mNo MCP config found. Add .pipit/mcp.json\x1b[0m"
+                                );
                             }
                         }
                         eprintln!();
                         continue;
                     }
                     SlashCommand::Unknown(cmd) => {
-                        let args = input.strip_prefix(&format!("/{}", cmd))
-                            .unwrap_or("").trim();
+                        let args = input
+                            .strip_prefix(&format!("/{}", cmd))
+                            .unwrap_or("")
+                            .trim();
 
                         // 1. Try skill system first
                         if skills.has_skill(&cmd) {
@@ -2136,7 +2695,11 @@ async fn main() -> Result<()> {
                                     let injection = skill.as_injection(args);
                                     let cancel = CancellationToken::new();
                                     let outcome = agent.run(injection, cancel).await;
-                                    if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                    if let Some(rb) =
+                                        handle_agent_outcome(&project_root, &mut agent, outcome)
+                                    {
+                                        last_rollback = Some(rb);
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("\x1b[31mFailed to load skill: {}\x1b[0m", e);
@@ -2147,7 +2710,9 @@ async fn main() -> Result<()> {
 
                         // 2. Try custom commands from .pipit/commands/
                         let custom_commands = workflow_assets.discover_commands();
-                        if let Some((_, _, cmd_path)) = custom_commands.iter().find(|(name, _, _)| name == &cmd) {
+                        if let Some((_, _, cmd_path)) =
+                            custom_commands.iter().find(|(name, _, _)| name == &cmd)
+                        {
                             match std::fs::read_to_string(cmd_path) {
                                 Ok(content) => {
                                     let body = workflow::strip_command_frontmatter(&content);
@@ -2160,7 +2725,11 @@ async fn main() -> Result<()> {
                                     );
                                     let cancel = CancellationToken::new();
                                     let outcome = agent.run(injection, cancel).await;
-                                    if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                                    if let Some(rb) =
+                                        handle_agent_outcome(&project_root, &mut agent, outcome)
+                                    {
+                                        last_rollback = Some(rb);
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("\x1b[31mFailed to load command: {}\x1b[0m", e);
@@ -2199,10 +2768,7 @@ async fn main() -> Result<()> {
             UserInput::PromptWithFiles { prompt, files } => {
                 // Add @file mentions to context, then run the prompt
                 let file_list = files.join(", ");
-                let enriched = format!(
-                    "First read these files: {}. Then: {}",
-                    file_list, prompt
-                );
+                let enriched = format!("First read these files: {}. Then: {}", file_list, prompt);
                 let cancel = CancellationToken::new();
                 let cancel_clone = cancel.clone();
                 let ctrlc_handle = tokio::spawn(async move {
@@ -2211,18 +2777,24 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(enriched, cancel).await;
                 ctrlc_handle.abort();
-                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                    last_rollback = Some(rb);
+                }
                 println!();
                 continue;
             }
-            UserInput::PromptWithImages { prompt, image_paths } => {
+            UserInput::PromptWithImages {
+                prompt,
+                image_paths,
+            } => {
                 // Read image files and send as vision prompt
                 let mut image_descriptions = Vec::new();
                 for img_path in &image_paths {
                     match pipit_io::input::read_image_file(img_path) {
                         Ok((media_type, data)) => {
                             let size_kb = data.len() / 1024;
-                            image_descriptions.push(format!("{} ({}KB, {})", img_path, size_kb, media_type));
+                            image_descriptions
+                                .push(format!("{} ({}KB, {})", img_path, size_kb, media_type));
                             // Inject the image into context as a user message with image content block
                             agent.inject_image(&media_type, data);
                         }
@@ -2232,9 +2804,17 @@ async fn main() -> Result<()> {
                     }
                 }
                 let enriched = if prompt.is_empty() {
-                    format!("I've attached {} image(s): {}. Please analyze what you see.", image_paths.len(), image_descriptions.join(", "))
+                    format!(
+                        "I've attached {} image(s): {}. Please analyze what you see.",
+                        image_paths.len(),
+                        image_descriptions.join(", ")
+                    )
                 } else {
-                    format!("I've attached image(s): {}. {}", image_descriptions.join(", "), prompt)
+                    format!(
+                        "I've attached image(s): {}. {}",
+                        image_descriptions.join(", "),
+                        prompt
+                    )
                 };
                 let cancel = CancellationToken::new();
                 let cancel_clone = cancel.clone();
@@ -2244,7 +2824,9 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(enriched, cancel).await;
                 ctrlc_handle.abort();
-                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                    last_rollback = Some(rb);
+                }
                 println!();
                 continue;
             }
@@ -2258,7 +2840,9 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(prompt, cancel).await;
                 ctrlc_handle.abort();
-                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) { last_rollback = Some(rb); }
+                if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
+                    last_rollback = Some(rb);
+                }
                 println!();
             }
         }
@@ -2282,7 +2866,11 @@ fn handle_agent_outcome(
             turns, cost, proof, ..
         } => {
             let rollback = proof.rollback_checkpoint.checkpoint_id.clone().map(|sha| {
-                let files: Vec<String> = proof.realized_edits.iter().map(|e| e.path.clone()).collect();
+                let files: Vec<String> = proof
+                    .realized_edits
+                    .iter()
+                    .map(|e| e.path.clone())
+                    .collect();
                 (sha, files)
             });
             let proof_path = persistence::persist_proof_packet(project_root, &proof).ok();
@@ -2305,7 +2893,11 @@ fn handle_agent_outcome(
             eprintln!("\x1b[33mReached max turns ({})\x1b[0m", n);
             None
         }
-        AgentOutcome::BudgetExhausted { turns, cost, budget } => {
+        AgentOutcome::BudgetExhausted {
+            turns,
+            cost,
+            budget,
+        } => {
             if let Some(planning_state) = agent.planning_state() {
                 persistence::persist_planning_snapshot(project_root, &planning_state, None).ok();
             }

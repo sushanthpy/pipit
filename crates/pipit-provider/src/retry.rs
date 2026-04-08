@@ -25,9 +25,7 @@ pub enum RetryEvent {
         error: String,
     },
     /// Persistent mode heartbeat (keep-alive for unattended sessions).
-    PersistentHeartbeat {
-        total_wait_secs: u64,
-    },
+    PersistentHeartbeat { total_wait_secs: u64 },
 }
 
 /// Extended retry policy with context-overflow recovery and persistent mode.
@@ -85,10 +83,7 @@ impl Default for RetryContext {
 ///
 /// Handles: transient errors (backoff + retry), context overflow (reduce output tokens),
 /// consecutive overload (fallback trigger), and persistent mode (indefinite retry with heartbeat).
-pub async fn with_retry<F, Fut, T>(
-    policy: &RetryPolicy,
-    operation: F,
-) -> Result<T, ProviderError>
+pub async fn with_retry<F, Fut, T>(policy: &RetryPolicy, operation: F) -> Result<T, ProviderError>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, ProviderError>>,
@@ -102,9 +97,10 @@ where
                 let should_retry = match &e {
                     ProviderError::RateLimited { .. } => true,
                     ProviderError::Network(_) => true,
-                    ProviderError::Other(msg) => {
-                        policy.retryable_statuses.iter().any(|s| msg.contains(&s.to_string()))
-                    }
+                    ProviderError::Other(msg) => policy
+                        .retryable_statuses
+                        .iter()
+                        .any(|s| msg.contains(&s.to_string())),
                     _ => false,
                 };
 
@@ -163,7 +159,9 @@ where
                 // Context overflow: parse and reduce output tokens
                 if e.is_context_recoverable() {
                     if let Some(reduced) = recover_from_context_overflow(&e, policy) {
-                        let original = ctx.max_tokens_override.unwrap_or(policy.base.max_retries * 1000);
+                        let original = ctx
+                            .max_tokens_override
+                            .unwrap_or(policy.base.max_retries * 1000);
                         ctx.max_tokens_override = Some(reduced);
                         event_sink(RetryEvent::ContextOverflowRecovery {
                             original_max_tokens: original,
@@ -199,8 +197,8 @@ where
                 if policy.persistent_mode && is_overload_error(&e) {
                     let elapsed = start.elapsed().as_secs();
                     if elapsed < policy.persistent_max_duration_secs {
-                        let wait = compute_backoff(&policy.base, attempt)
-                            .min(Duration::from_secs(300)); // cap at 5min
+                        let wait =
+                            compute_backoff(&policy.base, attempt).min(Duration::from_secs(300)); // cap at 5min
                         event_sink(RetryEvent::PersistentHeartbeat {
                             total_wait_secs: elapsed,
                         });
@@ -216,7 +214,9 @@ where
 
                 let backoff = compute_backoff(&policy.base, attempt);
                 let wait = match &e {
-                    ProviderError::RateLimited { retry_after_ms: Some(ms) } => Duration::from_millis(*ms),
+                    ProviderError::RateLimited {
+                        retry_after_ms: Some(ms),
+                    } => Duration::from_millis(*ms),
                     _ => backoff,
                 };
 

@@ -7,13 +7,13 @@ use crate::config::{DaemonConfig, ProjectConfig};
 use crate::git::GitSafety;
 use crate::store::DaemonStore;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use pipit_channel::{NormalizedTask, TaskRecord, TaskStatus};
 use pipit_config::ApprovalMode;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing;
 
@@ -188,7 +188,9 @@ impl AgentPool {
         // In a full implementation, this would construct an `AgentLoop` from pipit-core
         // using the project config (provider, model, mode, tools, etc.) and run it.
         // For the daemon scaffold, we simulate the execution boundary:
-        let result = self.run_agent_loop(task, &agent_arc, task_cancel.clone()).await;
+        let result = self
+            .run_agent_loop(task, &agent_arc, task_cancel.clone())
+            .await;
 
         // Finalize
         let mut agent = agent_arc.lock().await;
@@ -221,10 +223,8 @@ impl AgentPool {
                 // Auto-commit if configured
                 if agent.config.auto_commit {
                     if let Some(ref branch_name) = branch {
-                        if let Err(e) = GitSafety::auto_commit(
-                            &agent.config.root,
-                            &outcome.summary,
-                        ) {
+                        if let Err(e) = GitSafety::auto_commit(&agent.config.root, &outcome.summary)
+                        {
                             tracing::warn!(error = %e, "auto-commit failed");
                         }
                     }
@@ -290,7 +290,7 @@ impl AgentPool {
 
         // 3. Create LLM provider
         let provider: Arc<dyn pipit_provider::LlmProvider> = Arc::from(
-            pipit_provider::create_provider(provider_kind, &model_name, &api_key, None)?
+            pipit_provider::create_provider(provider_kind, &model_name, &api_key, None)?,
         );
 
         // 4. Build ModelRouter (single model for daemon tasks)
@@ -324,10 +324,7 @@ impl AgentPool {
         //    Apply bounded checkpoint strategy: retain recent messages,
         //    redact sensitive spans, and limit total restored context.
         let model_context_window = provider.capabilities().context_window;
-        let mut context = pipit_context::ContextManager::new(
-            system_prompt,
-            model_context_window,
-        );
+        let mut context = pipit_context::ContextManager::new(system_prompt, model_context_window);
 
         if let Some(ref bytes) = context_bytes {
             match serde_json::from_slice::<Vec<pipit_provider::Message>>(bytes) {
@@ -341,7 +338,8 @@ impl AgentPool {
                             retained = max_restored_messages,
                             "trimming restored context to recent messages"
                         );
-                        messages.into_iter()
+                        messages
+                            .into_iter()
                             .rev()
                             .take(max_restored_messages)
                             .collect::<Vec<_>>()
@@ -418,7 +416,10 @@ impl AgentPool {
         );
 
         // 10a. Create SessionKernel for unified journal (same format as CLI)
-        let session_dir = project_root.join(".pipit").join("sessions").join(&task.task_id);
+        let session_dir = project_root
+            .join(".pipit")
+            .join("sessions")
+            .join(&task.task_id);
         if let Ok(mut kernel) = pipit_core::session_kernel::SessionKernel::new(
             pipit_core::session_kernel::SessionKernelConfig {
                 session_dir,
@@ -456,9 +457,15 @@ impl AgentPool {
 
         // 12. Map pipit-core's outcome enum to daemon's outcome struct
         match core_outcome {
-            pipit_core::AgentOutcome::Completed { turns, total_tokens, cost, proof } => {
+            pipit_core::AgentOutcome::Completed {
+                turns,
+                total_tokens,
+                cost,
+                proof,
+            } => {
                 let summary = proof.objective.statement.clone();
-                let files_modified: Vec<String> = proof.realized_edits
+                let files_modified: Vec<String> = proof
+                    .realized_edits
                     .iter()
                     .map(|e| e.path.clone())
                     .collect();
@@ -475,42 +482,41 @@ impl AgentPool {
                     context_bytes: ctx_bytes,
                 })
             }
-            pipit_core::AgentOutcome::MaxTurnsReached(turns) => {
-                Ok(AgentOutcome {
-                    summary: format!("Task reached max turns limit ({})", turns),
-                    turns,
-                    total_tokens: 0,
-                    cost: 0.0,
-                    files_modified: Vec::new(),
-                    proof_json: serde_json::json!({
-                        "status": "max_turns_reached",
-                        "turns": turns
-                    }),
-                    context_bytes: ctx_bytes,
-                })
-            }
-            pipit_core::AgentOutcome::Cancelled => {
-                Err(anyhow!("task cancelled"))
-            }
-            pipit_core::AgentOutcome::BudgetExhausted { turns, cost, budget } => {
-                Ok(AgentOutcome {
-                    summary: format!("Cost budget exhausted: ${:.4} >= ${:.2} limit", cost, budget),
-                    turns,
-                    total_tokens: 0,
-                    cost,
-                    files_modified: Vec::new(),
-                    proof_json: serde_json::json!({
-                        "status": "budget_exhausted",
-                        "turns": turns,
-                        "cost": cost,
-                        "budget": budget,
-                    }),
-                    context_bytes: ctx_bytes,
-                })
-            }
-            pipit_core::AgentOutcome::Error(msg) => {
-                Err(anyhow!("{}", msg))
-            }
+            pipit_core::AgentOutcome::MaxTurnsReached(turns) => Ok(AgentOutcome {
+                summary: format!("Task reached max turns limit ({})", turns),
+                turns,
+                total_tokens: 0,
+                cost: 0.0,
+                files_modified: Vec::new(),
+                proof_json: serde_json::json!({
+                    "status": "max_turns_reached",
+                    "turns": turns
+                }),
+                context_bytes: ctx_bytes,
+            }),
+            pipit_core::AgentOutcome::Cancelled => Err(anyhow!("task cancelled")),
+            pipit_core::AgentOutcome::BudgetExhausted {
+                turns,
+                cost,
+                budget,
+            } => Ok(AgentOutcome {
+                summary: format!(
+                    "Cost budget exhausted: ${:.4} >= ${:.2} limit",
+                    cost, budget
+                ),
+                turns,
+                total_tokens: 0,
+                cost,
+                files_modified: Vec::new(),
+                proof_json: serde_json::json!({
+                    "status": "budget_exhausted",
+                    "turns": turns,
+                    "cost": cost,
+                    "budget": budget,
+                }),
+                context_bytes: ctx_bytes,
+            }),
+            pipit_core::AgentOutcome::Error(msg) => Err(anyhow!("{}", msg)),
         }
     }
 
@@ -773,25 +779,34 @@ impl pipit_core::ApprovalHandler for DaemonApprovalHandler {
 /// from previous tasks doesn't persist into future execution contexts.
 ///
 /// Cost: O(total text length) for pattern scanning.
-fn redact_sensitive_context(messages: Vec<pipit_provider::Message>) -> Vec<pipit_provider::Message> {
-    messages.into_iter().map(|mut msg| {
-        msg.content = msg.content.into_iter().map(|block| {
-            match block {
-                pipit_provider::ContentBlock::Text(text) => {
-                    pipit_provider::ContentBlock::Text(redact_secrets(&text))
-                }
-                pipit_provider::ContentBlock::ToolResult { call_id, content, is_error } => {
+fn redact_sensitive_context(
+    messages: Vec<pipit_provider::Message>,
+) -> Vec<pipit_provider::Message> {
+    messages
+        .into_iter()
+        .map(|mut msg| {
+            msg.content = msg
+                .content
+                .into_iter()
+                .map(|block| match block {
+                    pipit_provider::ContentBlock::Text(text) => {
+                        pipit_provider::ContentBlock::Text(redact_secrets(&text))
+                    }
                     pipit_provider::ContentBlock::ToolResult {
+                        call_id,
+                        content,
+                        is_error,
+                    } => pipit_provider::ContentBlock::ToolResult {
                         call_id,
                         content: redact_secrets(&content),
                         is_error,
-                    }
-                }
-                other => other,
-            }
-        }).collect();
-        msg
-    }).collect()
+                    },
+                    other => other,
+                })
+                .collect();
+            msg
+        })
+        .collect()
 }
 
 /// Redact common secret patterns from a text string.
@@ -801,13 +816,13 @@ fn redact_secrets(text: &str) -> String {
 
     // Redact known API key prefixes
     const KEY_PREFIXES: &[(&str, usize)] = &[
-        ("sk-", 20),       // OpenAI/Stripe
-        ("ghp_", 36),      // GitHub PAT
-        ("gho_", 36),      // GitHub OAuth
-        ("glpat-", 20),    // GitLab PAT
-        ("AKIA", 16),      // AWS access key
-        ("xoxb-", 20),     // Slack bot
-        ("xoxp-", 20),     // Slack user
+        ("sk-", 20),    // OpenAI/Stripe
+        ("ghp_", 36),   // GitHub PAT
+        ("gho_", 36),   // GitHub OAuth
+        ("glpat-", 20), // GitLab PAT
+        ("AKIA", 16),   // AWS access key
+        ("xoxb-", 20),  // Slack bot
+        ("xoxp-", 20),  // Slack user
     ];
 
     for (prefix, min_suffix_len) in KEY_PREFIXES {
@@ -815,7 +830,8 @@ fn redact_secrets(text: &str) -> String {
             // Find the end of the token (non-alphanumeric boundary)
             let start = pos;
             let rest = &result[pos + prefix.len()..];
-            let token_end = rest.find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.')
+            let token_end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.')
                 .unwrap_or(rest.len());
             if token_end >= *min_suffix_len {
                 let end = pos + prefix.len() + token_end;
@@ -830,7 +846,8 @@ fn redact_secrets(text: &str) -> String {
     let bearer_needle = "Bearer ";
     while let Some(pos) = result.find(bearer_needle) {
         let after = &result[pos + bearer_needle.len()..];
-        let token_end = after.find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+        let token_end = after
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
             .unwrap_or(after.len());
         if token_end >= 20 {
             let end = pos + bearer_needle.len() + token_end;

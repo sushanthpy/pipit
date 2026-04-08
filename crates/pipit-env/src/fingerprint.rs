@@ -5,7 +5,7 @@
 //! Diff with semantic version awareness: patch=low, major=high severity.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::Duration;
@@ -60,7 +60,12 @@ pub struct Discrepancy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiffSeverity { Low, Medium, High, Critical }
+pub enum DiffSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
 
 /// Collect a full environment fingerprint. O(k) probes, ~30s total.
 pub fn collect_fingerprint() -> EnvironmentFingerprint {
@@ -92,21 +97,39 @@ pub fn collect_fingerprint() -> EnvironmentFingerprint {
     // Filtered env vars (exclude secrets)
     let env_vars: HashMap<String, String> = std::env::vars()
         .filter(|(k, _)| {
-            !k.contains("KEY") && !k.contains("SECRET") && !k.contains("TOKEN")
-                && !k.contains("PASSWORD") && !k.contains("PASS")
-                && (k.starts_with("PATH") || k.starts_with("HOME") || k.starts_with("LANG")
-                    || k.starts_with("LC_") || k.starts_with("SHELL") || k.starts_with("TERM")
-                    || k.starts_with("PIPIT_") || k.starts_with("CARGO_")
-                    || k.starts_with("RUSTUP_") || k.starts_with("NODE_")
-                    || k.starts_with("PYTHON") || k.starts_with("GOPATH"))
+            !k.contains("KEY")
+                && !k.contains("SECRET")
+                && !k.contains("TOKEN")
+                && !k.contains("PASSWORD")
+                && !k.contains("PASS")
+                && (k.starts_with("PATH")
+                    || k.starts_with("HOME")
+                    || k.starts_with("LANG")
+                    || k.starts_with("LC_")
+                    || k.starts_with("SHELL")
+                    || k.starts_with("TERM")
+                    || k.starts_with("PIPIT_")
+                    || k.starts_with("CARGO_")
+                    || k.starts_with("RUSTUP_")
+                    || k.starts_with("NODE_")
+                    || k.starts_with("PYTHON")
+                    || k.starts_with("GOPATH"))
         })
         .collect();
 
     // Hash config files
     let mut config_hashes = HashMap::new();
-    for path in &["Dockerfile", "docker-compose.yml", ".github/workflows/ci.yml",
-                   "Cargo.toml", "package.json", "pyproject.toml", "go.mod",
-                   ".env", "Makefile"] {
+    for path in &[
+        "Dockerfile",
+        "docker-compose.yml",
+        ".github/workflows/ci.yml",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+        ".env",
+        "Makefile",
+    ] {
         if let Ok(content) = std::fs::read_to_string(path) {
             let mut hasher = Sha256::new();
             hasher.update(content.as_bytes());
@@ -126,18 +149,30 @@ pub fn collect_fingerprint() -> EnvironmentFingerprint {
 
 fn probe_command(cmd: &str) -> Option<String> {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
-    if parts.is_empty() { return None; }
+    if parts.is_empty() {
+        return None;
+    }
 
     Command::new(parts[0])
         .args(&parts[1..])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().lines().next().unwrap_or("").to_string())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
 }
 
 /// Compare two fingerprints and produce a diff with severity scores.
-pub fn diff_fingerprints(local: &EnvironmentFingerprint, remote: &EnvironmentFingerprint) -> FingerprintDiff {
+pub fn diff_fingerprints(
+    local: &EnvironmentFingerprint,
+    remote: &EnvironmentFingerprint,
+) -> FingerprintDiff {
     let mut discrepancies = Vec::new();
 
     // Compare toolchain versions
@@ -190,33 +225,53 @@ pub fn diff_fingerprints(local: &EnvironmentFingerprint, remote: &EnvironmentFin
         });
     }
 
-    let severity_score: f64 = discrepancies.iter().map(|d| match d.severity {
-        DiffSeverity::Critical => 1.0,
-        DiffSeverity::High => 0.7,
-        DiffSeverity::Medium => 0.3,
-        DiffSeverity::Low => 0.1,
-    }).sum::<f64>() / discrepancies.len().max(1) as f64;
+    let severity_score: f64 = discrepancies
+        .iter()
+        .map(|d| match d.severity {
+            DiffSeverity::Critical => 1.0,
+            DiffSeverity::High => 0.7,
+            DiffSeverity::Medium => 0.3,
+            DiffSeverity::Low => 0.1,
+        })
+        .sum::<f64>()
+        / discrepancies.len().max(1) as f64;
 
-    FingerprintDiff { discrepancies, severity_score }
+    FingerprintDiff {
+        discrepancies,
+        severity_score,
+    }
 }
 
 fn version_diff_severity(a: &str, b: &str) -> DiffSeverity {
     let a_parts = extract_version_numbers(a);
     let b_parts = extract_version_numbers(b);
 
-    if a_parts.0 != b_parts.0 { DiffSeverity::Critical }     // Major diff
-    else if a_parts.1 != b_parts.1 { DiffSeverity::Medium }   // Minor diff
-    else { DiffSeverity::Low }                                  // Patch diff
+    if a_parts.0 != b_parts.0 {
+        DiffSeverity::Critical
+    }
+    // Major diff
+    else if a_parts.1 != b_parts.1 {
+        DiffSeverity::Medium
+    }
+    // Minor diff
+    else {
+        DiffSeverity::Low
+    } // Patch diff
 }
 
 fn extract_version_numbers(s: &str) -> (u32, u32, u32) {
-    let nums: Vec<u32> = s.chars()
+    let nums: Vec<u32> = s
+        .chars()
         .filter(|c| c.is_ascii_digit() || *c == '.')
         .collect::<String>()
         .split('.')
         .filter_map(|p| p.parse().ok())
         .collect();
-    (nums.first().copied().unwrap_or(0), nums.get(1).copied().unwrap_or(0), nums.get(2).copied().unwrap_or(0))
+    (
+        nums.first().copied().unwrap_or(0),
+        nums.get(1).copied().unwrap_or(0),
+        nums.get(2).copied().unwrap_or(0),
+    )
 }
 
 #[cfg(test)]
@@ -232,8 +287,14 @@ mod tests {
 
     #[test]
     fn test_version_severity() {
-        assert_eq!(version_diff_severity("3.0.1", "2.0.0"), DiffSeverity::Critical);
-        assert_eq!(version_diff_severity("3.1.0", "3.2.0"), DiffSeverity::Medium);
+        assert_eq!(
+            version_diff_severity("3.0.1", "2.0.0"),
+            DiffSeverity::Critical
+        );
+        assert_eq!(
+            version_diff_severity("3.1.0", "3.2.0"),
+            DiffSeverity::Medium
+        );
         assert_eq!(version_diff_severity("3.1.1", "3.1.2"), DiffSeverity::Low);
     }
 
@@ -241,6 +302,9 @@ mod tests {
     fn test_identical_fingerprints_no_diff() {
         let fp = collect_fingerprint();
         let diff = diff_fingerprints(&fp, &fp);
-        assert!(diff.discrepancies.is_empty(), "Identical fingerprints should have no diff");
+        assert!(
+            diff.discrepancies.is_empty(),
+            "Identical fingerprints should have no diff"
+        );
     }
 }

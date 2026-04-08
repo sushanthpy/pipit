@@ -50,9 +50,13 @@ struct HeartbeatHistory {
     count: usize,
     /// Timestamp of last heartbeat.
     last_heartbeat: Instant,
-    /// Cached mean (updated on insert).
+    /// Running sum of intervals in the window (for O(1) mean).
+    rolling_sum: f64,
+    /// Running sum of squared intervals (for O(1) variance).
+    rolling_sum_sq: f64,
+    /// Cached mean (derived from rolling_sum).
     mean: f64,
-    /// Cached variance (updated on insert).
+    /// Cached variance (derived from rolling sums).
     variance: f64,
 }
 
@@ -63,33 +67,42 @@ impl HeartbeatHistory {
             write_pos: 0,
             count: 0,
             last_heartbeat: Instant::now(),
+            rolling_sum: 0.0,
+            rolling_sum_sq: 0.0,
             mean: initial_interval_ms,
             variance: initial_interval_ms * initial_interval_ms / 4.0,
         }
     }
 
-    /// Record a heartbeat arrival.
+    /// Record a heartbeat arrival — O(1) amortized.
+    /// Uses a rolling sum/sum-of-squares over a fixed ring buffer instead of
+    /// recomputing from the entire window on every heartbeat.
     fn record_heartbeat(&mut self, now: Instant) {
         let interval = now.duration_since(self.last_heartbeat).as_secs_f64() * 1000.0;
         self.last_heartbeat = now;
 
         let window_size = self.intervals.len();
 
-        // Welford's online algorithm for mean and variance
-        if self.count < window_size {
+        // Subtract the value being evicted from the ring buffer
+        let evicted = self.intervals[self.write_pos];
+        if self.count == window_size {
+            self.rolling_sum -= evicted;
+            self.rolling_sum_sq -= evicted * evicted;
+        } else {
             self.count += 1;
         }
 
+        // Insert the new interval
         self.intervals[self.write_pos] = interval;
         self.write_pos = (self.write_pos + 1) % window_size;
+        self.rolling_sum += interval;
+        self.rolling_sum_sq += interval * interval;
 
-        // Recompute mean and variance from the window
-        let n = self.count;
-        let slice = &self.intervals[..n];
-        let sum: f64 = slice.iter().sum();
-        self.mean = sum / n as f64;
-        let var_sum: f64 = slice.iter().map(|x| (x - self.mean).powi(2)).sum();
-        self.variance = var_sum / n as f64;
+        // Derive mean and variance from rolling sums — O(1)
+        let n = self.count as f64;
+        self.mean = self.rolling_sum / n;
+        // Var(X) = E[X²] - E[X]² — numerically adequate for this use case
+        self.variance = (self.rolling_sum_sq / n - self.mean * self.mean).max(0.0);
     }
 
     /// Standard deviation of inter-arrival times.
@@ -142,14 +155,9 @@ fn normal_cdf(x: f64) -> f64 {
     let val = p
         * t
         * (0.319381530
-            + t * (-0.356563782
-                + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
 
-    if x >= 0.0 {
-        1.0 - val
-    } else {
-        val
-    }
+    if x >= 0.0 { 1.0 - val } else { val }
 }
 
 // ── The detector ────────────────────────────────────────────────────
@@ -183,10 +191,7 @@ impl PhiAccrualDetector {
     pub fn heartbeat(&mut self, node_id: &str) {
         let now = Instant::now();
         let history = self.nodes.entry(node_id.to_string()).or_insert_with(|| {
-            HeartbeatHistory::new(
-                self.config.window_size,
-                self.config.initial_heartbeat_ms,
-            )
+            HeartbeatHistory::new(self.config.window_size, self.config.initial_heartbeat_ms)
         });
         history.record_heartbeat(now);
     }
@@ -293,7 +298,11 @@ mod tests {
 
         // Phi should be low right after a heartbeat
         let phi_after = detector.phi("node-1").unwrap();
-        assert!(phi_after < 3.0, "φ should be low right after heartbeat: {}", phi_after);
+        assert!(
+            phi_after < 3.0,
+            "φ should be low right after heartbeat: {}",
+            phi_after
+        );
 
         // Wait longer than usual
         thread::sleep(Duration::from_millis(500));

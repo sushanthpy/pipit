@@ -49,13 +49,9 @@ pub enum FallbackResult {
         provider: Arc<dyn LlmProvider>,
     },
     /// No more fallback models available.
-    Exhausted {
-        original_error: ProviderError,
-    },
+    Exhausted { original_error: ProviderError },
     /// Error is not retriable — don't attempt fallback.
-    NotRetriable {
-        error: ProviderError,
-    },
+    NotRetriable { error: ProviderError },
 }
 
 impl FallbackController {
@@ -162,9 +158,7 @@ impl FallbackController {
     /// Prepare messages for the fallback model.
     /// Strips model-specific content (thinking blocks, signature blocks)
     /// that would cause 400 errors on a different model.
-    pub fn prepare_messages_for_fallback(
-        messages: &mut Vec<crate::Message>,
-    ) {
+    pub fn prepare_messages_for_fallback(messages: &mut Vec<crate::Message>) {
         for msg in messages.iter_mut() {
             msg.content.retain(|block| {
                 // Remove thinking blocks — they're model-specific
@@ -175,9 +169,7 @@ impl FallbackController {
 
     /// Tombstone partial assistant messages from a failed attempt.
     /// Returns the number of messages tombstoned.
-    pub fn tombstone_partial_messages(
-        messages: &mut Vec<crate::Message>,
-    ) -> usize {
+    pub fn tombstone_partial_messages(messages: &mut Vec<crate::Message>) -> usize {
         // Find the last user message — everything after it from the failed attempt
         // should be removed
         let last_user_idx = messages

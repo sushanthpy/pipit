@@ -177,7 +177,9 @@ mod tests {
 
         // Queue actions
         dp.enqueue(PersistenceAction::FlushUserMessage);
-        dp.enqueue(PersistenceAction::RecordPlan { strategy: "MinimalPatch".into() });
+        dp.enqueue(PersistenceAction::RecordPlan {
+            strategy: "MinimalPatch".into(),
+        });
         dp.enqueue(PersistenceAction::RecordToolOutcomes { tool_count: 5 });
 
         // Enter hot zone — nothing should drain

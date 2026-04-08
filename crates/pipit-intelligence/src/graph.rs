@@ -28,10 +28,7 @@ impl ReferenceGraph {
                         .push(&tag.rel_path);
                 }
                 TagKind::Reference => {
-                    references
-                        .entry(&tag.name)
-                        .or_default()
-                        .push(&tag.rel_path);
+                    references.entry(&tag.name).or_default().push(&tag.rel_path);
                 }
             }
         }
@@ -75,7 +72,9 @@ impl ReferenceGraph {
     /// Compute PageRank scores — Fix #16: weight-aware distribution.
     pub fn page_rank(&self) -> HashMap<PathBuf, f64> {
         let n = self.graph.node_count();
-        if n == 0 { return HashMap::new(); }
+        if n == 0 {
+            return HashMap::new();
+        }
 
         /// Standard PageRank damping factor (probability of following a link vs. random jump).
         const PAGERANK_DAMPING: f64 = 0.85;
@@ -91,12 +90,16 @@ impl ReferenceGraph {
             let mut new_ranks = vec![(1.0 - damping) / n as f64; n];
             for node in self.graph.node_indices() {
                 // Fix #16: Compute total outgoing weight for proportional distribution
-                let total_weight: u32 = self.graph
+                let total_weight: u32 = self
+                    .graph
                     .edges_directed(node, petgraph::Direction::Outgoing)
                     .map(|e| *e.weight())
                     .sum();
                 if total_weight > 0 {
-                    for edge in self.graph.edges_directed(node, petgraph::Direction::Outgoing) {
+                    for edge in self
+                        .graph
+                        .edges_directed(node, petgraph::Direction::Outgoing)
+                    {
                         let weight = *edge.weight() as f64;
                         let share = ranks[node.index()] * weight / total_weight as f64;
                         new_ranks[edge.target().index()] += damping * share;
@@ -106,7 +109,8 @@ impl ReferenceGraph {
             ranks = new_ranks;
         }
 
-        self.graph.node_indices()
+        self.graph
+            .node_indices()
             .map(|idx| (self.graph[idx].clone(), ranks[idx.index()]))
             .collect()
     }
@@ -122,8 +126,7 @@ impl ReferenceGraph {
     /// Update graph with new tags for changed files.
     pub fn update_files(&mut self, changed: &HashSet<PathBuf>, new_tags: &[FileTag]) {
         // Remove old tags for changed files
-        self.tags
-            .retain(|t| !changed.contains(&t.rel_path));
+        self.tags.retain(|t| !changed.contains(&t.rel_path));
 
         // Add new tags
         self.tags.extend(new_tags.iter().cloned());

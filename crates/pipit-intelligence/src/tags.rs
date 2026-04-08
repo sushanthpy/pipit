@@ -1,8 +1,8 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use streaming_iterator::StreamingIterator;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCapture, QueryCursor};
 
 /// A tag is a named symbol found in a file.
@@ -59,7 +59,9 @@ fn extract_tags_from_source(rel_path: &Path, source: &str, lang: &str) -> Vec<Fi
             let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
             while let Some(query_match) = matches.next() {
                 for capture in query_match.captures {
-                    if let Some(tag) = capture_to_tag(rel_path, source, *capture, TagKind::Definition) {
+                    if let Some(tag) =
+                        capture_to_tag(rel_path, source, *capture, TagKind::Definition)
+                    {
                         let key = (tag.line, tag.name.clone());
                         if seen_definitions.insert(key) {
                             definition_names.insert(tag.name.clone());
@@ -78,7 +80,9 @@ fn extract_tags_from_source(rel_path: &Path, source: &str, lang: &str) -> Vec<Fi
             let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
             while let Some(query_match) = matches.next() {
                 for capture in query_match.captures {
-                    if let Some(tag) = capture_to_tag(rel_path, source, *capture, TagKind::Reference) {
+                    if let Some(tag) =
+                        capture_to_tag(rel_path, source, *capture, TagKind::Reference)
+                    {
                         if definition_names.contains(&tag.name) || is_noise_identifier(&tag.name) {
                             continue;
                         }
@@ -122,10 +126,7 @@ fn language_support(lang: &str) -> Option<LanguageSupport> {
                 "(static_item name: (identifier) @name)",
                 "(mod_item name: (identifier) @name)",
             ],
-            reference_queries: &[
-                "(identifier) @name",
-                "(type_identifier) @name",
-            ],
+            reference_queries: &["(identifier) @name", "(type_identifier) @name"],
         }),
         "python" => Some(LanguageSupport {
             language: python_language,
@@ -154,10 +155,7 @@ fn language_support(lang: &str) -> Option<LanguageSupport> {
                 "(enum_declaration name: (identifier) @name)",
                 "(variable_declarator name: (identifier) @name)",
             ],
-            reference_queries: &[
-                "(identifier) @name",
-                "(type_identifier) @name",
-            ],
+            reference_queries: &["(identifier) @name", "(type_identifier) @name"],
         }),
         "go" => Some(LanguageSupport {
             language: go_language,
@@ -218,9 +216,27 @@ fn go_language() -> Language {
 fn is_noise_identifier(name: &str) -> bool {
     matches!(
         name,
-        "new" | "self" | "Self" | "main" | "test" | "it" | "describe"
-            | "if" | "else" | "for" | "while" | "return" | "true" | "false"
-            | "None" | "Some" | "Ok" | "Err" | "default" | "impl" | "pub"
+        "new"
+            | "self"
+            | "Self"
+            | "main"
+            | "test"
+            | "it"
+            | "describe"
+            | "if"
+            | "else"
+            | "for"
+            | "while"
+            | "return"
+            | "true"
+            | "false"
+            | "None"
+            | "Some"
+            | "Ok"
+            | "Err"
+            | "default"
+            | "impl"
+            | "pub"
     )
 }
 
@@ -228,6 +244,6 @@ fn looks_like_identifier(word: &str) -> bool {
     let first = word.chars().next().unwrap_or('0');
     (first.is_alphabetic() || first == '_')
         && word.chars().all(|c| c.is_alphanumeric() || c == '_')
-    && word.len() >= 2
+        && word.len() >= 2
         && word.len() <= 64
 }

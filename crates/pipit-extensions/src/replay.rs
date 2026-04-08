@@ -13,7 +13,7 @@
 //!
 //! Correctness: replay(record(s, e)) = apply(s, e) for every event e.
 
-use crate::hook_kind::{HookDecision, HookContext, ReplayMode};
+use crate::hook_kind::{HookContext, HookDecision, ReplayMode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -109,11 +109,7 @@ impl HookReplayCache {
 
     /// Look up a cached decision for replay.
     /// Returns None if no matching record exists (execution required).
-    pub fn lookup(
-        &self,
-        hook_id: &str,
-        context: &HookContext,
-    ) -> Option<HookDecision> {
+    pub fn lookup(&self, hook_id: &str, context: &HookContext) -> Option<HookDecision> {
         let input_hash = Self::input_hash(hook_id, context);
         let records = self.records.lock().unwrap();
         records.get(&input_hash).map(|r| r.decision.clone())
@@ -263,10 +259,10 @@ mod tests {
         let cache = HookReplayCache::new();
         let ctx = test_context("PreToolUse", Some("bash"));
 
-        let result = execute_with_replay(
-            &cache, "hook1", &ctx, "command",
-            || async { Ok(HookDecision::default()) },
-        ).await;
+        let result = execute_with_replay(&cache, "hook1", &ctx, "command", || async {
+            Ok(HookDecision::default())
+        })
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(cache.len(), 1);
@@ -290,10 +286,10 @@ mod tests {
         let mut ctx_replay = test_context("PreToolUse", Some("bash"));
         ctx_replay.replay_mode = ReplayMode::Replay;
 
-        let result = execute_with_replay(
-            &cache, "hook1", &ctx_replay, "command",
-            || async { panic!("should not execute in replay mode") },
-        ).await;
+        let result = execute_with_replay(&cache, "hook1", &ctx_replay, "command", || async {
+            panic!("should not execute in replay mode")
+        })
+        .await;
 
         assert!(result.is_ok());
         assert!(!result.unwrap().allow);

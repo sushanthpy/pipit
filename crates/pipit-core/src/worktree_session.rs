@@ -54,7 +54,13 @@ pub struct WorktreeSession {
 /// Sanitize a task name into a valid git branch slug.
 fn slugify(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_lowercase()
@@ -72,14 +78,8 @@ pub fn worktree_up(
 
     let slug = slugify(&config.name);
     let branch = format!("pipit/{}", slug);
-    let worktree_dir = repo_root
-        .join(".pipit")
-        .join("worktrees")
-        .join(&slug);
-    let session_dir = repo_root
-        .join(".pipit")
-        .join("sessions")
-        .join(&slug);
+    let worktree_dir = repo_root.join(".pipit").join("worktrees").join(&slug);
+    let session_dir = repo_root.join(".pipit").join("sessions").join(&slug);
 
     // Check if worktree already exists (restore path)
     if worktree_dir.exists() && config.restore {
@@ -87,7 +87,11 @@ pub fn worktree_up(
             worktree_path: worktree_dir,
             branch,
             original_cwd: repo_root.to_path_buf(),
-            tmux_session: if config.tmux { Some(format!("pipit-{}", slug)) } else { None },
+            tmux_session: if config.tmux {
+                Some(format!("pipit-{}", slug))
+            } else {
+                None
+            },
             session_dir,
         };
 
@@ -109,8 +113,13 @@ pub fn worktree_up(
     std::fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
 
     let output = Command::new("git")
-        .args(["worktree", "add", "-b", &branch,
-               worktree_dir.to_str().unwrap_or(".")])
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            worktree_dir.to_str().unwrap_or("."),
+        ])
         .current_dir(repo_root)
         .output()
         .map_err(|e| e.to_string())?;
@@ -120,8 +129,12 @@ pub fn worktree_up(
         // Branch might already exist — try without -b
         if stderr.contains("already exists") {
             let output2 = Command::new("git")
-                .args(["worktree", "add",
-                       worktree_dir.to_str().unwrap_or("."), &branch])
+                .args([
+                    "worktree",
+                    "add",
+                    worktree_dir.to_str().unwrap_or("."),
+                    &branch,
+                ])
                 .current_dir(repo_root)
                 .output()
                 .map_err(|e| e.to_string())?;
@@ -156,10 +169,7 @@ pub fn worktree_up(
 }
 
 /// Tear down a worktree session with clean merge semantics.
-pub fn worktree_down(
-    session: &WorktreeSession,
-    merge: bool,
-) -> Result<WorktreeDownResult, String> {
+pub fn worktree_down(session: &WorktreeSession, merge: bool) -> Result<WorktreeDownResult, String> {
     let mut result = WorktreeDownResult {
         merged: false,
         files_changed: Vec::new(),
@@ -191,7 +201,11 @@ pub fn worktree_down(
                 .current_dir(&session.worktree_path)
                 .output();
             let _ = Command::new("git")
-                .args(["commit", "-m", &format!("pipit: work from {}", session.branch)])
+                .args([
+                    "commit",
+                    "-m",
+                    &format!("pipit: work from {}", session.branch),
+                ])
                 .current_dir(&session.worktree_path)
                 .output();
         }
@@ -209,8 +223,13 @@ pub fn worktree_down(
 
         // Merge into main
         let merge_output = Command::new("git")
-            .args(["merge", "--no-ff", &session.branch, "-m",
-                   &format!("Merge pipit work: {}", session.branch)])
+            .args([
+                "merge",
+                "--no-ff",
+                &session.branch,
+                "-m",
+                &format!("Merge pipit work: {}", session.branch),
+            ])
             .current_dir(&session.original_cwd)
             .output()
             .map_err(|e| e.to_string())?;
@@ -219,8 +238,12 @@ pub fn worktree_down(
 
     // Remove worktree
     let _ = Command::new("git")
-        .args(["worktree", "remove", "--force",
-               session.worktree_path.to_str().unwrap_or(".")])
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            session.worktree_path.to_str().unwrap_or("."),
+        ])
         .current_dir(&session.original_cwd)
         .output();
 
@@ -332,8 +355,13 @@ fn create_tmux_layout(
             .output();
         // Send pane title
         let _ = Command::new("tmux")
-            .args(["send-keys", "-t", &format!("{}:{}", session_name, i + 1),
-                   &format!("# {}", pane_name), "Enter"])
+            .args([
+                "send-keys",
+                "-t",
+                &format!("{}:{}", session_name, i + 1),
+                &format!("# {}", pane_name),
+                "Enter",
+            ])
             .output();
     }
 

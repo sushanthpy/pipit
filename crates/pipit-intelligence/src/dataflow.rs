@@ -23,10 +23,10 @@ pub struct DataFlowNode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
-    Source,      // User input, HTTP request, env var
-    Transform,   // Assignment, function call, data manipulation
-    Sink,        // Database write, file write, HTTP response, log
-    Sanitizer,   // Input validation, encoding, escaping
+    Source,    // User input, HTTP request, env var
+    Transform, // Assignment, function call, data manipulation
+    Sink,      // Database write, file write, HTTP response, log
+    Sanitizer, // Input validation, encoding, escaping
 }
 
 /// An edge in the data flow graph (data moves from → to).
@@ -116,8 +116,14 @@ impl DataFlowGraph {
             let trimmed = line.trim();
 
             // Track block comments
-            if trimmed.contains("/*") && !trimmed.contains("*/") { in_block_comment = true; continue; }
-            if trimmed.contains("*/") { in_block_comment = false; continue; }
+            if trimmed.contains("/*") && !trimmed.contains("*/") {
+                in_block_comment = true;
+                continue;
+            }
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+                continue;
+            }
             if in_block_comment || trimmed.starts_with("//") || trimmed.starts_with('#') {
                 continue;
             }
@@ -126,8 +132,11 @@ impl DataFlowGraph {
             for (pattern, label) in SOURCE_PATTERNS {
                 if trimmed.contains(pattern) {
                     nodes.push(DataFlowNode {
-                        id, file: file_path.into(), line: line_num + 1,
-                        kind: NodeKind::Source, label: label.to_string(),
+                        id,
+                        file: file_path.into(),
+                        line: line_num + 1,
+                        kind: NodeKind::Source,
+                        label: label.to_string(),
                         tainted: true,
                     });
                     last_source_id = Some(id);
@@ -139,14 +148,18 @@ impl DataFlowGraph {
             for (pattern, label) in SANITIZER_PATTERNS {
                 if trimmed.contains(pattern) {
                     nodes.push(DataFlowNode {
-                        id, file: file_path.into(), line: line_num + 1,
-                        kind: NodeKind::Sanitizer, label: label.to_string(),
+                        id,
+                        file: file_path.into(),
+                        line: line_num + 1,
+                        kind: NodeKind::Sanitizer,
+                        label: label.to_string(),
                         tainted: false,
                     });
                     // Edge from last source to sanitizer
                     if let Some(src_id) = last_source_id {
                         edges.push(DataFlowEdge {
-                            from: src_id, to: id,
+                            from: src_id,
+                            to: id,
                             label: "sanitizes".into(),
                         });
                     }
@@ -160,14 +173,18 @@ impl DataFlowGraph {
                 if trimmed.contains(pattern) {
                     let sink_id = id;
                     nodes.push(DataFlowNode {
-                        id: sink_id, file: file_path.into(), line: line_num + 1,
-                        kind: NodeKind::Sink, label: label.to_string(),
+                        id: sink_id,
+                        file: file_path.into(),
+                        line: line_num + 1,
+                        kind: NodeKind::Sink,
+                        label: label.to_string(),
                         tainted: false,
                     });
                     // Edge from nearest source/transform to this sink
                     if let Some(src_id) = last_source_id {
                         edges.push(DataFlowEdge {
-                            from: src_id, to: sink_id,
+                            from: src_id,
+                            to: sink_id,
                             label: "data flows to".into(),
                         });
                     }
@@ -192,15 +209,21 @@ impl DataFlowGraph {
         }
 
         // BFS from all tainted sources
-        let mut queue: Vec<usize> = self.nodes.iter()
+        let mut queue: Vec<usize> = self
+            .nodes
+            .iter()
             .filter(|node| node.tainted)
             .map(|node| node.id)
             .collect();
 
         let mut visited = HashSet::new();
         while let Some(node_id) = queue.pop() {
-            if !visited.insert(node_id) { continue; }
-            if node_id >= n { continue; }
+            if !visited.insert(node_id) {
+                continue;
+            }
+            if node_id >= n {
+                continue;
+            }
 
             // Sanitizers kill taint
             if self.nodes[node_id].kind == NodeKind::Sanitizer {
@@ -217,7 +240,8 @@ impl DataFlowGraph {
         }
 
         // Return tainted sinks
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .filter(|n| n.tainted && n.kind == NodeKind::Sink)
             .collect()
     }
@@ -245,10 +269,26 @@ impl DataFlowGraph {
     pub fn summary(&self) -> DataFlowSummary {
         DataFlowSummary {
             total_nodes: self.nodes.len(),
-            sources: self.nodes.iter().filter(|n| n.kind == NodeKind::Source).count(),
-            sinks: self.nodes.iter().filter(|n| n.kind == NodeKind::Sink).count(),
-            sanitizers: self.nodes.iter().filter(|n| n.kind == NodeKind::Sanitizer).count(),
-            tainted_sinks: self.nodes.iter().filter(|n| n.tainted && n.kind == NodeKind::Sink).count(),
+            sources: self
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Source)
+                .count(),
+            sinks: self
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Sink)
+                .count(),
+            sanitizers: self
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Sanitizer)
+                .count(),
+            tainted_sinks: self
+                .nodes
+                .iter()
+                .filter(|n| n.tainted && n.kind == NodeKind::Sink)
+                .count(),
             edges: self.edges.len(),
         }
     }
@@ -276,8 +316,14 @@ data = request.json
 cursor.execute(f"INSERT INTO users VALUES ({data})")
 "#;
         let graph = DataFlowGraph::from_source("app.py", code);
-        assert!(graph.nodes.iter().any(|n| n.kind == NodeKind::Source), "Should detect source");
-        assert!(graph.nodes.iter().any(|n| n.kind == NodeKind::Sink), "Should detect sink");
+        assert!(
+            graph.nodes.iter().any(|n| n.kind == NodeKind::Source),
+            "Should detect source"
+        );
+        assert!(
+            graph.nodes.iter().any(|n| n.kind == NodeKind::Sink),
+            "Should detect sink"
+        );
         assert!(!graph.edges.is_empty(), "Should connect source to sink");
     }
 
@@ -291,10 +337,14 @@ print(clean)
         let mut graph = DataFlowGraph::from_source("app.py", code);
         let tainted = graph.propagate_taint();
         // print() sink should NOT be tainted because html.escape() sanitizes
-        let tainted_prints: Vec<_> = tainted.iter()
+        let tainted_prints: Vec<_> = tainted
+            .iter()
             .filter(|n| n.label.contains("Console"))
             .collect();
-        assert!(tainted_prints.is_empty(), "Sanitized output should not be tainted");
+        assert!(
+            tainted_prints.is_empty(),
+            "Sanitized output should not be tainted"
+        );
     }
 
     #[test]

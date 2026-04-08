@@ -236,7 +236,8 @@ mod tests {
         // or have already emitted SpeechStart
         assert!(
             vad.state != VadState::Silence,
-            "VAD should have left Silence state, got {:?}", vad.state
+            "VAD should have left Silence state, got {:?}",
+            vad.state
         );
     }
 }

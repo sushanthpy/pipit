@@ -130,25 +130,33 @@ pub struct FadeTransition {
 
 impl FadeTransition {
     pub fn fade_in(progress: f32) -> Self {
-        Self { progress: progress.clamp(0.0, 1.0), fade_in: true }
+        Self {
+            progress: progress.clamp(0.0, 1.0),
+            fade_in: true,
+        }
     }
 
     pub fn fade_out(progress: f32) -> Self {
-        Self { progress: progress.clamp(0.0, 1.0), fade_in: false }
+        Self {
+            progress: progress.clamp(0.0, 1.0),
+            fade_in: false,
+        }
     }
 
     /// Apply the fade effect to a buffer area by dimming cells.
     pub fn apply(&self, area: Rect, buf: &mut Buffer) {
-        let alpha = if self.fade_in { self.progress } else { 1.0 - self.progress };
+        let alpha = if self.fade_in {
+            self.progress
+        } else {
+            1.0 - self.progress
+        };
 
         if alpha < 0.3 {
             // Very faded — dim everything
             for y in area.y..area.y + area.height {
                 for x in area.x..area.x + area.width {
                     if x < buf.area().width && y < buf.area().height {
-                        buf[(x, y)].set_style(
-                            Style::default().add_modifier(Modifier::DIM)
-                        );
+                        buf[(x, y)].set_style(Style::default().add_modifier(Modifier::DIM));
                     }
                 }
             }
@@ -158,9 +166,7 @@ impl FadeTransition {
                 for x in area.x..area.x + area.width {
                     if x < buf.area().width && y < buf.area().height {
                         let existing = buf[(x, y)].style();
-                        buf[(x, y)].set_style(
-                            existing.add_modifier(Modifier::DIM)
-                        );
+                        buf[(x, y)].set_style(existing.add_modifier(Modifier::DIM));
                     }
                 }
             }
@@ -188,7 +194,10 @@ pub enum SlideDirection {
 
 impl SlideTransition {
     pub fn new(progress: f32, direction: SlideDirection) -> Self {
-        Self { progress: progress.clamp(0.0, 1.0), direction }
+        Self {
+            progress: progress.clamp(0.0, 1.0),
+            direction,
+        }
     }
 
     /// Calculate the animated rect offset from the target area.
@@ -196,7 +205,9 @@ impl SlideTransition {
         let remaining = 1.0 - self.progress;
         match self.direction {
             SlideDirection::Left => Rect::new(
-                target.x.saturating_sub((target.width as f32 * remaining) as u16),
+                target
+                    .x
+                    .saturating_sub((target.width as f32 * remaining) as u16),
                 target.y,
                 target.width,
                 target.height,
@@ -209,7 +220,9 @@ impl SlideTransition {
             ),
             SlideDirection::Up => Rect::new(
                 target.x,
-                target.y.saturating_sub((target.height as f32 * remaining) as u16),
+                target
+                    .y
+                    .saturating_sub((target.height as f32 * remaining) as u16),
                 target.width,
                 target.height,
             ),
@@ -235,7 +248,11 @@ pub struct PulseHighlight {
 
 impl PulseHighlight {
     pub fn new(frame: u64, color: Color) -> Self {
-        Self { frame, color, period: 30 }
+        Self {
+            frame,
+            color,
+            period: 30,
+        }
     }
 
     /// Returns whether the highlight is currently "on" (visible).

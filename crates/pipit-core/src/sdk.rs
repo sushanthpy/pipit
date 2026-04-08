@@ -9,7 +9,7 @@
 
 use crate::agent::{AgentLoop, AgentLoopConfig};
 use crate::events::{AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler};
-use crate::permission_ledger::{PermissionDenialRecord, DenialCounts};
+use crate::permission_ledger::{DenialCounts, PermissionDenialRecord};
 use crate::pev::ModelRouter;
 use pipit_context::ContextManager;
 use pipit_context::budget::ContextSettings;
@@ -74,20 +74,11 @@ pub enum EngineEvent {
         pivoted: bool,
     },
     /// Verification verdict from the verifier.
-    VerifierVerdict {
-        verdict: String,
-        confidence: f32,
-    },
+    VerifierVerdict { verdict: String, confidence: f32 },
     /// Repair attempt started after verification failure.
-    RepairStarted {
-        attempt: u32,
-        reason: String,
-    },
+    RepairStarted { attempt: u32, reason: String },
     /// PEV phase transition.
-    PhaseTransition {
-        from: String,
-        to: String,
-    },
+    PhaseTransition { from: String, to: String },
 
     // ── Context management ──
     /// Context compression occurred.
@@ -96,11 +87,7 @@ pub enum EngineEvent {
         tokens_freed: u64,
     },
     /// Token usage update.
-    Usage {
-        used: u64,
-        limit: u64,
-        cost: f64,
-    },
+    Usage { used: u64, limit: u64, cost: f64 },
 
     // ── Status & control ──
     /// Status label for UI rendering (e.g. "Sending to model…").
@@ -112,10 +99,7 @@ pub enum EngineEvent {
 
     // ── Errors ──
     /// An error occurred (may be retriable).
-    Error {
-        message: String,
-        retriable: bool,
-    },
+    Error { message: String, retriable: bool },
 
     // ── Session replay (v3+) ──
     /// A replayed historical message from a resumed session.
@@ -132,9 +116,7 @@ pub enum EngineEvent {
 
     // ── Termination ──
     /// The engine has finished processing the message.
-    Done {
-        outcome: EngineOutcome,
-    },
+    Done { outcome: EngineOutcome },
 }
 
 /// Final outcome of an engine run.
@@ -206,11 +188,7 @@ impl ApprovalHandler for SdkApprovalHandler {
         // Send the request
         if self
             .request_tx
-            .send((
-                call_id.to_string(),
-                tool_name.to_string(),
-                args.clone(),
-            ))
+            .send((call_id.to_string(), tool_name.to_string(), args.clone()))
             .await
             .is_err()
         {
@@ -360,12 +338,14 @@ impl PipitEngine {
                 budget_summary: None,
             },
             AgentOutcome::MaxTurnsReached(turns) => EngineOutcome::MaxTurnsReached(turns),
-            AgentOutcome::BudgetExhausted { turns, cost, budget } => {
-                EngineOutcome::Error(format!(
-                    "Cost budget exhausted after {} turns: ${:.4} >= ${:.2} limit",
-                    turns, cost, budget
-                ))
-            }
+            AgentOutcome::BudgetExhausted {
+                turns,
+                cost,
+                budget,
+            } => EngineOutcome::Error(format!(
+                "Cost budget exhausted after {} turns: ${:.4} >= ${:.2} limit",
+                turns, cost, budget
+            )),
             AgentOutcome::Error(msg) => EngineOutcome::Error(msg),
             AgentOutcome::Cancelled => EngineOutcome::Error("Cancelled".to_string()),
         };
@@ -476,33 +456,73 @@ impl PipitEngine {
 fn convert_agent_event(event: AgentEvent) -> Option<EngineEvent> {
     match event {
         AgentEvent::TurnStart { turn_number } => Some(EngineEvent::TurnStart { turn_number }),
-        AgentEvent::TurnEnd { turn_number, reason } => Some(EngineEvent::TurnEnd {
+        AgentEvent::TurnEnd {
+            turn_number,
+            reason,
+        } => Some(EngineEvent::TurnEnd {
             turn_number,
             reason: format!("{:?}", reason),
         }),
         AgentEvent::ContentDelta { text } => Some(EngineEvent::ContentDelta { text }),
         AgentEvent::ThinkingDelta { text } => Some(EngineEvent::ThinkingDelta { text }),
-        AgentEvent::ContentComplete { full_text } => Some(EngineEvent::ContentComplete { full_text }),
-        AgentEvent::ToolCallStart { call_id, name, args } => {
-            Some(EngineEvent::ToolCallStart { call_id, name, args })
+        AgentEvent::ContentComplete { full_text } => {
+            Some(EngineEvent::ContentComplete { full_text })
         }
-        AgentEvent::ToolCallEnd { call_id, name, result, .. } => {
+        AgentEvent::ToolCallStart {
+            call_id,
+            name,
+            args,
+        } => Some(EngineEvent::ToolCallStart {
+            call_id,
+            name,
+            args,
+        }),
+        AgentEvent::ToolCallEnd {
+            call_id,
+            name,
+            result,
+            ..
+        } => {
             let (text, success) = match &result {
                 crate::events::ToolCallOutcome::Success { content, .. } => (content.clone(), true),
-                crate::events::ToolCallOutcome::PolicyBlocked { message, .. } => (message.clone(), false),
+                crate::events::ToolCallOutcome::PolicyBlocked { message, .. } => {
+                    (message.clone(), false)
+                }
                 crate::events::ToolCallOutcome::Error { message } => (message.clone(), false),
             };
-            Some(EngineEvent::ToolCallEnd { call_id, name, result: text, success })
+            Some(EngineEvent::ToolCallEnd {
+                call_id,
+                name,
+                result: text,
+                success,
+            })
         }
-        AgentEvent::ToolApprovalNeeded { call_id, name, args } => {
-            Some(EngineEvent::ApprovalNeeded { call_id, name, args })
-        }
-        AgentEvent::PlanSelected { strategy, rationale, pivoted, .. } => {
-            Some(EngineEvent::PlanSelected { strategy, rationale, pivoted })
-        }
-        AgentEvent::CompressionEnd { messages_removed, tokens_freed } => {
-            Some(EngineEvent::Compression { messages_removed, tokens_freed })
-        }
+        AgentEvent::ToolApprovalNeeded {
+            call_id,
+            name,
+            args,
+        } => Some(EngineEvent::ApprovalNeeded {
+            call_id,
+            name,
+            args,
+        }),
+        AgentEvent::PlanSelected {
+            strategy,
+            rationale,
+            pivoted,
+            ..
+        } => Some(EngineEvent::PlanSelected {
+            strategy,
+            rationale,
+            pivoted,
+        }),
+        AgentEvent::CompressionEnd {
+            messages_removed,
+            tokens_freed,
+        } => Some(EngineEvent::Compression {
+            messages_removed,
+            tokens_freed,
+        }),
         AgentEvent::TokenUsageUpdate { used, limit, cost } => {
             Some(EngineEvent::Usage { used, limit, cost })
         }
@@ -510,9 +530,10 @@ fn convert_agent_event(event: AgentEvent) -> Option<EngineEvent> {
         AgentEvent::LoopDetected { tool_name, count } => {
             Some(EngineEvent::LoopDetected { tool_name, count })
         }
-        AgentEvent::ProviderError { error, will_retry } => {
-            Some(EngineEvent::Error { message: error, retriable: will_retry })
-        }
+        AgentEvent::ProviderError { error, will_retry } => Some(EngineEvent::Error {
+            message: error,
+            retriable: will_retry,
+        }),
         _ => None,
     }
 }

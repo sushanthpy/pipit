@@ -243,11 +243,7 @@ impl PolicyRouter {
     }
 
     /// Route a task: apply policies, check tenant quotas, discover best agent.
-    pub fn route(
-        &self,
-        request: &RoutingRequest,
-        registry: &MeshRegistry,
-    ) -> RoutingDecision {
+    pub fn route(&self, request: &RoutingRequest, registry: &MeshRegistry) -> RoutingDecision {
         let mut decision = RoutingDecision {
             task_id: request.task_id.clone(),
             agent: None,
@@ -292,9 +288,7 @@ impl PolicyRouter {
         }
 
         // Phase 2: Tenant quota check
-        let effective_tenant = forced_tenant
-            .as_deref()
-            .or(request.tenant_id.as_deref());
+        let effective_tenant = forced_tenant.as_deref().or(request.tenant_id.as_deref());
 
         if let Some(tenant_id) = effective_tenant {
             if let Some(tenant) = self.tenants.get(tenant_id) {
@@ -343,11 +337,7 @@ impl PolicyRouter {
     }
 
     /// Check if a routing condition matches the current request.
-    fn condition_matches(
-        &self,
-        condition: &RoutingCondition,
-        request: &RoutingRequest,
-    ) -> bool {
+    fn condition_matches(&self, condition: &RoutingCondition, request: &RoutingRequest) -> bool {
         match condition {
             RoutingCondition::Always => true,
             RoutingCondition::TaskTag(tag) => request.tags.contains(tag),
@@ -358,7 +348,11 @@ impl PolicyRouter {
                 start_hour,
                 end_hour,
             } => {
-                let hour = chrono::Utc::now().format("%H").to_string().parse::<u32>().unwrap_or(0);
+                let hour = chrono::Utc::now()
+                    .format("%H")
+                    .to_string()
+                    .parse::<u32>()
+                    .unwrap_or(0);
                 if start_hour <= end_hour {
                     hour >= *start_hour && hour < *end_hour
                 } else {

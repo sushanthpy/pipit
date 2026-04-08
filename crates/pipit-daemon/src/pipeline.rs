@@ -72,7 +72,11 @@ pub struct ExecutionPlan {
 pub enum PipelineError {
     CycleDetected,
     MissingNode(String),
-    MissingBinding { node: String, param: String, source_node: String },
+    MissingBinding {
+        node: String,
+        param: String,
+        source_node: String,
+    },
     DuplicateNodeId(String),
 }
 
@@ -81,8 +85,16 @@ impl std::fmt::Display for PipelineError {
         match self {
             PipelineError::CycleDetected => write!(f, "Pipeline contains a cycle"),
             PipelineError::MissingNode(id) => write!(f, "Reference to missing node: {}", id),
-            PipelineError::MissingBinding { node, param, source_node } => {
-                write!(f, "Node '{}' binds param '{}' from missing node '{}'", node, param, source_node)
+            PipelineError::MissingBinding {
+                node,
+                param,
+                source_node,
+            } => {
+                write!(
+                    f,
+                    "Node '{}' binds param '{}' from missing node '{}'",
+                    node, param, source_node
+                )
             }
             PipelineError::DuplicateNodeId(id) => write!(f, "Duplicate node ID: {}", id),
         }
@@ -278,7 +290,10 @@ impl PipelineBuilder {
         let input_bindings: HashMap<String, (NodeId, String)> = bindings
             .into_iter()
             .map(|(local, src_node, src_param)| {
-                (local.to_string(), (src_node.to_string(), src_param.to_string()))
+                (
+                    local.to_string(),
+                    (src_node.to_string(), src_param.to_string()),
+                )
             })
             .collect();
 
@@ -311,11 +326,7 @@ mod tests {
                 "security-scan",
                 vec![("findings", "review", "findings")],
             )
-            .add_wired(
-                "summary",
-                "summarize",
-                vec![("report", "scan", "report")],
-            )
+            .add_wired("summary", "summarize", vec![("report", "scan", "report")])
             .build()
             .unwrap();
 
@@ -369,7 +380,10 @@ mod tests {
             input_bindings: HashMap::from([("y".into(), ("a".into(), "x".into()))]),
         });
 
-        assert!(matches!(pipeline.validate(), Err(PipelineError::CycleDetected)));
+        assert!(matches!(
+            pipeline.validate(),
+            Err(PipelineError::CycleDetected)
+        ));
     }
 
     #[test]

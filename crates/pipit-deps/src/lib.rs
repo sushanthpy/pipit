@@ -37,10 +37,20 @@ pub struct DepFinding {
 /// Kind of dependency finding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FindingKind {
-    Vulnerability { cve: Option<String>, latest_safe: Option<String> },
-    Outdated { latest: String },
-    Deprecated { replacement: Option<String> },
-    LicenseConflict { dep_license: String, project_license: String },
+    Vulnerability {
+        cve: Option<String>,
+        latest_safe: Option<String>,
+    },
+    Outdated {
+        latest: String,
+    },
+    Deprecated {
+        replacement: Option<String>,
+    },
+    LicenseConflict {
+        dep_license: String,
+        project_license: String,
+    },
 }
 
 /// Result of a dependency health scan.
@@ -54,9 +64,21 @@ pub struct DepHealthReport {
 impl DepHealthReport {
     /// Format a summary for display.
     pub fn summary(&self) -> String {
-        let vulns = self.findings.iter().filter(|f| matches!(f.kind, FindingKind::Vulnerability { .. })).count();
-        let outdated = self.findings.iter().filter(|f| matches!(f.kind, FindingKind::Outdated { .. })).count();
-        let deprecated = self.findings.iter().filter(|f| matches!(f.kind, FindingKind::Deprecated { .. })).count();
+        let vulns = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.kind, FindingKind::Vulnerability { .. }))
+            .count();
+        let outdated = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.kind, FindingKind::Outdated { .. }))
+            .count();
+        let deprecated = self
+            .findings
+            .iter()
+            .filter(|f| matches!(f.kind, FindingKind::Deprecated { .. }))
+            .count();
 
         format!(
             "{} deps scanned in {:.1}s, {} vulnerable, {} deprecated, {} outdated",
@@ -77,7 +99,10 @@ impl DepHealthReport {
                 Severity::Medium => "🟡",
                 Severity::Low | Severity::Info => "🔵",
             };
-            lines.push(format!("{} {}@{} — {}", icon, f.package, f.current_version, f.description));
+            lines.push(format!(
+                "{} {}@{} — {}",
+                icon, f.package, f.current_version, f.description
+            ));
         }
         lines
     }
@@ -99,7 +124,8 @@ pub async fn scan_project(project_root: &Path) -> DepHealthReport {
                     for (name, spec) in deps {
                         let version = match spec {
                             toml::Value::String(v) => v.clone(),
-                            toml::Value::Table(t) => t.get("version")
+                            toml::Value::Table(t) => t
+                                .get("version")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("*")
                                 .to_string(),

@@ -14,7 +14,10 @@ pub enum SwimMessage {
     /// Direct ping with sender's descriptor.
     Ping(NodeDescriptor),
     /// Indirect ping request: ask another node to ping the target.
-    PingReq { sender: NodeDescriptor, target: String },
+    PingReq {
+        sender: NodeDescriptor,
+        target: String,
+    },
     /// Node join announcement.
     Join(NodeDescriptor),
     /// Mark a node as suspect (no response to ping).
@@ -98,7 +101,9 @@ impl SwimProtocol {
     pub fn check_suspects(&mut self) -> Vec<String> {
         let timeout = std::time::Duration::from_secs(self.config.suspect_timeout_secs);
         let now = std::time::Instant::now();
-        let dead: Vec<String> = self.suspects.iter()
+        let dead: Vec<String> = self
+            .suspects
+            .iter()
             .filter(|(_, when)| now.duration_since(**when) > timeout)
             .map(|(id, _)| id.clone())
             .collect();
@@ -113,7 +118,8 @@ impl SwimProtocol {
 pub async fn send_message(target: SocketAddr, msg: &SwimMessage) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let json = serde_json::to_vec(msg).map_err(|e| e.to_string())?;
-    let mut stream = tokio::net::TcpStream::connect(target).await
+    let mut stream = tokio::net::TcpStream::connect(target)
+        .await
         .map_err(|e| format!("Connect to {}: {}", target, e))?;
     stream.write_all(&json).await.map_err(|e| e.to_string())?;
     stream.flush().await.map_err(|e| e.to_string())?;
@@ -126,11 +132,17 @@ mod tests {
 
     #[test]
     fn test_swim_suspect_timeout() {
-        let mut proto = SwimProtocol::new("local".to_string(), SwimConfig {
-            suspect_timeout_secs: 0, // Immediate timeout for test
-            ..Default::default()
-        });
-        proto.suspects.insert("node1".to_string(), std::time::Instant::now() - std::time::Duration::from_secs(1));
+        let mut proto = SwimProtocol::new(
+            "local".to_string(),
+            SwimConfig {
+                suspect_timeout_secs: 0, // Immediate timeout for test
+                ..Default::default()
+            },
+        );
+        proto.suspects.insert(
+            "node1".to_string(),
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
         let dead = proto.check_suspects();
         assert_eq!(dead, vec!["node1"]);
     }

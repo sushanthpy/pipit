@@ -10,9 +10,9 @@
 //! - UI integration: diff views, inline suggestions, progress updates
 
 pub mod protocol;
-pub mod transport;
 pub mod session;
+pub mod transport;
 
-pub use protocol::{BridgeMessage, BridgeCommand, BridgeEvent, MessageId};
-pub use transport::{Transport, TransportConfig};
+pub use protocol::{BridgeCommand, BridgeEvent, BridgeMessage, MessageId};
 pub use session::{BridgeSession, SessionConfig};
+pub use transport::{Transport, TransportConfig};

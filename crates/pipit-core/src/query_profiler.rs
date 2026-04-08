@@ -312,12 +312,7 @@ impl TelemetryController {
     }
 
     /// Record observations from a completed turn. O(1).
-    pub fn observe_turn(
-        &mut self,
-        ttft_ms: Option<u64>,
-        turn_latency_ms: u64,
-        tool_calls: u32,
-    ) {
+    pub fn observe_turn(&mut self, ttft_ms: Option<u64>, turn_latency_ms: u64, tool_calls: u32) {
         self.observation_count += 1;
 
         if let Some(ttft) = ttft_ms {
@@ -334,8 +329,10 @@ impl TelemetryController {
             self.turn_latency_ema_ms = latency_f;
             self.tools_per_turn_ema = tool_calls as f64;
         } else {
-            self.turn_latency_ema_ms = self.alpha * latency_f + (1.0 - self.alpha) * self.turn_latency_ema_ms;
-            self.tools_per_turn_ema = self.alpha * (tool_calls as f64) + (1.0 - self.alpha) * self.tools_per_turn_ema;
+            self.turn_latency_ema_ms =
+                self.alpha * latency_f + (1.0 - self.alpha) * self.turn_latency_ema_ms;
+            self.tools_per_turn_ema =
+                self.alpha * (tool_calls as f64) + (1.0 - self.alpha) * self.tools_per_turn_ema;
         }
     }
 
@@ -350,7 +347,8 @@ impl TelemetryController {
             reduce_plan_depth: self.turn_latency_ema_ms > self.turn_latency_threshold_ms,
             trigger_compaction: self.ttft_ema_ms > self.ttft_compaction_threshold_ms,
             evict_stale_results: self.ttft_ema_ms > self.ttft_compaction_threshold_ms * 0.8,
-            tool_timeout_override_secs: if self.turn_latency_ema_ms > self.turn_latency_threshold_ms {
+            tool_timeout_override_secs: if self.turn_latency_ema_ms > self.turn_latency_threshold_ms
+            {
                 Some(60) // Reduce timeout under pressure
             } else {
                 None

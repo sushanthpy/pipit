@@ -19,6 +19,8 @@ impl WorkflowAssets {
         for dir in [
             project_root.join(".pipit").join("skills"),
             project_root.join(".github").join("skills"),
+            // ECC / Claude Code cross-tool compatibility: top-level skills/
+            project_root.join("skills"),
         ] {
             if dir.exists() {
                 assets.skill_dirs.push(dir);
@@ -29,6 +31,10 @@ impl WorkflowAssets {
         for dir in [
             project_root.join(".pipit").join("commands"),
             project_root.join(".github").join("commands"),
+            // ECC compatibility: top-level commands/
+            project_root.join("commands"),
+            // Claude Code: .claude/commands/
+            project_root.join(".claude").join("commands"),
         ] {
             if dir.exists() {
                 assets.command_dirs.push(dir);
@@ -39,6 +45,8 @@ impl WorkflowAssets {
         for dir in [
             project_root.join(".pipit").join("agents"),
             project_root.join(".github").join("agents"),
+            // ECC compatibility: top-level agents/
+            project_root.join("agents"),
         ] {
             if dir.exists() {
                 assets.agent_dirs.push(dir);
@@ -49,6 +57,10 @@ impl WorkflowAssets {
         for dir in [
             project_root.join(".pipit").join("rules"),
             project_root.join(".github").join("rules"),
+            // ECC / Claude Code compatibility: top-level rules/
+            project_root.join("rules"),
+            // Claude Code: .claude/rules/
+            project_root.join(".claude").join("rules"),
         ] {
             if dir.exists() {
                 assets.rule_dirs.push(dir);
@@ -59,6 +71,8 @@ impl WorkflowAssets {
         for hooks_dir in [
             project_root.join(".pipit").join("hooks"),
             project_root.join(".github").join("hooks"),
+            // ECC compatibility: top-level hooks/
+            project_root.join("hooks"),
         ] {
             assets.hook_files.extend(json_files_in(&hooks_dir));
         }
@@ -68,6 +82,10 @@ impl WorkflowAssets {
             project_root.join(".pipit").join("mcp.json"),
             project_root.join(".github").join("mcp.json"),
             project_root.join("mcp.json"),
+            // Claude Code / ECC compatibility: .mcp.json (dot-prefix)
+            project_root.join(".mcp.json"),
+            // Claude Code: .claude/mcp.json
+            project_root.join(".claude").join("mcp.json"),
         ] {
             if file.exists() {
                 assets.mcp_files.push(file);
@@ -78,9 +96,13 @@ impl WorkflowAssets {
         for file in [
             project_root.join("AGENTS.md"),
             project_root.join("PIPIT.md"),
+            project_root.join("CLAUDE.md"),
             project_root.join(".github").join("AGENTS.md"),
             project_root.join(".github").join("copilot-instructions.md"),
             project_root.join(".pipit").join("CONVENTIONS.md"),
+            // Additional ECC files that carry project context
+            project_root.join("RULES.md"),
+            project_root.join("WORKING-CONTEXT.md"),
         ] {
             if file.exists() {
                 assets.instruction_files.push(file);
@@ -129,17 +151,21 @@ impl WorkflowAssets {
     }
 
     /// Load all rules from rules/ directories, concatenated for system prompt injection.
+    /// Recursively scans subdirectories (e.g., rules/common/, rules/typescript/)
+    /// for compatibility with ECC's per-language rule organization.
     pub fn load_rules(&self) -> String {
         let mut rules = String::new();
         for dir in &self.rule_dirs {
-            let mut files = md_files_in(dir);
-            files.sort(); // deterministic order
+            let files = md_files_recursive(dir);
             for file in files {
                 if let Ok(content) = std::fs::read_to_string(&file) {
-                    let name = file
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy();
+                    // Use relative path from the rules dir as the rule name
+                    // e.g. "common/coding-style" or "typescript/patterns"
+                    let rel = file.strip_prefix(dir).unwrap_or(&file);
+                    let name = rel
+                        .with_extension("")
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
                     if !rules.is_empty() {
                         rules.push_str("\n\n");
                     }
@@ -151,7 +177,12 @@ impl WorkflowAssets {
         rules
     }
 
-    pub fn ui_summary(&self, skill_count: usize, command_count: usize, agent_count: usize) -> Option<String> {
+    pub fn ui_summary(
+        &self,
+        skill_count: usize,
+        command_count: usize,
+        agent_count: usize,
+    ) -> Option<String> {
         let has_any = skill_count > 0
             || command_count > 0
             || agent_count > 0
@@ -164,13 +195,27 @@ impl WorkflowAssets {
         }
 
         let mut parts = Vec::new();
-        if skill_count > 0 { parts.push(format!("{} skills", skill_count)); }
-        if command_count > 0 { parts.push(format!("{} commands", command_count)); }
-        if agent_count > 0 { parts.push(format!("{} agents", agent_count)); }
-        if !self.hook_files.is_empty() { parts.push(format!("{} hooks", self.hook_files.len())); }
-        if !self.rule_dirs.is_empty() { parts.push("rules".to_string()); }
-        if !self.mcp_files.is_empty() { parts.push(format!("{} mcp", self.mcp_files.len())); }
-        if !self.instruction_files.is_empty() { parts.push(format!("{} instructions", self.instruction_files.len())); }
+        if skill_count > 0 {
+            parts.push(format!("{} skills", skill_count));
+        }
+        if command_count > 0 {
+            parts.push(format!("{} commands", command_count));
+        }
+        if agent_count > 0 {
+            parts.push(format!("{} agents", agent_count));
+        }
+        if !self.hook_files.is_empty() {
+            parts.push(format!("{} hooks", self.hook_files.len()));
+        }
+        if !self.rule_dirs.is_empty() {
+            parts.push("rules".to_string());
+        }
+        if !self.mcp_files.is_empty() {
+            parts.push(format!("{} mcp", self.mcp_files.len()));
+        }
+        if !self.instruction_files.is_empty() {
+            parts.push(format!("{} instructions", self.instruction_files.len()));
+        }
 
         Some(format!("workflow: {}", parts.join(" | ")))
     }
@@ -213,12 +258,30 @@ impl WorkflowAssets {
 
     pub fn prompt_section(&self) -> String {
         let mut section = String::new();
+        // Track total injection size to avoid blowing up the system prompt.
+        // Large projects (like ECC with 90+ rule files) can produce hundreds
+        // of KB of rules that wouldn't fit in any model's context.
+        const MAX_RULES_BYTES: usize = 16_000; // ~4K tokens
+        const MAX_INSTRUCTION_BYTES: usize = 32_000; // ~8K tokens
+        const MAX_SINGLE_FILE_BYTES: usize = 12_000; // ~3K tokens per file
 
         // Rules injection (highest priority — project conventions)
         let rules = self.load_rules();
         if !rules.is_empty() {
             section.push_str("\n## Project Rules\n");
-            section.push_str(&rules);
+            if rules.len() > MAX_RULES_BYTES {
+                // Truncate with notice
+                let safe_end = rules[..MAX_RULES_BYTES]
+                    .rfind('\n')
+                    .unwrap_or(MAX_RULES_BYTES);
+                section.push_str(&rules[..safe_end]);
+                section.push_str(&format!(
+                    "\n\n*({} more bytes of rules truncated — use /rules or read rules/ directory for full content)*\n",
+                    rules.len() - safe_end
+                ));
+            } else {
+                section.push_str(&rules);
+            }
             section.push('\n');
         }
 
@@ -242,13 +305,36 @@ impl WorkflowAssets {
             }
         }
 
-        // Instruction files
+        // Instruction files — with per-file and total budget caps
+        let mut instruction_bytes = 0usize;
         for file in &self.instruction_files {
+            if instruction_bytes >= MAX_INSTRUCTION_BYTES {
+                section.push_str(&format!(
+                    "\n*({} more instruction file(s) skipped — context budget reached)*\n",
+                    self.instruction_files.len()
+                ));
+                break;
+            }
             if let Ok(content) = std::fs::read_to_string(file) {
                 let name = file.file_name().unwrap_or_default().to_string_lossy();
-                section.push_str(&format!("\n## {}\n", name));
-                section.push_str(&content);
-                section.push('\n');
+                if content.len() > MAX_SINGLE_FILE_BYTES {
+                    // Large file — inject truncated with notice
+                    section.push_str(&format!("\n## {} (truncated)\n", name));
+                    let safe_end = content[..MAX_SINGLE_FILE_BYTES]
+                        .rfind('\n')
+                        .unwrap_or(MAX_SINGLE_FILE_BYTES);
+                    section.push_str(&content[..safe_end]);
+                    section.push_str(&format!(
+                        "\n\n*(truncated — {} total bytes, use `read_file` for full content)*\n",
+                        content.len()
+                    ));
+                    instruction_bytes += safe_end;
+                } else {
+                    section.push_str(&format!("\n## {}\n", name));
+                    section.push_str(&content);
+                    section.push('\n');
+                    instruction_bytes += content.len();
+                }
             }
         }
 
@@ -354,8 +440,38 @@ fn md_files_in(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Recursively collect all .md files from a directory and its subdirectories.
+/// Used for rules/ which may have per-language subdirectories (e.g., rules/common/, rules/typescript/).
+fn md_files_recursive(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip hidden directories and README files
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if !name.starts_with('.') {
+                files.extend(md_files_recursive(&path));
+            }
+        } else if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            // Skip README.md files in rules directories
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.to_lowercase() != "readme.md" {
+                files.push(path);
+            }
+        }
+    }
+
+    files.sort();
+    files
+}
+
 fn join_paths(paths: &[PathBuf]) -> String {
-    paths.iter()
+    paths
+        .iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")

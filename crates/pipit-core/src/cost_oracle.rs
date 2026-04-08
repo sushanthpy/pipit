@@ -63,7 +63,11 @@ impl CostEstimate {
         let time_high = format_duration(self.time_high_secs);
         format!(
             "Estimated cost: ${:.2}-{:.2} | Estimated time: {}-{} | Confidence: {:.0}%",
-            self.cost_low, self.cost_high, time_low, time_high, self.confidence * 100.0
+            self.cost_low,
+            self.cost_high,
+            time_low,
+            time_high,
+            self.confidence * 100.0
         )
     }
 }
@@ -107,11 +111,21 @@ impl CostOracle {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = atomic_write(&path, serde_json::to_string(&self.history).unwrap_or_default().as_bytes());
+        let _ = atomic_write(
+            &path,
+            serde_json::to_string(&self.history)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
     }
 
     /// Predict cost for a new task.
-    pub fn predict(&self, prompt_length: usize, file_count: usize, price_per_1k_tokens: f64) -> CostEstimate {
+    pub fn predict(
+        &self,
+        prompt_length: usize,
+        file_count: usize,
+        price_per_1k_tokens: f64,
+    ) -> CostEstimate {
         if self.history.is_empty() {
             // No history — use heuristic
             let estimated_turns = classify_complexity(prompt_length, file_count);
@@ -128,7 +142,9 @@ impl CostOracle {
         }
 
         // Find similar tasks by prompt length bucket
-        let similar: Vec<&TaskRecord> = self.history.iter()
+        let similar: Vec<&TaskRecord> = self
+            .history
+            .iter()
             .filter(|r| {
                 let ratio = r.prompt_length as f64 / prompt_length.max(1) as f64;
                 ratio > 0.3 && ratio < 3.0
@@ -147,8 +163,12 @@ impl CostOracle {
         let mean_cost = costs.iter().sum::<f64>() / costs.len() as f64;
         let mean_time = times.iter().sum::<f64>() / times.len() as f64;
 
-        let std_cost = (costs.iter().map(|c| (c - mean_cost).powi(2)).sum::<f64>() / costs.len() as f64).sqrt();
-        let std_time = (times.iter().map(|t| (t - mean_time).powi(2)).sum::<f64>() / times.len() as f64).sqrt();
+        let std_cost = (costs.iter().map(|c| (c - mean_cost).powi(2)).sum::<f64>()
+            / costs.len() as f64)
+            .sqrt();
+        let std_time = (times.iter().map(|t| (t - mean_time).powi(2)).sum::<f64>()
+            / times.len() as f64)
+            .sqrt();
 
         CostEstimate {
             estimated_turns: mean_turns,
@@ -160,7 +180,12 @@ impl CostOracle {
         }
     }
 
-    fn predict_from_heuristic(&self, prompt_length: usize, file_count: usize, price: f64) -> CostEstimate {
+    fn predict_from_heuristic(
+        &self,
+        prompt_length: usize,
+        file_count: usize,
+        price: f64,
+    ) -> CostEstimate {
         let turns = classify_complexity(prompt_length, file_count);
         let cost_per_turn = 3.0 * price; // ~3K tokens/turn
         CostEstimate {
@@ -176,10 +201,15 @@ impl CostOracle {
 
 /// Classify task complexity by prompt length and file count.
 fn classify_complexity(prompt_length: usize, file_count: usize) -> f64 {
-    let base = if prompt_length < 100 { 2.0 }
-    else if prompt_length < 500 { 4.0 }
-    else if prompt_length < 2000 { 8.0 }
-    else { 15.0 };
+    let base = if prompt_length < 100 {
+        2.0
+    } else if prompt_length < 500 {
+        4.0
+    } else if prompt_length < 2000 {
+        8.0
+    } else {
+        15.0
+    };
 
     let file_factor = 1.0 + (file_count as f64 * 0.5).min(5.0);
     base * file_factor / file_factor.sqrt()
@@ -191,7 +221,9 @@ mod tests {
 
     #[test]
     fn test_empty_oracle_prediction() {
-        let oracle = CostOracle { history: Vec::new() };
+        let oracle = CostOracle {
+            history: Vec::new(),
+        };
         let estimate = oracle.predict(100, 2, 0.003);
         assert!(estimate.cost_low > 0.0);
         assert!(estimate.cost_high > estimate.cost_low);
@@ -202,9 +234,30 @@ mod tests {
     fn test_oracle_with_history() {
         let oracle = CostOracle {
             history: vec![
-                TaskRecord { prompt_length: 100, file_count: 1, turns: 3, cost_usd: 0.05, elapsed_secs: 20.0, task_type: TaskType::SmallEdit },
-                TaskRecord { prompt_length: 120, file_count: 1, turns: 4, cost_usd: 0.08, elapsed_secs: 30.0, task_type: TaskType::SmallEdit },
-                TaskRecord { prompt_length: 80, file_count: 2, turns: 5, cost_usd: 0.12, elapsed_secs: 45.0, task_type: TaskType::BugFix },
+                TaskRecord {
+                    prompt_length: 100,
+                    file_count: 1,
+                    turns: 3,
+                    cost_usd: 0.05,
+                    elapsed_secs: 20.0,
+                    task_type: TaskType::SmallEdit,
+                },
+                TaskRecord {
+                    prompt_length: 120,
+                    file_count: 1,
+                    turns: 4,
+                    cost_usd: 0.08,
+                    elapsed_secs: 30.0,
+                    task_type: TaskType::SmallEdit,
+                },
+                TaskRecord {
+                    prompt_length: 80,
+                    file_count: 2,
+                    turns: 5,
+                    cost_usd: 0.12,
+                    elapsed_secs: 45.0,
+                    task_type: TaskType::BugFix,
+                },
             ],
         };
         let estimate = oracle.predict(110, 1, 0.003);

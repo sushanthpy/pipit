@@ -160,13 +160,8 @@ impl FileHistory {
 
         // Apply reverse diffs in reverse order (last edit first)
         for snapshot in turn.snapshots.iter().rev() {
-            std::fs::write(&snapshot.path, &snapshot.before_content).map_err(|e| {
-                format!(
-                    "Failed to restore {}: {}",
-                    snapshot.path.display(),
-                    e
-                )
-            })?;
+            std::fs::write(&snapshot.path, &snapshot.before_content)
+                .map_err(|e| format!("Failed to restore {}: {}", snapshot.path.display(), e))?;
             restored_files.push(snapshot.path.clone());
         }
 
@@ -186,13 +181,8 @@ impl FileHistory {
         let mut applied_files = Vec::new();
 
         for snapshot in &turn.snapshots {
-            std::fs::write(&snapshot.path, &snapshot.after_content).map_err(|e| {
-                format!(
-                    "Failed to reapply {}: {}",
-                    snapshot.path.display(),
-                    e
-                )
-            })?;
+            std::fs::write(&snapshot.path, &snapshot.after_content)
+                .map_err(|e| format!("Failed to reapply {}: {}", snapshot.path.display(), e))?;
             applied_files.push(snapshot.path.clone());
         }
 
@@ -203,7 +193,11 @@ impl FileHistory {
 
     /// Check if undo is available.
     pub fn can_undo(&self) -> bool {
-        !self.turns.is_empty() || self.current_turn.as_ref().map_or(false, |t| !t.snapshots.is_empty())
+        !self.turns.is_empty()
+            || self
+                .current_turn
+                .as_ref()
+                .map_or(false, |t| !t.snapshots.is_empty())
     }
 
     /// Check if redo is available.

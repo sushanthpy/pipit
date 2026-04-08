@@ -11,7 +11,10 @@
 //! Audio format: 16kHz, 16-bit signed PCM, mono.
 //! Ring buffer: 30 seconds at 32KB/s = 960KB bounded.
 
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::mpsc;
 
 /// Audio capture configuration.
@@ -27,14 +30,22 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 16000, channels: 1, buffer_duration_secs: 30,
-            push_to_talk: true, backend: CaptureBackend::Auto,
+            sample_rate: 16000,
+            channels: 1,
+            buffer_duration_secs: 30,
+            push_to_talk: true,
+            backend: CaptureBackend::Auto,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureBackend { Auto, Native, Sox, Arecord }
+pub enum CaptureBackend {
+    Auto,
+    Native,
+    Sox,
+    Arecord,
+}
 
 /// Audio capture handle — controls recording lifecycle.
 pub struct AudioCapture {
@@ -65,10 +76,15 @@ impl AudioCapture {
 
         let backend = match config.backend {
             CaptureBackend::Auto => {
-                if is_cpal_available() { CaptureBackend::Native }
-                else if is_sox_available() { CaptureBackend::Sox }
-                else if is_arecord_available() { CaptureBackend::Arecord }
-                else { return Err(CaptureError::NoDevice); }
+                if is_cpal_available() {
+                    CaptureBackend::Native
+                } else if is_sox_available() {
+                    CaptureBackend::Sox
+                } else if is_arecord_available() {
+                    CaptureBackend::Arecord
+                } else {
+                    return Err(CaptureError::NoDevice);
+                }
             }
             other => other,
         };
@@ -97,36 +113,59 @@ impl AudioCapture {
         }
 
         tracing::info!(backend = ?backend, "Audio capture started");
-        Ok(Self { config, audio_rx: rx, stop_flag, active_backend: backend })
+        Ok(Self {
+            config,
+            audio_rx: rx,
+            stop_flag,
+            active_backend: backend,
+        })
     }
 
-    pub fn stop(&self) { self.stop_flag.store(true, Ordering::Relaxed); }
-    pub fn is_recording(&self) -> bool { !self.stop_flag.load(Ordering::Relaxed) }
+    pub fn stop(&self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+    }
+    pub fn is_recording(&self) -> bool {
+        !self.stop_flag.load(Ordering::Relaxed)
+    }
 }
 
 impl Drop for AudioCapture {
-    fn drop(&mut self) { self.stop(); }
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 // ─── Backend detection ──────────────────────────────────────────────────
 
 fn is_cpal_available() -> bool {
-    cfg!(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+    cfg!(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))
 }
 
 fn is_sox_available() -> bool {
-    std::process::Command::new("rec").arg("--version").output().is_ok()
+    std::process::Command::new("rec")
+        .arg("--version")
+        .output()
+        .is_ok()
 }
 
 fn is_arecord_available() -> bool {
-    std::process::Command::new("arecord").arg("--version").output().is_ok()
+    std::process::Command::new("arecord")
+        .arg("--version")
+        .output()
+        .is_ok()
 }
 
 // ─── cpal backend ───────────────────────────────────────────────────────
 
 fn start_cpal_capture(
-    sample_rate: u32, channels: u16,
-    tx: mpsc::Sender<Vec<i16>>, stop: Arc<AtomicBool>,
+    sample_rate: u32,
+    channels: u16,
+    tx: mpsc::Sender<Vec<i16>>,
+    stop: Arc<AtomicBool>,
 ) {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -173,7 +212,11 @@ fn start_cpal_capture(
         return;
     }
 
-    tracing::info!("cpal audio capture started ({}Hz, {} ch)", sample_rate, channels);
+    tracing::info!(
+        "cpal audio capture started ({}Hz, {} ch)",
+        sample_rate,
+        channels
+    );
 
     // Keep the stream alive until stop flag is set
     while !stop.load(Ordering::Relaxed) {
@@ -187,29 +230,51 @@ fn start_cpal_capture(
 // ─── SoX backend ────────────────────────────────────────────────────────
 
 async fn start_sox_capture(
-    sample_rate: u32, channels: u16,
-    tx: mpsc::Sender<Vec<i16>>, stop: Arc<AtomicBool>,
+    sample_rate: u32,
+    channels: u16,
+    tx: mpsc::Sender<Vec<i16>>,
+    stop: Arc<AtomicBool>,
 ) {
     let mut child = match tokio::process::Command::new("rec")
-        .args(["-q", "-r", &sample_rate.to_string(), "-c", &channels.to_string(),
-               "-b", "16", "-e", "signed-integer", "-t", "raw", "-"])
+        .args([
+            "-q",
+            "-r",
+            &sample_rate.to_string(),
+            "-c",
+            &channels.to_string(),
+            "-b",
+            "16",
+            "-e",
+            "signed-integer",
+            "-t",
+            "raw",
+            "-",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => { tracing::error!("Failed to start SoX rec: {e}"); return; }
+        Err(e) => {
+            tracing::error!("Failed to start SoX rec: {e}");
+            return;
+        }
     };
 
     let mut stdout = child.stdout.take().unwrap();
     loop {
-        if stop.load(Ordering::Relaxed) { let _ = child.kill().await; break; }
+        if stop.load(Ordering::Relaxed) {
+            let _ = child.kill().await;
+            break;
+        }
         let mut buf = vec![0u8; 3200]; // 100ms at 16kHz 16-bit
         match tokio::io::AsyncReadExt::read(&mut stdout, &mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let samples: Vec<i16> = buf[..n].chunks_exact(2)
-                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect();
+                let samples: Vec<i16> = buf[..n]
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                    .collect();
                 let _ = tx.try_send(samples);
             }
             Err(_) => break,
@@ -220,29 +285,48 @@ async fn start_sox_capture(
 // ─── arecord backend ────────────────────────────────────────────────────
 
 async fn start_arecord_capture(
-    sample_rate: u32, channels: u16,
-    tx: mpsc::Sender<Vec<i16>>, stop: Arc<AtomicBool>,
+    sample_rate: u32,
+    channels: u16,
+    tx: mpsc::Sender<Vec<i16>>,
+    stop: Arc<AtomicBool>,
 ) {
     let mut child = match tokio::process::Command::new("arecord")
-        .args(["-f", "S16_LE", "-r", &sample_rate.to_string(),
-               "-c", &channels.to_string(), "-t", "raw", "-q"])
+        .args([
+            "-f",
+            "S16_LE",
+            "-r",
+            &sample_rate.to_string(),
+            "-c",
+            &channels.to_string(),
+            "-t",
+            "raw",
+            "-q",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => { tracing::error!("Failed to start arecord: {e}"); return; }
+        Err(e) => {
+            tracing::error!("Failed to start arecord: {e}");
+            return;
+        }
     };
 
     let mut stdout = child.stdout.take().unwrap();
     loop {
-        if stop.load(Ordering::Relaxed) { let _ = child.kill().await; break; }
+        if stop.load(Ordering::Relaxed) {
+            let _ = child.kill().await;
+            break;
+        }
         let mut buf = vec![0u8; 3200];
         match tokio::io::AsyncReadExt::read(&mut stdout, &mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let samples: Vec<i16> = buf[..n].chunks_exact(2)
-                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect();
+                let samples: Vec<i16> = buf[..n]
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                    .collect();
                 let _ = tx.try_send(samples);
             }
             Err(_) => break,
@@ -262,21 +346,33 @@ pub struct PushToTalk {
 }
 
 impl PushToTalk {
-    pub fn new(config: CaptureConfig) -> Self { Self { capture: None, config } }
+    pub fn new(config: CaptureConfig) -> Self {
+        Self {
+            capture: None,
+            config,
+        }
+    }
 
     pub async fn start_recording(&mut self) -> Result<(), CaptureError> {
-        if self.capture.is_some() { return Ok(()); }
+        if self.capture.is_some() {
+            return Ok(());
+        }
         self.capture = Some(AudioCapture::start(self.config.clone()).await?);
         Ok(())
     }
 
     pub fn stop_recording(&mut self) {
-        if let Some(ref cap) = self.capture { cap.stop(); }
+        if let Some(ref cap) = self.capture {
+            cap.stop();
+        }
         self.capture = None;
     }
 
     pub fn is_recording(&self) -> bool {
-        self.capture.as_ref().map(|c| c.is_recording()).unwrap_or(false)
+        self.capture
+            .as_ref()
+            .map(|c| c.is_recording())
+            .unwrap_or(false)
     }
 }
 

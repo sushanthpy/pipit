@@ -18,9 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[serde(tag = "type")]
 pub enum DenialSource {
     /// Denied by configuration rule (approval mode insufficient).
-    Config {
-        rule: String,
-    },
+    Config { rule: String },
     /// User explicitly rejected the approval prompt.
     UserReject {
         has_feedback: bool,
@@ -29,24 +27,13 @@ pub enum DenialSource {
     /// User aborted (Ctrl-C during approval prompt).
     UserAbort,
     /// Extension hook returned deny.
-    Hook {
-        hook_name: String,
-    },
+    Hook { hook_name: String },
     /// Governor risk-score threshold exceeded.
-    GovernorRisk {
-        risk_score: f64,
-        threshold: f64,
-    },
+    GovernorRisk { risk_score: f64, threshold: f64 },
     /// PolicyKernel lattice check failed (requested ⊄ granted).
-    LatticeViolation {
-        requested: String,
-        granted: String,
-    },
+    LatticeViolation { requested: String, granted: String },
     /// Resource scope violation (path outside project, blocked command).
-    ScopeViolation {
-        resource: String,
-        reason: String,
-    },
+    ScopeViolation { resource: String, reason: String },
 }
 
 /// A single recorded permission denial.
@@ -80,13 +67,7 @@ impl PermissionLedger {
     }
 
     /// Record a denial. O(1) amortized (Vec push).
-    pub fn record_denial(
-        &self,
-        tool_name: &str,
-        call_id: &str,
-        source: DenialSource,
-        turn: u32,
-    ) {
+    pub fn record_denial(&self, tool_name: &str, call_id: &str, source: DenialSource, turn: u32) {
         let record = PermissionDenialRecord {
             tool_name: tool_name.to_string(),
             call_id: call_id.to_string(),
@@ -110,10 +91,7 @@ impl PermissionLedger {
 
     /// Snapshot without draining (for mid-session telemetry).
     pub fn snapshot(&self) -> Vec<PermissionDenialRecord> {
-        self.records
-            .lock()
-            .map(|r| r.clone())
-            .unwrap_or_default()
+        self.records.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
     /// Count denials by source type.
@@ -136,10 +114,7 @@ impl PermissionLedger {
 
     /// Total number of denials in this session.
     pub fn total(&self) -> usize {
-        self.records
-            .lock()
-            .map(|r| r.len())
-            .unwrap_or(0)
+        self.records.lock().map(|r| r.len()).unwrap_or(0)
     }
 }
 
@@ -163,8 +138,13 @@ pub struct DenialCounts {
 
 impl DenialCounts {
     pub fn total(&self) -> u32 {
-        self.config + self.user_reject + self.user_abort
-            + self.hook + self.governor + self.lattice + self.scope
+        self.config
+            + self.user_reject
+            + self.user_abort
+            + self.hook
+            + self.governor
+            + self.lattice
+            + self.scope
     }
 }
 
@@ -186,19 +166,27 @@ mod tests {
         ledger.record_denial(
             "bash",
             "call-1",
-            DenialSource::Config { rule: "suggest_mode".into() },
+            DenialSource::Config {
+                rule: "suggest_mode".into(),
+            },
             1,
         );
         ledger.record_denial(
             "write_file",
             "call-2",
-            DenialSource::UserReject { has_feedback: true, feedback: Some("too risky".into()) },
+            DenialSource::UserReject {
+                has_feedback: true,
+                feedback: Some("too risky".into()),
+            },
             2,
         );
         ledger.record_denial(
             "bash",
             "call-3",
-            DenialSource::GovernorRisk { risk_score: 0.95, threshold: 0.8 },
+            DenialSource::GovernorRisk {
+                risk_score: 0.95,
+                threshold: 0.8,
+            },
             3,
         );
 

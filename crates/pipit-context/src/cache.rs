@@ -129,9 +129,7 @@ impl CacheBreakpointPlanner {
         // Insert in reverse order to avoid index invalidation
         for &pos in positions.iter().rev() {
             if pos < messages.len() {
-                messages[pos]
-                    .content
-                    .push(ContentBlock::CacheBreakpoint);
+                messages[pos].content.push(ContentBlock::CacheBreakpoint);
             }
         }
     }
@@ -170,11 +168,7 @@ impl CacheBreakpointPlanner {
         self.history.back()
     }
 
-    fn classify_segments(
-        &self,
-        messages: &[Message],
-        preserve_recent: usize,
-    ) -> Vec<CacheSegment> {
+    fn classify_segments(&self, messages: &[Message], preserve_recent: usize) -> Vec<CacheSegment> {
         let mut segments = Vec::new();
         let total = messages.len();
         let recent_boundary = total.saturating_sub(preserve_recent);

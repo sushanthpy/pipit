@@ -97,6 +97,9 @@ curl -fsSL https://raw.githubusercontent.com/sushanthpy/pipit/main/install.sh | 
 # Configure (interactive — asks provider, model, API key, etc.)
 pipit setup
 
+# Scaffold a new project (optional — sets up .pipit/ with framework-specific defaults)
+pipit init --profile react
+
 # Start coding
 pipit
 ```
@@ -206,11 +209,13 @@ pipit
 
 ## Full-screen TUI
 
-Pipit launches a full-screen terminal UI by default with a two-column layout:
+Pipit launches a full-screen terminal UI by default with a tabbed layout:
 
 ```
 ┌─ status ───────────────────────────────────────────────────────────┐
 │ pipit · repo · main · gpt-4o · Full access · 12% $0.0042          │
+├─ tabs ─────────────────────────────────────────────────────────────┤
+│  Coding │ Agents │ Context │ Help                                  │
 ├─ task / phase ─────────────────────────────────────────────────────┤
 │ task: fix the login bug            phase: executing                │
 ├─ timeline ──────────────┬─ response ───────────────────────────────┤
@@ -225,6 +230,15 @@ Pipit launches a full-screen terminal UI by default with a two-column layout:
 │ /help · @file · !shell · Esc cancel · Ctrl-C quit                 │
 └────────────────────────────────────────────────────────────────────┘
 ```
+
+### TUI tabs
+
+| Tab | Shortcut | What it shows |
+|-----|----------|---------------|
+| **Coding** | `Ctrl+1` / `F2` | Timeline + response (default working view) |
+| **Agents** | `Ctrl+2` / `F3` | Built-in agents, subagent status, delegation history |
+| **Context** | `Ctrl+3` / `F4` | Token budget bar (color-coded), turn/mode/model/cost info |
+| **Help** | `Ctrl+4` / `F5` | All keyboard shortcuts, commands, modes, and CLI reference |
 
 - **Status bar** — repo, branch, model, approval mode, token usage, cost
 - **Timeline** (left) — compact log of agent actions (reads, edits, shell commands)
@@ -282,6 +296,11 @@ pipit --classic
 | `/provider` | Switch provider |
 | `/approval` | Change approval mode / permission rules |
 | `/skills` | List discovered skills |
+| **Plugins** | |
+| `/plugins list` | List installed plugins |
+| `/plugins install <name>` | Install from registry or local path |
+| `/plugins uninstall <name>` | Remove a plugin |
+| `/plugins search <query>` | Search the remote plugin registry |
 | **Diagnostics** | |
 | `/doctor` | System diagnostics (git, config, API keys, skills, MCP) |
 | `/bench run <suite>` | Run a benchmark suite |
@@ -351,6 +370,16 @@ pipit --mode custom     # Guarded + role-specific model overrides.
 | `balanced` | No | On mutation | No | Day-to-day editing |
 | `guarded` | Yes | Always | Up to 2 | Critical changes, refactors |
 | `custom` | Yes | Always | Up to 2 | Multi-model setups |
+
+### Mode aliases
+
+Shorthand aliases for common workflows:
+
+| Alias | Resolves to | Use case |
+|-------|-------------|----------|
+| `dev`, `development` | Balanced | Day-to-day coding |
+| `review`, `code-review`, `pr` | Guarded | Code review with full verification |
+| `research`, `explore`, `read` | Fast | Exploration and read-only queries |
 
 ### Custom mode with different models
 
@@ -664,7 +693,7 @@ Connect to external tool servers using the Model Context Protocol. Pipit also im
 /mcp tools            # List available MCP tools
 ```
 
-Configure MCP servers in `.pipit/mcp.json`:
+Configure MCP servers in `.pipit/mcp.json` or `.mcp.json` (Claude Code compatible):
 ```json
 {
   "servers": {
@@ -676,18 +705,74 @@ Configure MCP servers in `.pipit/mcp.json`:
 }
 ```
 
-Install community extensions:
+---
+
+## Plugin marketplace
+
+Install, search, and manage plugins from a remote registry or local paths:
+
 ```sh
-/plugins list
-/plugins install <path>
-/plugins uninstall <name>
+pipit plugin install <name>       # Install from registry or local path
+pipit plugin uninstall <name>     # Remove a plugin
+pipit plugin list                 # List installed plugins
+pipit plugin search <query>       # Search the remote registry
 ```
+
+Plugins are verified with SHA-256 checksums on download. Installed plugins live in `~/.pipit/plugins/` with signed manifests (Ed25519).
 
 ---
 
 ## Multi-channel ingress
 
 The channel abstraction supports inbound work from Telegram, Discord, HTTP API, webhooks, and cron. Pipit doesn't have to stay a terminal product — it can become a chatops bot, a webhook-driven automation layer, a scheduled maintenance agent, or an API-exposed engineering worker.
+
+---
+
+## Project scaffolding
+
+Bootstrap a new project with framework-specific defaults:
+
+```sh
+pipit init --profile react
+```
+
+| Profile | Language | What it sets up |
+|---------|----------|-----------------|
+| `react` | TypeScript | ESLint, Prettier, Jest, component patterns |
+| `node` | JavaScript/TypeScript | Node.js best practices, npm scripts |
+| `python` | Python | Black, mypy, pytest, virtual environments |
+| `rust` | Rust | Clippy, cargo test, module organization |
+| `go` | Go | go vet, golangci-lint, table-driven tests |
+| `typescript` | TypeScript | Strict tsconfig, ESLint, Vitest |
+| `minimal` | Any | Bare `.pipit/` skeleton with no framework rules |
+
+Creates `.pipit/` with `PIPIT.md` instructions, project rules, `config.toml`, and `.gitignore` entries.
+
+---
+
+## Hierarchical project instructions
+
+Pipit walks parent directories from the project root up to `$HOME`, collecting `PIPIT.md` (and `CLAUDE.md` for compatibility) at each level. This supports monorepo setups where org-wide instructions live in a parent directory:
+
+```
+~/company/PIPIT.md              ← org-wide instructions
+~/company/backend/PIPIT.md      ← team-level instructions
+~/company/backend/auth/PIPIT.md ← project-specific instructions
+```
+
+All levels are injected into the system prompt (parent-first, project-local-last). A global `~/.config/pipit/PIPIT.md` is also supported.
+
+---
+
+## Subagent delegation
+
+Pipit can spawn child agent processes for complex tasks that benefit from isolation:
+
+```sh
+/mesh delegate "refactor the auth module"   # Delegates to a child pipit process
+```
+
+Subagents inherit the parent's configuration but run with `--max-turns 15` and a scoped capability set. Results are merged back into the parent session via the lineage DAG.
 
 ---
 
@@ -703,6 +788,8 @@ Commands:
   setup       Interactive setup wizard
   auth        Manage provider authentication
   update      Update pipit to the latest version
+  init        Scaffold a new project with framework defaults
+  plugin      Manage plugins (install, uninstall, list, search)
 
 Options:
   -p, --provider <PROVIDER>    LLM provider
@@ -736,7 +823,7 @@ Options:
 
 ## Architecture
 
-Pipit is a Rust workspace with 31 crates and a hexagonal kernel architecture. All subsystems communicate through typed ports — no global mutable state.
+Pipit is a Rust workspace with 35+ crates and a hexagonal kernel architecture. All subsystems communicate through typed ports — no global mutable state.
 
 ### Kernel & Control Plane
 
@@ -778,6 +865,7 @@ Pipit is a Rust workspace with 31 crates and a hexagonal kernel architecture. Al
 | **MessagingPort** | `integration_ports.rs` | Send/notify/install for Slack, Discord, Telegram. Session-to-thread mapping. |
 | **TeamPort** | `integration_ports.rs` | Team CRUD, RBAC with capability mask intersection, cost budgets, path restrictions. |
 | **Bridge Protocol** | `bridge_protocol.rs` | JWT auth, transport negotiation (WebSocket→SSE→HTTP-poll fallback), bounded replay buffer, session teleportation via ledger snapshot+replay. |
+| **Daemon Auth** | `server.rs` | Hashed bearer tokens (keyed digest) — raw secrets never stored in memory. |
 
 ### Developer Experience
 
@@ -805,6 +893,7 @@ Pipit is a Rust workspace with 31 crates and a hexagonal kernel architecture. Al
 | **Evolution** | `pipit-arch-evolution`, `pipit-evolve`, `pipit-hw-codesign` |
 | **Operations** | `pipit-daemon`, `pipit-bench`, `pipit-perf`, `pipit-env` |
 | **Integration** | `pipit-bridge`, `pipit-voice` |
+| **Security** | `pipit-permissions`, `pipit-memory` (secret scanning) |
 
 ---
 

@@ -1,4 +1,4 @@
- //! Canonical Prompt IR and Cache-Stable Context Graph (Architecture Task 7)
+//! Canonical Prompt IR and Cache-Stable Context Graph (Architecture Task 7)
 //!
 //! Defines a canonical intermediate representation for prompt construction.
 //! Features:
@@ -183,10 +183,8 @@ impl PromptIR {
                     token_count: tokens,
                     dirty: self.is_dirty(id, h),
                 });
-                self.message_data.insert(
-                    id,
-                    summaries.into_iter().cloned().collect(),
-                );
+                self.message_data
+                    .insert(id, summaries.into_iter().cloned().collect());
             }
 
             // Historical (non-summary, non-recent)
@@ -205,10 +203,8 @@ impl PromptIR {
                     token_count: tokens,
                     dirty: self.is_dirty(id, h),
                 });
-                self.message_data.insert(
-                    id,
-                    historical.into_iter().cloned().collect(),
-                );
+                self.message_data
+                    .insert(id, historical.into_iter().cloned().collect());
             }
 
             // Recent
@@ -224,10 +220,8 @@ impl PromptIR {
                     token_count: tokens,
                     dirty: self.is_dirty(id, h),
                 });
-                self.message_data.insert(
-                    id,
-                    recent.into_iter().cloned().collect(),
-                );
+                self.message_data
+                    .insert(id, recent.into_iter().cloned().collect());
             }
         }
 

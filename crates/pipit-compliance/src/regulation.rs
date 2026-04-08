@@ -95,7 +95,9 @@ impl RegulationParser {
             }
 
             // Extract requirements from content
-            if let Some(req) = Self::extract_requirement(trimmed, &current_article, RegulationKind::GDPR) {
+            if let Some(req) =
+                Self::extract_requirement(trimmed, &current_article, RegulationKind::GDPR)
+            {
                 requirements.push(req);
             }
         }
@@ -103,13 +105,23 @@ impl RegulationParser {
         requirements
     }
 
-    fn extract_requirement(text: &str, article: &str, kind: RegulationKind) -> Option<ComplianceRequirement> {
+    fn extract_requirement(
+        text: &str,
+        article: &str,
+        kind: RegulationKind,
+    ) -> Option<ComplianceRequirement> {
         let lower = text.to_lowercase();
 
         // Detect action keywords
-        let action = if lower.contains("erasure") || lower.contains("delet") || lower.contains("right to be forgotten") {
+        let action = if lower.contains("erasure")
+            || lower.contains("delet")
+            || lower.contains("right to be forgotten")
+        {
             ActionKind::DataDeletion
-        } else if lower.contains("portab") || lower.contains("export") || lower.contains("machine-readable") {
+        } else if lower.contains("portab")
+            || lower.contains("export")
+            || lower.contains("machine-readable")
+        {
             ActionKind::DataPortability
         } else if lower.contains("consent") {
             ActionKind::ConsentCollection
@@ -137,7 +149,8 @@ impl RegulationParser {
         // Detect data scope
         let scope = if lower.contains("health") || lower.contains("medical") {
             DataScope::HealthData
-        } else if lower.contains("financial") || lower.contains("payment") || lower.contains("card") {
+        } else if lower.contains("financial") || lower.contains("payment") || lower.contains("card")
+        {
             DataScope::FinancialData
         } else if lower.contains("sensitive") || lower.contains("special categor") {
             DataScope::SensitiveData
@@ -146,21 +159,32 @@ impl RegulationParser {
         };
 
         let severity = match action {
-            ActionKind::DataDeletion | ActionKind::BreachNotification | ActionKind::Encryption => ComplianceSeverity::Critical,
+            ActionKind::DataDeletion | ActionKind::BreachNotification | ActionKind::Encryption => {
+                ComplianceSeverity::Critical
+            }
             ActionKind::ConsentCollection | ActionKind::AccessControl => ComplianceSeverity::High,
             ActionKind::AuditLogging | ActionKind::RetentionPolicy => ComplianceSeverity::Medium,
             _ => ComplianceSeverity::Low,
         };
 
         // Extract cross-references ("as defined in Section X")
-        let cross_refs: Vec<String> = lower.split("section ")
+        let cross_refs: Vec<String> = lower
+            .split("section ")
             .skip(1)
-            .filter_map(|s| s.split(|c: char| !c.is_alphanumeric() && c != '(' && c != ')').next())
+            .filter_map(|s| {
+                s.split(|c: char| !c.is_alphanumeric() && c != '(' && c != ')')
+                    .next()
+            })
             .map(|s| format!("Section {}", s))
             .collect();
 
         Some(ComplianceRequirement {
-            id: format!("{}-{:?}-{}", article.replace(' ', "_"), action, requirements_id()),
+            id: format!(
+                "{}-{:?}-{}",
+                article.replace(' ', "_"),
+                action,
+                requirements_id()
+            ),
             regulation: kind,
             article: article.to_string(),
             section: None,
@@ -182,10 +206,16 @@ impl RegulationParser {
             let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(num) = num_str.parse::<u64>() {
                 if rest.contains("hour") {
-                    return Some(Timeframe { duration_hours: num, description: format!("within {} hours", num) });
+                    return Some(Timeframe {
+                        duration_hours: num,
+                        description: format!("within {} hours", num),
+                    });
                 }
                 if rest.contains("day") {
-                    return Some(Timeframe { duration_hours: num * 24, description: format!("within {} days", num) });
+                    return Some(Timeframe {
+                        duration_hours: num * 24,
+                        description: format!("within {} days", num),
+                    });
                 }
             }
         }
@@ -193,7 +223,10 @@ impl RegulationParser {
         for word in text.split_whitespace() {
             if let Ok(num) = word.parse::<u64>() {
                 if text.contains("day") {
-                    return Some(Timeframe { duration_hours: num * 24, description: format!("{} days", num) });
+                    return Some(Timeframe {
+                        duration_hours: num * 24,
+                        description: format!("{} days", num),
+                    });
                 }
             }
         }
@@ -201,12 +234,23 @@ impl RegulationParser {
     }
 
     /// Compute regulatory delta between old and new requirement sets.
-    pub fn compute_delta(old: &[ComplianceRequirement], new: &[ComplianceRequirement]) -> RegulationDelta {
+    pub fn compute_delta(
+        old: &[ComplianceRequirement],
+        new: &[ComplianceRequirement],
+    ) -> RegulationDelta {
         let old_ids: std::collections::HashSet<&str> = old.iter().map(|r| r.id.as_str()).collect();
         let new_ids: std::collections::HashSet<&str> = new.iter().map(|r| r.id.as_str()).collect();
 
-        let added: Vec<_> = new.iter().filter(|r| !old_ids.contains(r.id.as_str())).cloned().collect();
-        let removed: Vec<_> = old.iter().filter(|r| !new_ids.contains(r.id.as_str())).cloned().collect();
+        let added: Vec<_> = new
+            .iter()
+            .filter(|r| !old_ids.contains(r.id.as_str()))
+            .cloned()
+            .collect();
+        let removed: Vec<_> = old
+            .iter()
+            .filter(|r| !new_ids.contains(r.id.as_str()))
+            .cloned()
+            .collect();
 
         RegulationDelta {
             added_count: added.len(),
@@ -250,7 +294,10 @@ mod tests {
         let text = "Article 33\nThe controller shall notify the supervisory authority of a personal data breach within 72 hours.";
         let reqs = RegulationParser::parse_gdpr_articles(text);
         assert!(!reqs.is_empty());
-        assert!(matches!(reqs[0].action_required, ActionKind::BreachNotification));
+        assert!(matches!(
+            reqs[0].action_required,
+            ActionKind::BreachNotification
+        ));
         assert_eq!(reqs[0].timeframe.as_ref().unwrap().duration_hours, 72);
     }
 
@@ -258,8 +305,12 @@ mod tests {
     fn test_severity_classification() {
         let text = "Article 17\nErasure of personal data is required.\nArticle 30\nRecords of processing activities shall be maintained.";
         let reqs = RegulationParser::parse_gdpr_articles(text);
-        let erasure = reqs.iter().find(|r| matches!(r.action_required, ActionKind::DataDeletion));
-        let audit = reqs.iter().find(|r| matches!(r.action_required, ActionKind::AuditLogging));
+        let erasure = reqs
+            .iter()
+            .find(|r| matches!(r.action_required, ActionKind::DataDeletion));
+        let audit = reqs
+            .iter()
+            .find(|r| matches!(r.action_required, ActionKind::AuditLogging));
         assert!(erasure.is_some());
         assert_eq!(erasure.unwrap().severity, ComplianceSeverity::Critical);
         if let Some(a) = audit {

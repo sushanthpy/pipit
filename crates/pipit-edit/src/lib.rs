@@ -1,13 +1,13 @@
+pub mod apply;
+pub mod history;
 pub mod search_replace;
 pub mod udiff;
 pub mod whole_file;
-pub mod apply;
-pub mod history;
 
+pub use history::EditHistory;
 pub use search_replace::SearchReplaceFormat;
 pub use udiff::UnifiedDiffFormat;
 pub use whole_file::WholeFileFormat;
-pub use history::EditHistory;
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -99,15 +99,9 @@ pub fn select_edit_format(
     preferred: Option<pipit_provider::PreferredFormat>,
 ) -> Box<dyn EditFormat> {
     match preferred {
-        Some(pipit_provider::PreferredFormat::SearchReplace) => {
-            Box::new(SearchReplaceFormat)
-        }
-        Some(pipit_provider::PreferredFormat::UnifiedDiff) => {
-            Box::new(UnifiedDiffFormat)
-        }
-        Some(pipit_provider::PreferredFormat::WholeFile) => {
-            Box::new(WholeFileFormat)
-        }
+        Some(pipit_provider::PreferredFormat::SearchReplace) => Box::new(SearchReplaceFormat),
+        Some(pipit_provider::PreferredFormat::UnifiedDiff) => Box::new(UnifiedDiffFormat),
+        Some(pipit_provider::PreferredFormat::WholeFile) => Box::new(WholeFileFormat),
         None => Box::new(SearchReplaceFormat),
     }
 }

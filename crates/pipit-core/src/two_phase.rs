@@ -92,10 +92,7 @@ pub enum CommitDecision {
     /// All checks pass: commit the changes.
     Commit { confidence: f32, risk: f32 },
     /// Checks failed but repairable: enter repair loop.
-    Repair {
-        findings: Vec<String>,
-        attempt: u32,
-    },
+    Repair { findings: Vec<String>, attempt: u32 },
     /// Unrecoverable failure: rollback.
     Rollback { reason: String },
     /// Cannot determine: ask user.
@@ -308,8 +305,7 @@ impl TransactionController {
         }
 
         // Below threshold but not clearly broken — ask
-        if conf_score < self.policy.confidence_threshold
-            || risk_score > self.policy.risk_threshold
+        if conf_score < self.policy.confidence_threshold || risk_score > self.policy.risk_threshold
         {
             return CommitDecision::Ask {
                 confidence: conf_score,
@@ -347,13 +343,11 @@ impl TransactionController {
         for snapshot in &checkpoint.file_snapshots {
             let path = Path::new(&snapshot.path);
             if snapshot.existed {
-                std::fs::write(path, &snapshot.content).map_err(|e| {
-                    format!("Failed to restore {}: {}", snapshot.path, e)
-                })?;
+                std::fs::write(path, &snapshot.content)
+                    .map_err(|e| format!("Failed to restore {}: {}", snapshot.path, e))?;
             } else if path.exists() {
-                std::fs::remove_file(path).map_err(|e| {
-                    format!("Failed to remove {}: {}", snapshot.path, e)
-                })?;
+                std::fs::remove_file(path)
+                    .map_err(|e| format!("Failed to remove {}: {}", snapshot.path, e))?;
             }
             restored.push(snapshot.path.clone());
         }

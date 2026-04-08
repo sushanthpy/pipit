@@ -165,7 +165,9 @@ async def health():
 
 fn service_requirements(service: &Service) -> String {
     match service.service_type {
-        ServiceType::Gateway | ServiceType::Stateless | ServiceType::Stateful => "fastapi>=0.100\nuvicorn>=0.23\nhttpx>=0.24\n".to_string(),
+        ServiceType::Gateway | ServiceType::Stateless | ServiceType::Stateful => {
+            "fastapi>=0.100\nuvicorn>=0.23\nhttpx>=0.24\n".to_string()
+        }
         ServiceType::Database => "sqlite3\n".to_string(),
         ServiceType::Queue => "asyncio\n".to_string(),
         ServiceType::Cache => "redis>=5.0\n".to_string(),
@@ -190,11 +192,15 @@ fn channel_config(channel: &Channel, from: &str, to: &str) -> String {
         "to": to,
         "type": format!("{:?}", channel.channel_type),
         "reliability": channel.reliability,
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn docker_compose(genome: &ArchGenome, project: &str) -> String {
-    let mut compose = format!("# {} — Auto-generated from architecture genome\nversion: '3.8'\nservices:\n", project);
+    let mut compose = format!(
+        "# {} — Auto-generated from architecture genome\nversion: '3.8'\nservices:\n",
+        project
+    );
 
     for (i, service) in genome.services.iter().enumerate() {
         let port = 8000 + i;
@@ -208,16 +214,23 @@ fn docker_compose(genome: &ArchGenome, project: &str) -> String {
 }
 
 fn readme(genome: &ArchGenome, project: &str) -> String {
-    let mut md = format!("# {}\n\nAuto-generated architecture scaffold.\n\n## Services\n\n", project);
+    let mut md = format!(
+        "# {}\n\nAuto-generated architecture scaffold.\n\n## Services\n\n",
+        project
+    );
     for svc in &genome.services {
-        md.push_str(&format!("- **{}** ({:?}) — ${:.0}/month, {:.0}ms latency\n",
-            svc.name, svc.service_type, svc.cost_estimate, svc.latency_estimate));
+        md.push_str(&format!(
+            "- **{}** ({:?}) — ${:.0}/month, {:.0}ms latency\n",
+            svc.name, svc.service_type, svc.cost_estimate, svc.latency_estimate
+        ));
     }
     md.push_str("\n## Communication\n\n");
     for ch in &genome.channels {
         if ch.from < genome.services.len() && ch.to < genome.services.len() {
-            md.push_str(&format!("- {} → {} ({:?})\n",
-                genome.services[ch.from].name, genome.services[ch.to].name, ch.channel_type));
+            md.push_str(&format!(
+                "- {} → {} ({:?})\n",
+                genome.services[ch.from].name, genome.services[ch.to].name, ch.channel_type
+            ));
         }
     }
     md.push_str("\n## Quick Start\n\n```bash\ndocker-compose up --build\n```\n");
@@ -232,8 +245,17 @@ mod tests {
     fn test_scaffold_from_monolith() {
         let genome = ArchGenome::monolith("my-app");
         let scaffold = generate_scaffold(&genome, "my-project");
-        assert!(scaffold.files.len() >= 4, "Should have service files + compose + readme: {}", scaffold.files.len());
-        assert!(scaffold.files.iter().any(|f| f.path.contains("docker-compose")));
+        assert!(
+            scaffold.files.len() >= 4,
+            "Should have service files + compose + readme: {}",
+            scaffold.files.len()
+        );
+        assert!(
+            scaffold
+                .files
+                .iter()
+                .any(|f| f.path.contains("docker-compose"))
+        );
         assert!(scaffold.files.iter().any(|f| f.path.contains("main.py")));
     }
 
@@ -246,7 +268,11 @@ mod tests {
 
         let scaffold = generate_scaffold(&genome, "microservices");
         assert!(scaffold.total_services >= 3, "Should have 3+ services");
-        let compose = scaffold.files.iter().find(|f| f.path == "docker-compose.yml").unwrap();
+        let compose = scaffold
+            .files
+            .iter()
+            .find(|f| f.path == "docker-compose.yml")
+            .unwrap();
         assert!(compose.content.contains("services:"));
     }
 }

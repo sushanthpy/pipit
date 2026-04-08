@@ -6,7 +6,7 @@
 //! Convergence: Var(f) < ε. Expected generations: O(N·log(1/ε)/pressure).
 //! Fail-fast: abort after 5 stagnant generations (≤250 LLM calls).
 
-use crate::fitness::{FitnessVector, FitnessEvaluator, ParetoFront};
+use crate::fitness::{FitnessEvaluator, FitnessVector, ParetoFront};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -90,16 +90,18 @@ impl EvolutionEngine {
 
     /// Initialize population from seed code variants.
     pub fn initialize(&mut self, variants: Vec<(String, FitnessVector)>) {
-        self.population = variants.into_iter().enumerate().map(|(i, (code, fitness))| {
-            Individual {
+        self.population = variants
+            .into_iter()
+            .enumerate()
+            .map(|(i, (code, fitness))| Individual {
                 id: i,
                 generation: 0,
                 code,
                 fitness,
                 parent_id: None,
                 mutation_type: "seed".into(),
-            }
-        }).collect();
+            })
+            .collect();
     }
 
     /// Tournament selection: randomly sample t individuals, return the best.
@@ -110,7 +112,9 @@ impl EvolutionEngine {
         for _ in 0..t {
             let idx = rng.gen_range(0..self.population.len());
             let candidate = &self.population[idx];
-            if best.is_none() || candidate.fitness.weighted_score() > best.unwrap().fitness.weighted_score() {
+            if best.is_none()
+                || candidate.fitness.weighted_score() > best.unwrap().fitness.weighted_score()
+            {
                 best = Some(candidate);
             }
         }
@@ -136,14 +140,19 @@ impl EvolutionEngine {
         ];
 
         // Find weakest dimension
-        let (weakest_name, weakest_value) = dims.iter()
+        let (weakest_name, weakest_value) = dims
+            .iter()
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap();
 
         let temp = self.current_temperature();
-        let intensity = if temp > 0.7 { "major restructuring" }
-            else if temp > 0.4 { "moderate optimization" }
-            else { "minor refinement" };
+        let intensity = if temp > 0.7 {
+            "major restructuring"
+        } else if temp > 0.4 {
+            "moderate optimization"
+        } else {
+            "minor refinement"
+        };
 
         format!(
             "Rewrite this code focusing on improving {}.\n\
@@ -153,10 +162,15 @@ impl EvolutionEngine {
              Code to improve:\n```\n{}\n```\n\n\
              Provide the improved version. Maintain correctness above all.",
             weakest_name,
-            parent.fitness.correctness, parent.fitness.performance,
-            parent.fitness.complexity, parent.fitness.diff_size, parent.fitness.quality,
-            weakest_name, weakest_value,
-            intensity, temp,
+            parent.fitness.correctness,
+            parent.fitness.performance,
+            parent.fitness.complexity,
+            parent.fitness.diff_size,
+            parent.fitness.quality,
+            weakest_name,
+            weakest_value,
+            intensity,
+            temp,
             parent.code
         )
     }
@@ -180,21 +194,32 @@ impl EvolutionEngine {
         }
 
         // Compute Pareto front
-        let scored: Vec<(usize, FitnessVector)> = self.population.iter()
+        let scored: Vec<(usize, FitnessVector)> = self
+            .population
+            .iter()
             .map(|ind| (ind.id, ind.fitness.clone()))
             .collect();
         let front = FitnessEvaluator::pareto_front(&scored);
 
         // Elitism: preserve the best individual before truncation
-        let elite = self.population.iter()
-            .max_by(|a, b| a.fitness.weighted_score().partial_cmp(&b.fitness.weighted_score())
-                .unwrap_or(std::cmp::Ordering::Equal))
+        let elite = self
+            .population
+            .iter()
+            .max_by(|a, b| {
+                a.fitness
+                    .weighted_score()
+                    .partial_cmp(&b.fitness.weighted_score())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .cloned();
 
         // Select top N by weighted score
-        self.population.sort_by(|a, b|
-            b.fitness.weighted_score().partial_cmp(&a.fitness.weighted_score())
-                .unwrap_or(std::cmp::Ordering::Equal));
+        self.population.sort_by(|a, b| {
+            b.fitness
+                .weighted_score()
+                .partial_cmp(&a.fitness.weighted_score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         self.population.truncate(self.config.population_size);
 
         // Ensure elite survives (replace worst if elite was dropped)
@@ -207,7 +232,11 @@ impl EvolutionEngine {
         }
 
         // Compute statistics
-        let scores: Vec<f64> = self.population.iter().map(|i| i.fitness.weighted_score()).collect();
+        let scores: Vec<f64> = self
+            .population
+            .iter()
+            .map(|i| i.fitness.weighted_score())
+            .collect();
         let mean = scores.iter().sum::<f64>() / scores.len() as f64;
         let variance = scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / scores.len() as f64;
         let best = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -250,9 +279,12 @@ impl EvolutionEngine {
 
     /// Get the best individual from the current population.
     pub fn best_individual(&self) -> Option<&Individual> {
-        self.population.iter().max_by(|a, b|
-            a.fitness.weighted_score().partial_cmp(&b.fitness.weighted_score())
-                .unwrap_or(std::cmp::Ordering::Equal))
+        self.population.iter().max_by(|a, b| {
+            a.fitness
+                .weighted_score()
+                .partial_cmp(&b.fitness.weighted_score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 }
 
@@ -292,15 +324,49 @@ mod tests {
         });
 
         engine.initialize(vec![
-            ("code_a".into(), FitnessVector { correctness: 1.0, performance: 0.5, complexity: 0.7, diff_size: 0.8, quality: 0.7 }),
-            ("code_b".into(), FitnessVector { correctness: 0.8, performance: 0.9, complexity: 0.6, diff_size: 0.7, quality: 0.6 }),
-            ("code_c".into(), FitnessVector { correctness: 0.6, performance: 0.4, complexity: 0.5, diff_size: 0.6, quality: 0.5 }),
+            (
+                "code_a".into(),
+                FitnessVector {
+                    correctness: 1.0,
+                    performance: 0.5,
+                    complexity: 0.7,
+                    diff_size: 0.8,
+                    quality: 0.7,
+                },
+            ),
+            (
+                "code_b".into(),
+                FitnessVector {
+                    correctness: 0.8,
+                    performance: 0.9,
+                    complexity: 0.6,
+                    diff_size: 0.7,
+                    quality: 0.6,
+                },
+            ),
+            (
+                "code_c".into(),
+                FitnessVector {
+                    correctness: 0.6,
+                    performance: 0.4,
+                    complexity: 0.5,
+                    diff_size: 0.6,
+                    quality: 0.5,
+                },
+            ),
         ]);
 
         // Add a better offspring
-        let report = engine.step_generation(vec![
-            ("code_d".into(), FitnessVector { correctness: 1.0, performance: 1.0, complexity: 0.8, diff_size: 0.9, quality: 0.8 }),
-        ]);
+        let report = engine.step_generation(vec![(
+            "code_d".into(),
+            FitnessVector {
+                correctness: 1.0,
+                performance: 1.0,
+                complexity: 0.8,
+                diff_size: 0.9,
+                quality: 0.8,
+            },
+        )]);
 
         assert_eq!(report.generation, 1);
         assert_eq!(report.population_size, 3); // Truncated to pop size
@@ -311,14 +377,26 @@ mod tests {
     fn test_mutation_prompt_targets_weakest() {
         let engine = EvolutionEngine::new(EvolutionConfig::default());
         let individual = Individual {
-            id: 0, generation: 0,
+            id: 0,
+            generation: 0,
             code: "fn slow() { /* O(n²) */ }".into(),
-            fitness: FitnessVector { correctness: 1.0, performance: 0.2, complexity: 0.8, diff_size: 0.9, quality: 0.7 },
-            parent_id: None, mutation_type: "seed".into(),
+            fitness: FitnessVector {
+                correctness: 1.0,
+                performance: 0.2,
+                complexity: 0.8,
+                diff_size: 0.9,
+                quality: 0.7,
+            },
+            parent_id: None,
+            mutation_type: "seed".into(),
         };
 
         let prompt = engine.mutation_prompt(&individual);
-        assert!(prompt.contains("performance"), "Should target weakest dim: {}", &prompt[..200]);
+        assert!(
+            prompt.contains("performance"),
+            "Should target weakest dim: {}",
+            &prompt[..200]
+        );
     }
 
     #[test]
@@ -330,18 +408,49 @@ mod tests {
         });
 
         engine.initialize(vec![
-            ("a".into(), FitnessVector { correctness: 0.8, performance: 0.5, complexity: 0.5, diff_size: 0.5, quality: 0.5 }),
-            ("b".into(), FitnessVector { correctness: 0.7, performance: 0.4, complexity: 0.4, diff_size: 0.4, quality: 0.4 }),
+            (
+                "a".into(),
+                FitnessVector {
+                    correctness: 0.8,
+                    performance: 0.5,
+                    complexity: 0.5,
+                    diff_size: 0.5,
+                    quality: 0.5,
+                },
+            ),
+            (
+                "b".into(),
+                FitnessVector {
+                    correctness: 0.7,
+                    performance: 0.4,
+                    complexity: 0.4,
+                    diff_size: 0.4,
+                    quality: 0.4,
+                },
+            ),
         ]);
 
         // Run enough generations with non-improving offspring to trigger stagnation
         // Gen 1: sets prev_best (from seed). Gen 2-4: no improvement = stagnation_counter 1,2,3
         for _ in 0..5 {
-            engine.step_generation(vec![
-                ("same".into(), FitnessVector { correctness: 0.7, performance: 0.4, complexity: 0.4, diff_size: 0.4, quality: 0.4 }),
-            ]);
-            if engine.should_stop() { break; }
+            engine.step_generation(vec![(
+                "same".into(),
+                FitnessVector {
+                    correctness: 0.7,
+                    performance: 0.4,
+                    complexity: 0.4,
+                    diff_size: 0.4,
+                    quality: 0.4,
+                },
+            )]);
+            if engine.should_stop() {
+                break;
+            }
         }
-        assert!(engine.should_stop(), "Should detect stagnation after flat generations (counter={})", engine.stagnation_counter);
+        assert!(
+            engine.should_stop(),
+            "Should detect stagnation after flat generations (counter={})",
+            engine.stagnation_counter
+        );
     }
 }

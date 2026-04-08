@@ -298,7 +298,12 @@ pub fn default_alert_rules() -> Vec<AlertRule> {
 mod tests {
     use super::*;
 
-    fn make_snapshot(id: &str, state: WorkerState, handled: u64, failed: u64) -> WorkerMetricSnapshot {
+    fn make_snapshot(
+        id: &str,
+        state: WorkerState,
+        handled: u64,
+        failed: u64,
+    ) -> WorkerMetricSnapshot {
         WorkerMetricSnapshot {
             worker_id: id.into(),
             worker_name: id.into(),

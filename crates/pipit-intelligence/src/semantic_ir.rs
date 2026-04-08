@@ -12,25 +12,61 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SemanticIR {
     /// Sort a collection with a comparator
-    Sort { collection: Box<SemanticIR>, comparator: Option<Box<SemanticIR>> },
+    Sort {
+        collection: Box<SemanticIR>,
+        comparator: Option<Box<SemanticIR>>,
+    },
     /// Map: apply function to each element
-    Map { collection: Box<SemanticIR>, function: Box<SemanticIR> },
+    Map {
+        collection: Box<SemanticIR>,
+        function: Box<SemanticIR>,
+    },
     /// Filter: keep elements matching predicate
-    Filter { collection: Box<SemanticIR>, predicate: Box<SemanticIR> },
+    Filter {
+        collection: Box<SemanticIR>,
+        predicate: Box<SemanticIR>,
+    },
     /// Filter + Map combined
-    FilterMap { collection: Box<SemanticIR>, predicate: Box<SemanticIR>, transform: Box<SemanticIR> },
+    FilterMap {
+        collection: Box<SemanticIR>,
+        predicate: Box<SemanticIR>,
+        transform: Box<SemanticIR>,
+    },
     /// Reduce/fold
-    Reduce { collection: Box<SemanticIR>, initial: Box<SemanticIR>, accumulator: Box<SemanticIR> },
+    Reduce {
+        collection: Box<SemanticIR>,
+        initial: Box<SemanticIR>,
+        accumulator: Box<SemanticIR>,
+    },
     /// Retry with backoff policy
-    Retry { action: Box<SemanticIR>, max_attempts: u32, backoff: BackoffKind },
+    Retry {
+        action: Box<SemanticIR>,
+        max_attempts: u32,
+        backoff: BackoffKind,
+    },
     /// Error handling (try/catch, Result, Option)
-    ErrorHandle { action: Box<SemanticIR>, handler: Box<SemanticIR> },
+    ErrorHandle {
+        action: Box<SemanticIR>,
+        handler: Box<SemanticIR>,
+    },
     /// Iteration over a collection
-    ForEach { collection: Box<SemanticIR>, body: Box<SemanticIR> },
+    ForEach {
+        collection: Box<SemanticIR>,
+        body: Box<SemanticIR>,
+    },
     /// Conditional branch
-    Conditional { condition: Box<SemanticIR>, then_branch: Box<SemanticIR>, else_branch: Option<Box<SemanticIR>> },
+    Conditional {
+        condition: Box<SemanticIR>,
+        then_branch: Box<SemanticIR>,
+        else_branch: Option<Box<SemanticIR>>,
+    },
     /// Function definition
-    FunctionDef { name: String, params: Vec<TypedParam>, return_type: IRType, body: Box<SemanticIR> },
+    FunctionDef {
+        name: String,
+        params: Vec<TypedParam>,
+        return_type: IRType,
+        body: Box<SemanticIR>,
+    },
     /// Function call
     FunctionCall { name: String, args: Vec<SemanticIR> },
     /// Variable reference
@@ -38,7 +74,10 @@ pub enum SemanticIR {
     /// Literal value
     Literal { value: String, ir_type: IRType },
     /// Assignment
-    Assign { target: String, value: Box<SemanticIR> },
+    Assign {
+        target: String,
+        value: Box<SemanticIR>,
+    },
     /// Block of statements
     Block { statements: Vec<SemanticIR> },
     /// Raw code (when no IR mapping exists)
@@ -154,19 +193,33 @@ fn join_continuation_lines(code: &str) -> Vec<String> {
 fn detect_python_patterns(code: &str, logical_lines: &[String], patterns: &mut Vec<SemanticIR>) {
     // Scan both raw lines and logical lines
     for t in logical_lines {
-
         // List comprehension: [f(x) for x in collection if pred(x)]
         if t.contains(" for ") && t.contains(" in ") && t.starts_with('[') {
             if t.contains(" if ") {
                 patterns.push(SemanticIR::FilterMap {
-                    collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                    predicate: Box::new(SemanticIR::Raw { language: "python".into(), code: "predicate".into() }),
-                    transform: Box::new(SemanticIR::Raw { language: "python".into(), code: "transform".into() }),
+                    collection: Box::new(SemanticIR::Variable {
+                        name: "collection".into(),
+                        ir_type: IRType::List(Box::new(IRType::Any)),
+                    }),
+                    predicate: Box::new(SemanticIR::Raw {
+                        language: "python".into(),
+                        code: "predicate".into(),
+                    }),
+                    transform: Box::new(SemanticIR::Raw {
+                        language: "python".into(),
+                        code: "transform".into(),
+                    }),
                 });
             } else {
                 patterns.push(SemanticIR::Map {
-                    collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                    function: Box::new(SemanticIR::Raw { language: "python".into(), code: "transform".into() }),
+                    collection: Box::new(SemanticIR::Variable {
+                        name: "collection".into(),
+                        ir_type: IRType::List(Box::new(IRType::Any)),
+                    }),
+                    function: Box::new(SemanticIR::Raw {
+                        language: "python".into(),
+                        code: "transform".into(),
+                    }),
                 });
             }
         }
@@ -174,15 +227,22 @@ fn detect_python_patterns(code: &str, logical_lines: &[String], patterns: &mut V
         // sorted() call
         if t.contains("sorted(") || t.contains(".sort(") {
             patterns.push(SemanticIR::Sort {
-                collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "collection".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
                 comparator: None,
             });
         }
 
         // Retry pattern
-        if t.contains("retry") || (t.contains("for") && t.contains("attempt") && t.contains("try")) {
+        if t.contains("retry") || (t.contains("for") && t.contains("attempt") && t.contains("try"))
+        {
             patterns.push(SemanticIR::Retry {
-                action: Box::new(SemanticIR::Raw { language: "python".into(), code: t.into() }),
+                action: Box::new(SemanticIR::Raw {
+                    language: "python".into(),
+                    code: t.into(),
+                }),
                 max_attempts: 3,
                 backoff: BackoffKind::Exponential,
             });
@@ -192,29 +252,59 @@ fn detect_python_patterns(code: &str, logical_lines: &[String], patterns: &mut V
 
 fn detect_rust_patterns(code: &str, logical_lines: &[String], patterns: &mut Vec<SemanticIR>) {
     for t in logical_lines {
-
         if t.contains(".iter()") && t.contains(".filter(") && t.contains(".map(") {
             patterns.push(SemanticIR::FilterMap {
-                collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                predicate: Box::new(SemanticIR::Raw { language: "rust".into(), code: "predicate".into() }),
-                transform: Box::new(SemanticIR::Raw { language: "rust".into(), code: "transform".into() }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "collection".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
+                predicate: Box::new(SemanticIR::Raw {
+                    language: "rust".into(),
+                    code: "predicate".into(),
+                }),
+                transform: Box::new(SemanticIR::Raw {
+                    language: "rust".into(),
+                    code: "transform".into(),
+                }),
             });
         } else if t.contains(".iter()") && t.contains(".map(") {
             patterns.push(SemanticIR::Map {
-                collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                function: Box::new(SemanticIR::Raw { language: "rust".into(), code: "fn".into() }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "collection".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
+                function: Box::new(SemanticIR::Raw {
+                    language: "rust".into(),
+                    code: "fn".into(),
+                }),
             });
         } else if t.contains(".iter()") && t.contains(".filter(") {
             patterns.push(SemanticIR::Filter {
-                collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                predicate: Box::new(SemanticIR::Raw { language: "rust".into(), code: "pred".into() }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "collection".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
+                predicate: Box::new(SemanticIR::Raw {
+                    language: "rust".into(),
+                    code: "pred".into(),
+                }),
             });
         }
 
         if t.contains(".sort") {
             patterns.push(SemanticIR::Sort {
-                collection: Box::new(SemanticIR::Variable { name: "collection".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                comparator: if t.contains("sort_by") { Some(Box::new(SemanticIR::Raw { language: "rust".into(), code: "cmp".into() })) } else { None },
+                collection: Box::new(SemanticIR::Variable {
+                    name: "collection".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
+                comparator: if t.contains("sort_by") {
+                    Some(Box::new(SemanticIR::Raw {
+                        language: "rust".into(),
+                        code: "cmp".into(),
+                    }))
+                } else {
+                    None
+                },
             });
         }
     }
@@ -222,23 +312,40 @@ fn detect_rust_patterns(code: &str, logical_lines: &[String], patterns: &mut Vec
 
 fn detect_js_patterns(code: &str, logical_lines: &[String], patterns: &mut Vec<SemanticIR>) {
     for t in logical_lines {
-
         if t.contains(".filter(") && t.contains(".map(") {
             patterns.push(SemanticIR::FilterMap {
-                collection: Box::new(SemanticIR::Variable { name: "array".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                predicate: Box::new(SemanticIR::Raw { language: "javascript".into(), code: "pred".into() }),
-                transform: Box::new(SemanticIR::Raw { language: "javascript".into(), code: "fn".into() }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "array".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
+                predicate: Box::new(SemanticIR::Raw {
+                    language: "javascript".into(),
+                    code: "pred".into(),
+                }),
+                transform: Box::new(SemanticIR::Raw {
+                    language: "javascript".into(),
+                    code: "fn".into(),
+                }),
             });
         } else if t.contains(".map(") {
             patterns.push(SemanticIR::Map {
-                collection: Box::new(SemanticIR::Variable { name: "array".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
-                function: Box::new(SemanticIR::Raw { language: "javascript".into(), code: "fn".into() }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "array".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
+                function: Box::new(SemanticIR::Raw {
+                    language: "javascript".into(),
+                    code: "fn".into(),
+                }),
             });
         }
 
         if t.contains(".sort(") {
             patterns.push(SemanticIR::Sort {
-                collection: Box::new(SemanticIR::Variable { name: "array".into(), ir_type: IRType::List(Box::new(IRType::Any)) }),
+                collection: Box::new(SemanticIR::Variable {
+                    name: "array".into(),
+                    ir_type: IRType::List(Box::new(IRType::Any)),
+                }),
                 comparator: None,
             });
         }
@@ -253,8 +360,16 @@ mod tests {
     fn test_python_patterns() {
         let code = "[x*2 for x in items if x > 0]\nsorted(data, key=lambda x: x.name)";
         let patterns = detect_patterns(code, "python");
-        assert!(patterns.iter().any(|p| matches!(p, SemanticIR::FilterMap { .. })));
-        assert!(patterns.iter().any(|p| matches!(p, SemanticIR::Sort { .. })));
+        assert!(
+            patterns
+                .iter()
+                .any(|p| matches!(p, SemanticIR::FilterMap { .. }))
+        );
+        assert!(
+            patterns
+                .iter()
+                .any(|p| matches!(p, SemanticIR::Sort { .. }))
+        );
     }
 
     #[test]
@@ -262,13 +377,21 @@ mod tests {
         let code = "items.iter().filter(|x| x > &0).map(|x| x * 2).collect()";
         let patterns = detect_patterns(code, "rust");
         assert!(!patterns.is_empty());
-        assert!(patterns.iter().any(|p| matches!(p, SemanticIR::FilterMap { .. })));
+        assert!(
+            patterns
+                .iter()
+                .any(|p| matches!(p, SemanticIR::FilterMap { .. }))
+        );
     }
 
     #[test]
     fn test_js_patterns() {
         let code = "items.filter(x => x > 0).map(x => x * 2)";
         let patterns = detect_patterns(code, "javascript");
-        assert!(patterns.iter().any(|p| matches!(p, SemanticIR::FilterMap { .. })));
+        assert!(
+            patterns
+                .iter()
+                .any(|p| matches!(p, SemanticIR::FilterMap { .. }))
+        );
     }
 }

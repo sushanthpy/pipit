@@ -3,8 +3,8 @@
 //! Teams persist across daemon restarts via sled.
 //! Capability mask intersection is enforced in PolicyKernel.
 
-use pipit_core::integration_ports::*;
 use async_trait::async_trait;
+use pipit_core::integration_ports::*;
 
 /// Sled-backed team store.
 pub struct SledTeamStore {
@@ -50,34 +50,48 @@ impl TeamPort for SledTeamStore {
             settings: TeamSettings::default(),
         };
 
-        let json = serde_json::to_vec(&team)
-            .map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.insert(Self::team_key(&id), json)
+        let json = serde_json::to_vec(&team).map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .insert(Self::team_key(&id), json)
             .map_err(|e| TeamError::Storage(e.to_string()))?;
 
         // Add to user's team list
         let mut user_teams = self.user_team_ids(creator);
         user_teams.push(id.clone());
-        let user_json = serde_json::to_vec(&user_teams)
-            .map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.insert(Self::user_key(creator), user_json)
+        let user_json =
+            serde_json::to_vec(&user_teams).map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .insert(Self::user_key(creator), user_json)
             .map_err(|e| TeamError::Storage(e.to_string()))?;
 
-        self.db.flush().map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
         Ok(team)
     }
 
     async fn delete_team(&self, team_id: &str) -> Result<(), TeamError> {
-        self.db.remove(Self::team_key(team_id))
+        self.db
+            .remove(Self::team_key(team_id))
             .map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.flush().map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    async fn add_member(&self, team_id: &str, user_id: &str, role: TeamRole) -> Result<(), TeamError> {
+    async fn add_member(
+        &self,
+        team_id: &str,
+        user_id: &str,
+        role: TeamRole,
+    ) -> Result<(), TeamError> {
         let mut team = self.get_team(team_id).await?;
         if team.members.iter().any(|m| m.user_id == user_id) {
-            return Err(TeamError::AlreadyExists(format!("User {} already in team", user_id)));
+            return Err(TeamError::AlreadyExists(format!(
+                "User {} already in team",
+                user_id
+            )));
         }
         team.members.push(TeamMember {
             user_id: user_id.to_string(),
@@ -88,8 +102,12 @@ impl TeamPort for SledTeamStore {
                 .as_secs(),
         });
         let json = serde_json::to_vec(&team).map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.insert(Self::team_key(team_id), json).map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.flush().map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .insert(Self::team_key(team_id), json)
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -97,12 +115,16 @@ impl TeamPort for SledTeamStore {
         let mut team = self.get_team(team_id).await?;
         team.members.retain(|m| m.user_id != user_id);
         let json = serde_json::to_vec(&team).map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.insert(Self::team_key(team_id), json).map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .insert(Self::team_key(team_id), json)
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
         Ok(())
     }
 
     async fn get_team(&self, team_id: &str) -> Result<Team, TeamError> {
-        let data = self.db.get(Self::team_key(team_id))
+        let data = self
+            .db
+            .get(Self::team_key(team_id))
             .map_err(|e| TeamError::Storage(e.to_string()))?
             .ok_or_else(|| TeamError::NotFound(team_id.to_string()))?;
         serde_json::from_slice(&data).map_err(|e| TeamError::Storage(e.to_string()))
@@ -119,19 +141,28 @@ impl TeamPort for SledTeamStore {
         Ok(teams)
     }
 
-    async fn update_settings(&self, team_id: &str, settings: TeamSettings) -> Result<(), TeamError> {
+    async fn update_settings(
+        &self,
+        team_id: &str,
+        settings: TeamSettings,
+    ) -> Result<(), TeamError> {
         let mut team = self.get_team(team_id).await?;
         team.settings = settings;
         let json = serde_json::to_vec(&team).map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.insert(Self::team_key(team_id), json).map_err(|e| TeamError::Storage(e.to_string()))?;
-        self.db.flush().map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .insert(Self::team_key(team_id), json)
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| TeamError::Storage(e.to_string()))?;
         Ok(())
     }
 }
 
 impl SledTeamStore {
     fn user_team_ids(&self, user_id: &str) -> Vec<String> {
-        self.db.get(Self::user_key(user_id))
+        self.db
+            .get(Self::user_key(user_id))
             .ok()
             .flatten()
             .and_then(|data| serde_json::from_slice::<Vec<String>>(&data).ok())

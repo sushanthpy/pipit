@@ -4,7 +4,7 @@
 //! Checking O(|proof|) — linear. Invalidation via SHA-256 code hash.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -37,7 +37,9 @@ pub struct CertificateStore {
 
 impl CertificateStore {
     pub fn new(project_root: &Path) -> Self {
-        Self { base_dir: project_root.join(".pipit").join("proofs") }
+        Self {
+            base_dir: project_root.join(".pipit").join("proofs"),
+        }
     }
 
     /// Store a proof certificate.
@@ -72,7 +74,12 @@ impl CertificateStore {
         let mut certs = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&self.base_dir) {
             for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         if let Ok(cert) = serde_json::from_str::<ProofCertificate>(&content) {
                             let valid = self.is_valid(&cert, project_root);

@@ -1,23 +1,23 @@
-pub mod discovery;
-pub mod tags;
-pub mod graph;
-pub mod repomap;
-pub mod git_archaeology;
-pub mod dependency_health;
-pub mod semantic_ir;
-pub mod projector;
 pub mod dataflow;
+pub mod dependency_health;
+pub mod discovery;
 pub mod file_watcher;
+pub mod git_archaeology;
+pub mod graph;
+pub mod projector;
+pub mod repomap;
+pub mod semantic_ir;
+pub mod tags;
 
-pub use discovery::discover_files;
-pub use tags::{FileTag, TagKind};
-pub use graph::ReferenceGraph;
-pub use repomap::RepoMap;
-pub use git_archaeology::TemporalKnowledgeGraph;
-pub use dependency_health::{DependencyHealthReport, analyze_dependencies};
-pub use semantic_ir::SemanticIR;
-pub use projector::project;
 pub use dataflow::DataFlowGraph;
+pub use dependency_health::{DependencyHealthReport, analyze_dependencies};
+pub use discovery::discover_files;
+pub use git_archaeology::TemporalKnowledgeGraph;
+pub use graph::ReferenceGraph;
+pub use projector::project;
+pub use repomap::RepoMap;
+pub use semantic_ir::SemanticIR;
+pub use tags::{FileTag, TagKind};
 
 use thiserror::Error;
 

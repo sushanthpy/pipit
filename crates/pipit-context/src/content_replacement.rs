@@ -207,7 +207,10 @@ mod tests {
     #[test]
     fn limited_tools_truncated_over_budget() {
         let mut mgr = ContentReplacementManager::new(100);
-        let long_content = (0..200).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let long_content = (0..200)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = mgr.maybe_replace("call-2", "bash", &long_content, 1);
         assert!(result.is_some());
         assert!(result.unwrap().contains("content replacement"));

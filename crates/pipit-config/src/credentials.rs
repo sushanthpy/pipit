@@ -17,9 +17,7 @@ fn credentials_path() -> Option<PathBuf> {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StoredCredential {
     /// Plain API key (most providers).
-    ApiKey {
-        api_key: String,
-    },
+    ApiKey { api_key: String },
     /// OAuth token obtained via device-code or authorization-code flow.
     OAuthToken {
         access_token: String,
@@ -65,7 +63,8 @@ impl CredentialStore {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to parse credentials at {}: {}. Starting with empty store.",
-                        path.display(), e
+                        path.display(),
+                        e
                     );
                     Self::default()
                 }
@@ -73,7 +72,8 @@ impl CredentialStore {
             Err(e) => {
                 tracing::warn!(
                     "Failed to read credentials at {}: {}. Starting with empty store.",
-                    path.display(), e
+                    path.display(),
+                    e
                 );
                 Self::default()
             }
@@ -91,8 +91,7 @@ impl CredentialStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(&path, &json)?;
 
         // SEC-1: Restrict credential file to owner-only (0600)
@@ -194,11 +193,7 @@ fn resolve_google_adc() -> Option<String> {
         return None;
     }
     let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
+    if token.is_empty() { None } else { Some(token) }
 }
 
 // ---------- OAuth Device Code Flow ----------
@@ -246,9 +241,7 @@ pub struct TokenErrorResponse {
 /// 2. Print instructions for the user
 /// 3. Poll token_url until the user authorizes or timeout
 /// 4. Return the access token + refresh token
-pub async fn oauth_device_flow(
-    config: &OAuthDeviceConfig,
-) -> Result<TokenResponse, String> {
+pub async fn oauth_device_flow(config: &OAuthDeviceConfig) -> Result<TokenResponse, String> {
     let client = reqwest::Client::new();
 
     // Step 1: Request device code
@@ -286,8 +279,7 @@ pub async fn oauth_device_flow(
 
     // Step 3: Poll for token
     let interval = std::time::Duration::from_secs(device.interval.unwrap_or(5));
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(device.expires_in);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(device.expires_in);
 
     loop {
         tokio::time::sleep(interval).await;
@@ -333,7 +325,7 @@ pub async fn oauth_device_flow(
                         "Token error: {} — {}",
                         other,
                         err.error_description.unwrap_or_default()
-                    ))
+                    ));
                 }
             }
         }

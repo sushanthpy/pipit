@@ -3,8 +3,8 @@
 //! Implements ForgePort with: personal access token auth, PR CRUD,
 //! review comments, CI status, rate limiting with token bucket.
 
-use pipit_core::integration_ports::*;
 use async_trait::async_trait;
+use pipit_core::integration_ports::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -22,7 +22,7 @@ pub struct GitHubForgeAdapter {
 struct TokenBucket {
     tokens: std::sync::Mutex<f64>,
     last_refill: std::sync::Mutex<Instant>,
-    rate: f64,         // tokens per second
+    rate: f64, // tokens per second
     max_tokens: f64,
 }
 
@@ -73,12 +73,17 @@ impl GitHubForgeAdapter {
         }
     }
 
-    async fn request(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder, ForgeError> {
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, ForgeError> {
         let wait = self.rate_limiter.acquire();
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }
-        Ok(self.client
+        Ok(self
+            .client
             .request(method, format!("{}{}", self.base_url, path))
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Accept", "application/vnd.github.v3+json"))
@@ -87,7 +92,9 @@ impl GitHubForgeAdapter {
 
 #[async_trait]
 impl ForgePort for GitHubForgeAdapter {
-    fn name(&self) -> &str { "github" }
+    fn name(&self) -> &str {
+        "github"
+    }
 
     async fn create_pull_request(&self, spec: PrSpec) -> Result<PrHandle, ForgeError> {
         let body = serde_json::json!({
@@ -98,23 +105,34 @@ impl ForgePort for GitHubForgeAdapter {
             "draft": spec.draft,
         });
 
-        let resp = self.request(reqwest::Method::POST,
-            &format!("/repos/{}/{}/pulls", self.owner, self.repo)).await?
+        let resp = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/repos/{}/{}/pulls", self.owner, self.repo),
+            )
+            .await?
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| ForgeError::Network(e.to_string()))?;
 
         if resp.status() == 422 {
-            return Err(ForgeError::Api("PR already exists or validation error".into()));
+            return Err(ForgeError::Api(
+                "PR already exists or validation error".into(),
+            ));
         }
         if resp.status() == 401 {
             return Err(ForgeError::Auth("Invalid GitHub token".into()));
         }
         if resp.status() == 403 {
-            return Err(ForgeError::RateLimited { retry_after_secs: 60 });
+            return Err(ForgeError::RateLimited {
+                retry_after_secs: 60,
+            });
         }
 
-        let json: serde_json::Value = resp.json().await
+        let json: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| ForgeError::Api(e.to_string()))?;
 
         Ok(PrHandle {
@@ -126,25 +144,42 @@ impl ForgePort for GitHubForgeAdapter {
     }
 
     async fn list_review_comments(&self, pr: &PrHandle) -> Result<Vec<ReviewComment>, ForgeError> {
-        let resp = self.request(reqwest::Method::GET,
-            &format!("/repos/{}/{}/pulls/{}/comments", self.owner, self.repo, pr.number)).await?
-            .send().await
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!(
+                    "/repos/{}/{}/pulls/{}/comments",
+                    self.owner, self.repo, pr.number
+                ),
+            )
+            .await?
+            .send()
+            .await
             .map_err(|e| ForgeError::Network(e.to_string()))?;
 
-        let json: Vec<serde_json::Value> = resp.json().await
+        let json: Vec<serde_json::Value> = resp
+            .json()
+            .await
             .map_err(|e| ForgeError::Api(e.to_string()))?;
 
-        Ok(json.iter().map(|c| ReviewComment {
-            id: c["id"].as_u64().unwrap_or(0),
-            body: c["body"].as_str().unwrap_or("").to_string(),
-            path: c["path"].as_str().unwrap_or("").to_string(),
-            line: c["line"].as_u64().map(|l| l as u32),
-            author: c["user"]["login"].as_str().unwrap_or("").to_string(),
-            created_at: c["created_at"].as_str().unwrap_or("").to_string(),
-        }).collect())
+        Ok(json
+            .iter()
+            .map(|c| ReviewComment {
+                id: c["id"].as_u64().unwrap_or(0),
+                body: c["body"].as_str().unwrap_or("").to_string(),
+                path: c["path"].as_str().unwrap_or("").to_string(),
+                line: c["line"].as_u64().map(|l| l as u32),
+                author: c["user"]["login"].as_str().unwrap_or("").to_string(),
+                created_at: c["created_at"].as_str().unwrap_or("").to_string(),
+            })
+            .collect())
     }
 
-    async fn post_review_comment(&self, pr: &PrHandle, comment: ReviewCommentSpec) -> Result<(), ForgeError> {
+    async fn post_review_comment(
+        &self,
+        pr: &PrHandle,
+        comment: ReviewCommentSpec,
+    ) -> Result<(), ForgeError> {
         let mut body = serde_json::json!({
             "body": comment.body,
             "path": comment.path,
@@ -154,24 +189,42 @@ impl ForgePort for GitHubForgeAdapter {
             body["line"] = serde_json::json!(line);
         }
 
-        self.request(reqwest::Method::POST,
-            &format!("/repos/{}/{}/pulls/{}/comments", self.owner, self.repo, pr.number)).await?
-            .json(&body)
-            .send().await
-            .map_err(|e| ForgeError::Network(e.to_string()))?;
+        self.request(
+            reqwest::Method::POST,
+            &format!(
+                "/repos/{}/{}/pulls/{}/comments",
+                self.owner, self.repo, pr.number
+            ),
+        )
+        .await?
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ForgeError::Network(e.to_string()))?;
         Ok(())
     }
 
     async fn ci_status(&self, commit_sha: &str) -> Result<CiStatus, ForgeError> {
-        let resp = self.request(reqwest::Method::GET,
-            &format!("/repos/{}/{}/commits/{}/check-runs", self.owner, self.repo, commit_sha)).await?
-            .send().await
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!(
+                    "/repos/{}/{}/commits/{}/check-runs",
+                    self.owner, self.repo, commit_sha
+                ),
+            )
+            .await?
+            .send()
+            .await
             .map_err(|e| ForgeError::Network(e.to_string()))?;
 
-        let json: serde_json::Value = resp.json().await
+        let json: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| ForgeError::Api(e.to_string()))?;
 
-        let checks: Vec<CiCheck> = json["check_runs"].as_array()
+        let checks: Vec<CiCheck> = json["check_runs"]
+            .as_array()
             .unwrap_or(&vec![])
             .iter()
             .map(|c| CiCheck {
@@ -207,13 +260,20 @@ impl ForgePort for GitHubForgeAdapter {
             "assignees": spec.assignees,
         });
 
-        let resp = self.request(reqwest::Method::POST,
-            &format!("/repos/{}/{}/issues", self.owner, self.repo)).await?
+        let resp = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/repos/{}/{}/issues", self.owner, self.repo),
+            )
+            .await?
             .json(&body)
-            .send().await
+            .send()
+            .await
             .map_err(|e| ForgeError::Network(e.to_string()))?;
 
-        let json: serde_json::Value = resp.json().await
+        let json: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| ForgeError::Api(e.to_string()))?;
 
         Ok(IssueHandle {
@@ -225,15 +285,22 @@ impl ForgePort for GitHubForgeAdapter {
     async fn install_app(&self, _org: &str) -> Result<InstallationToken, ForgeError> {
         // GitHub App OAuth device flow (RFC 8628)
         // In production, this would POST to /login/device/code and poll
-        Err(ForgeError::Api("GitHub App installation requires interactive OAuth flow".into()))
+        Err(ForgeError::Api(
+            "GitHub App installation requires interactive OAuth flow".into(),
+        ))
     }
 
     async fn rate_limit_status(&self) -> Result<RateLimitInfo, ForgeError> {
-        let resp = self.request(reqwest::Method::GET, "/rate_limit").await?
-            .send().await
+        let resp = self
+            .request(reqwest::Method::GET, "/rate_limit")
+            .await?
+            .send()
+            .await
             .map_err(|e| ForgeError::Network(e.to_string()))?;
 
-        let json: serde_json::Value = resp.json().await
+        let json: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| ForgeError::Api(e.to_string()))?;
 
         Ok(RateLimitInfo {

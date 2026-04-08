@@ -151,15 +151,10 @@ impl TranscriptionProvider for WhisperProvider {
             .map_err(|e| TranscriptionError::Other(e.to_string()))?;
 
         Ok(TranscriptionResult {
-            text: result["text"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            text: result["text"].as_str().unwrap_or("").to_string(),
             confidence: None,
             duration_secs: result["duration"].as_f64(),
-            language: result["language"]
-                .as_str()
-                .map(String::from),
+            language: result["language"].as_str().map(String::from),
         })
     }
 }

@@ -8,7 +8,9 @@
 //! required(tool, args) ⊆ C_task. Membership is O(1) via bitset meet
 //! plus O(k) predicate checks for path/domain constraints.
 
-use crate::capability::{Capability, CapabilitySet, ExecutionLineage, PolicyDecision, ResourceScope};
+use crate::capability::{
+    Capability, CapabilitySet, ExecutionLineage, PolicyDecision, ResourceScope,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -166,7 +168,11 @@ impl ScopedCapabilityBundle {
             constraints
                 .allowed_paths
                 .into_iter()
-                .filter(|p| self.allowed_paths.iter().any(|parent| p.starts_with(parent)))
+                .filter(|p| {
+                    self.allowed_paths
+                        .iter()
+                        .any(|parent| p.starts_with(parent))
+                })
                 .collect()
         };
 
@@ -212,7 +218,10 @@ impl ScopedCapabilityBundle {
             budget: child_budget,
             mutability: child_mutability,
             issued_at: now_ms(),
-            expires_at: constraints.duration_ms.map(|d| now_ms() + d).unwrap_or(self.expires_at),
+            expires_at: constraints
+                .duration_ms
+                .map(|d| now_ms() + d)
+                .unwrap_or(self.expires_at),
             max_depth: self.max_depth,
             current_depth: self.current_depth + 1,
         })
@@ -259,9 +268,7 @@ impl ScopedCapabilityBundle {
         }
 
         // 4. Tool allowlist check
-        if !self.allowed_tools.is_empty()
-            && !self.allowed_tools.iter().any(|t| t == tool_name)
-        {
+        if !self.allowed_tools.is_empty() && !self.allowed_tools.iter().any(|t| t == tool_name) {
             return PolicyDecision::Deny {
                 reason: format!(
                     "tool '{}' not in allowed tools: {:?}",

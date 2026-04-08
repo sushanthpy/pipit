@@ -5,7 +5,7 @@
 use crate::protocol::{BridgeCommand, BridgeEvent, BridgeMessage, BridgePayload, MessageId};
 use crate::transport::{LamportClock, Transport, TransportError};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 /// Session configuration.
 #[derive(Debug, Clone)]
@@ -122,9 +122,7 @@ impl BridgeSession {
                                         let mut c = session.clock.lock().await;
                                         c.next()
                                     },
-                                    payload: BridgePayload::Ack {
-                                        ack_id: message.id,
-                                    },
+                                    payload: BridgePayload::Ack { ack_id: message.id },
                                 };
                                 let _ = session.transport.send(ack).await;
                             }

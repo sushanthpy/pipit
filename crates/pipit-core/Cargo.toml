@@ -21,18 +21,25 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 pipit-agent-mesh = { path = "../pipit-agent-mesh" }
-pipit-memory = { path = "../pipit-memory" }
-pipit-verify = { path = "../pipit-verify" }
-pipit-perf = { path = "../pipit-perf" }
-pipit-env = { path = "../pipit-env" }
-pipit-spec = { path = "../pipit-spec" }
-pipit-compliance = { path = "../pipit-compliance" }
-pipit-evolve = { path = "../pipit-evolve" }
-pipit-arch-evolution = { path = "../pipit-arch-evolution" }
-pipit-hw-codesign = { path = "../pipit-hw-codesign" }
-pipit-agents = { path = "../pipit-agents" }
-pipit-bridge = { path = "../pipit-bridge" }
-pipit-permissions = { path = "../pipit-permissions" }
+pipit-memory = { path = "../pipit-memory", optional = true }
+pipit-verify = { path = "../pipit-verify", optional = true }
+pipit-perf = { path = "../pipit-perf", optional = true }
+pipit-env = { path = "../pipit-env", optional = true }
+pipit-spec = { path = "../pipit-spec", optional = true }
+pipit-compliance = { path = "../pipit-compliance", optional = true }
+pipit-evolve = { path = "../pipit-evolve", optional = true }
+pipit-arch-evolution = { path = "../pipit-arch-evolution", optional = true }
+pipit-hw-codesign = { path = "../pipit-hw-codesign", optional = true }
+pipit-agents = { path = "../pipit-agents", optional = true }
+pipit-bridge = { path = "../pipit-bridge", optional = true }
+pipit-permissions = { path = "../pipit-permissions", optional = true }
+
+[features]
+default = []
+full = ["pipit-memory", "pipit-verify", "pipit-perf", "pipit-env", "pipit-spec",
+        "pipit-compliance", "pipit-evolve", "pipit-arch-evolution",
+        "pipit-hw-codesign", "pipit-agents", "pipit-bridge", "pipit-permissions"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+proptest = { workspace = true }

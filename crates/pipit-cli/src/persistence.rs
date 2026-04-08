@@ -142,7 +142,10 @@ pub fn persist_planning_snapshot(
 }
 
 pub fn load_planning_snapshot(project_root: &Path) -> Result<Option<LoadedPlanningState>> {
-    let file_path = project_root.join(".pipit").join("plans").join("latest.json");
+    let file_path = project_root
+        .join(".pipit")
+        .join("plans")
+        .join("latest.json");
     if !file_path.exists() {
         return Ok(None);
     }
@@ -169,8 +172,7 @@ pub fn print_proof_summary(proof: &ProofPacket) {
     eprintln!("  Objective: {}", proof.objective.statement);
     eprintln!(
         "  Selected plan: {:?} ({})",
-        proof.selected_plan.strategy,
-        proof.selected_plan.rationale
+        proof.selected_plan.strategy, proof.selected_plan.rationale
     );
     if !proof.candidate_plans.is_empty() {
         eprintln!("  Top candidate plans:");
@@ -198,10 +200,7 @@ pub fn print_proof_summary(proof: &ProofPacket) {
         for pivot in &proof.plan_pivots {
             eprintln!(
                 "    - turn {}: {:?} -> {:?} ({})",
-                pivot.turn_number,
-                pivot.from.strategy,
-                pivot.to.strategy,
-                pivot.trigger
+                pivot.turn_number, pivot.from.strategy, pivot.to.strategy, pivot.trigger
             );
         }
     }
@@ -235,7 +234,8 @@ pub fn print_plans(loaded: Option<LoadedPlanningState>) {
         state,
         source,
         proof_summary,
-    }) = loaded else {
+    }) = loaded
+    else {
         eprintln!("\x1b[2mNo planning state yet. Run a task first.\x1b[0m");
         return;
     };
@@ -249,8 +249,7 @@ pub fn print_plans(loaded: Option<LoadedPlanningState>) {
     if let Some(summary) = proof_summary {
         eprintln!(
             "  latest proof: confidence {:.2} | risk {:.4}",
-            summary.confidence,
-            summary.risk_score
+            summary.confidence, summary.risk_score
         );
         eprintln!("  objective: {}", summary.objective);
         if let Some(path) = summary.proof_file {
@@ -259,7 +258,11 @@ pub fn print_plans(loaded: Option<LoadedPlanningState>) {
     }
     for (index, plan) in state.candidate_plans.iter().enumerate() {
         let score = plan.expected_value - plan.estimated_cost;
-        let marker = if plan == &state.selected_plan { "*" } else { " " };
+        let marker = if plan == &state.selected_plan {
+            "*"
+        } else {
+            " "
+        };
         eprintln!(
             "{} {}. {:?} | score {:.2} | expected {:.2} | cost {:.2}",
             marker,
@@ -277,10 +280,7 @@ pub fn print_plans(loaded: Option<LoadedPlanningState>) {
         for pivot in &state.plan_pivots {
             eprintln!(
                 "  turn {}: {:?} -> {:?} | {}",
-                pivot.turn_number,
-                pivot.from.strategy,
-                pivot.to.strategy,
-                pivot.trigger
+                pivot.turn_number, pivot.from.strategy, pivot.to.strategy, pivot.trigger
             );
         }
     }

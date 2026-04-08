@@ -6,7 +6,7 @@
 //! - Retention policy per data persistence
 
 use crate::regulation::{ActionKind, ComplianceRequirement, ComplianceSeverity};
-use crate::taint::{TaintAnalysis, SinkKind};
+use crate::taint::{SinkKind, TaintAnalysis};
 use serde::{Deserialize, Serialize};
 
 /// A planned compliance code change.
@@ -85,7 +85,11 @@ pub fn generate_compliance_code(
             }
             ActionKind::RetentionPolicy => {
                 for sink in taint.storage_sinks() {
-                    let ttl = req.timeframe.as_ref().map(|t| t.duration_hours).unwrap_or(8760); // Default 1 year
+                    let ttl = req
+                        .timeframe
+                        .as_ref()
+                        .map(|t| t.duration_hours)
+                        .unwrap_or(8760); // Default 1 year
                     changes.push(CodeChange {
                         file: sink.file.clone(),
                         change_type: ChangeType::AddRetentionPolicy,
@@ -158,22 +162,33 @@ mod tests {
     #[test]
     fn test_generate_deletion_handlers() {
         let requirements = vec![ComplianceRequirement {
-            id: "gdpr-17".into(), regulation: RegulationKind::GDPR,
-            article: "Article 17".into(), section: None,
+            id: "gdpr-17".into(),
+            regulation: RegulationKind::GDPR,
+            article: "Article 17".into(),
+            section: None,
             title: "Right to erasure".into(),
             description: "Data subject right to deletion".into(),
             data_scope: DataScope::PersonalData,
             action_required: ActionKind::DataDeletion,
-            conditions: vec![], timeframe: Some(Timeframe { duration_hours: 720, description: "30 days".into() }),
-            cross_references: vec![], severity: ComplianceSeverity::Critical,
+            conditions: vec![],
+            timeframe: Some(Timeframe {
+                duration_hours: 720,
+                description: "30 days".into(),
+            }),
+            cross_references: vec![],
+            severity: ComplianceSeverity::Critical,
         }];
 
-        let code = "data = request.json\ndb.insert({'email': data['email']})\ncache.set('user', data)";
+        let code =
+            "data = request.json\ndb.insert({'email': data['email']})\ncache.set('user', data)";
         let taint = TaintAnalysis::analyze("app.py", code);
         let plans = generate_compliance_code(&requirements, &taint);
 
         assert!(!plans.is_empty(), "Should generate deletion handlers");
         let total_changes: usize = plans.iter().map(|p| p.changes.len()).sum();
-        assert!(total_changes >= 1, "Should have at least 1 deletion handler");
+        assert!(
+            total_changes >= 1,
+            "Should have at least 1 deletion handler"
+        );
     }
 }

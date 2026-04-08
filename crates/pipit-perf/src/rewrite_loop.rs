@@ -85,7 +85,9 @@ impl RewriteLoop {
         }
 
         // Combine and rank
-        let mut combined: Vec<(f64, bool)> = before.iter().map(|&v| (v, true))
+        let mut combined: Vec<(f64, bool)> = before
+            .iter()
+            .map(|&v| (v, true))
             .chain(after.iter().map(|&v| (v, false)))
             .collect();
         combined.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -122,15 +124,14 @@ impl RewriteLoop {
     }
 
     /// Evaluate a rewrite: did it improve performance significantly?
-    pub fn evaluate_rewrite(
-        before: &[f64],
-        after: &[f64],
-    ) -> RewriteResult {
+    pub fn evaluate_rewrite(before: &[f64], after: &[f64]) -> RewriteResult {
         if before.is_empty() || after.is_empty() {
             return RewriteResult {
                 hypothesis_description: String::new(),
-                applied: false, tests_passed: false,
-                speedup: None, statistically_significant: false,
+                applied: false,
+                tests_passed: false,
+                speedup: None,
+                statistically_significant: false,
                 p_value: None,
                 before_times_ms: before.to_vec(),
                 after_times_ms: after.to_vec(),
@@ -141,7 +142,11 @@ impl RewriteLoop {
 
         let before_mean: f64 = before.iter().sum::<f64>() / before.len() as f64;
         let after_mean: f64 = after.iter().sum::<f64>() / after.len() as f64;
-        let speedup = if after_mean > 0.0 { before_mean / after_mean } else { 1.0 };
+        let speedup = if after_mean > 0.0 {
+            before_mean / after_mean
+        } else {
+            1.0
+        };
 
         let (_, p_value, significant) = Self::mann_whitney_u(before, after);
 
@@ -156,7 +161,8 @@ impl RewriteLoop {
 
         RewriteResult {
             hypothesis_description: String::new(),
-            applied: true, tests_passed: true,
+            applied: true,
+            tests_passed: true,
             speedup: Some(speedup),
             statistically_significant: significant,
             p_value: Some(p_value),
@@ -173,8 +179,13 @@ fn normal_cdf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.2316419 * x.abs());
     let d = 0.3989422804014327; // 1/√(2π)
     let p = d * (-x * x / 2.0).exp();
-    let mut cdf = p * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-    if x > 0.0 { cdf = 1.0 - cdf; }
+    let mut cdf = p
+        * t
+        * (0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    if x > 0.0 {
+        cdf = 1.0 - cdf;
+    }
     cdf
 }
 
@@ -184,15 +195,23 @@ mod tests {
 
     #[test]
     fn test_mann_whitney_identical_samples() {
-        let a = vec![100.0, 101.0, 99.0, 100.5, 100.2, 99.8, 100.1, 100.3, 99.9, 100.0];
+        let a = vec![
+            100.0, 101.0, 99.0, 100.5, 100.2, 99.8, 100.1, 100.3, 99.9, 100.0,
+        ];
         let b = a.clone();
         let (_, p, significant) = RewriteLoop::mann_whitney_u(&a, &b);
-        assert!(!significant, "Identical samples should not be significant (p={})", p);
+        assert!(
+            !significant,
+            "Identical samples should not be significant (p={})",
+            p
+        );
     }
 
     #[test]
     fn test_mann_whitney_clearly_different() {
-        let before = vec![100.0, 102.0, 98.0, 101.0, 99.0, 103.0, 97.0, 100.5, 101.5, 99.5];
+        let before = vec![
+            100.0, 102.0, 98.0, 101.0, 99.0, 103.0, 97.0, 100.5, 101.5, 99.5,
+        ];
         let after = vec![50.0, 52.0, 48.0, 51.0, 49.0, 53.0, 47.0, 50.5, 51.5, 49.5];
         let (_, p, significant) = RewriteLoop::mann_whitney_u(&before, &after);
         assert!(significant, "50% speedup should be significant (p={})", p);

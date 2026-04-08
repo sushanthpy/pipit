@@ -111,13 +111,15 @@ pub fn extract_knowledge_units(
 
         if role == "assistant" {
             // Check if this assistant message contains tool calls followed by a summary
-            let content = msg.get("content")
+            let content = msg
+                .get("content")
                 .and_then(|c| {
                     if let Some(s) = c.as_str() {
                         Some(s.to_string())
                     } else if let Some(arr) = c.as_array() {
                         // Content blocks — extract text
-                        let texts: Vec<&str> = arr.iter()
+                        let texts: Vec<&str> = arr
+                            .iter()
                             .filter_map(|block| {
                                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                     block.get("text").and_then(|t| t.as_str())
@@ -126,7 +128,11 @@ pub fn extract_knowledge_units(
                                 }
                             })
                             .collect();
-                        if texts.is_empty() { None } else { Some(texts.join("\n")) }
+                        if texts.is_empty() {
+                            None
+                        } else {
+                            Some(texts.join("\n"))
+                        }
                     } else {
                         None
                     }
@@ -164,11 +170,25 @@ pub fn extract_knowledge_units(
 fn contains_knowledge_signal(text: &str) -> bool {
     let lower = text.to_lowercase();
     let signals = [
-        "fixed", "solved", "the issue was", "the bug was", "root cause",
-        "the solution", "i found", "the problem", "this works because",
-        "the fix is", "resolved by", "approach:", "technique:",
-        "pattern:", "best practice", "lesson learned",
-        "key insight", "important to note", "the trick is",
+        "fixed",
+        "solved",
+        "the issue was",
+        "the bug was",
+        "root cause",
+        "the solution",
+        "i found",
+        "the problem",
+        "this works because",
+        "the fix is",
+        "resolved by",
+        "approach:",
+        "technique:",
+        "pattern:",
+        "best practice",
+        "lesson learned",
+        "key insight",
+        "important to note",
+        "the trick is",
     ];
     signals.iter().any(|s| lower.contains(s))
 }
@@ -182,15 +202,27 @@ fn extract_concept(text: &str) -> String {
             return trimmed.to_string();
         }
     }
-    text.chars().take(150).collect::<String>().trim().to_string()
+    text.chars()
+        .take(150)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Extract the approach/method from the text.
 fn extract_approach(text: &str) -> String {
     let lower = text.to_lowercase();
     // Look for "fixed by", "solved by", "the fix is", etc.
-    for marker in &["fixed by ", "solved by ", "the fix is ", "the solution is ",
-                     "resolved by ", "approach: ", "i changed ", "updated "] {
+    for marker in &[
+        "fixed by ",
+        "solved by ",
+        "the fix is ",
+        "the solution is ",
+        "resolved by ",
+        "approach: ",
+        "i changed ",
+        "updated ",
+    ] {
         if let Some(pos) = lower.find(marker) {
             let start = pos + marker.len();
             let snippet: String = text[start..].chars().take(200).collect();
@@ -209,8 +241,15 @@ fn extract_approach(text: &str) -> String {
 /// Extract the outcome from the text.
 fn extract_outcome(text: &str) -> String {
     let lower = text.to_lowercase();
-    for marker in &["all tests pass", "tests pass", "verified", "confirmed",
-                     "works correctly", "issue resolved", "bug fixed"] {
+    for marker in &[
+        "all tests pass",
+        "tests pass",
+        "verified",
+        "confirmed",
+        "works correctly",
+        "issue resolved",
+        "bug fixed",
+    ] {
         if lower.contains(marker) {
             return marker.to_string();
         }
@@ -231,35 +270,63 @@ mod tests {
         // Low similarity, recent → low score
         let score3 = score_knowledge_unit(0.2, 10.0);
 
-        assert!(score1 > score2, "Recent should beat old: {} vs {}", score1, score2);
-        assert!(score1 > score3, "High sim should beat low: {} vs {}", score1, score3);
-        assert!(score2 > score3, "Old+high-sim should beat recent+low-sim: {} vs {}", score2, score3);
+        assert!(
+            score1 > score2,
+            "Recent should beat old: {} vs {}",
+            score1,
+            score2
+        );
+        assert!(
+            score1 > score3,
+            "High sim should beat low: {} vs {}",
+            score1,
+            score3
+        );
+        assert!(
+            score2 > score3,
+            "Old+high-sim should beat recent+low-sim: {} vs {}",
+            score2,
+            score3
+        );
     }
 
     #[test]
     fn test_budget_selection() {
         let candidates = vec![
-            (InjectedKnowledge {
-                concept: "Retry pattern".into(),
-                approach: "Exponential backoff".into(),
-                outcome: "Fixed timeout issues".into(),
-                source_project: "api-server".into(),
-                relevance_score: 0.9,
-                estimated_tokens: 50,
-            }, 0.85),
-            (InjectedKnowledge {
-                concept: "Cache invalidation".into(),
-                approach: "TTL with write-through".into(),
-                outcome: "Reduced latency 10x".into(),
-                source_project: "data-layer".into(),
-                relevance_score: 0.7,
-                estimated_tokens: 60,
-            }, 0.65),
+            (
+                InjectedKnowledge {
+                    concept: "Retry pattern".into(),
+                    approach: "Exponential backoff".into(),
+                    outcome: "Fixed timeout issues".into(),
+                    source_project: "api-server".into(),
+                    relevance_score: 0.9,
+                    estimated_tokens: 50,
+                },
+                0.85,
+            ),
+            (
+                InjectedKnowledge {
+                    concept: "Cache invalidation".into(),
+                    approach: "TTL with write-through".into(),
+                    outcome: "Reduced latency 10x".into(),
+                    source_project: "data-layer".into(),
+                    relevance_score: 0.7,
+                    estimated_tokens: 60,
+                },
+                0.65,
+            ),
         ];
 
         let selected = select_knowledge_units(candidates, 100);
-        assert_eq!(selected.len(), 1, "Budget of 100 tokens should fit 1 unit (50+60>100)");
-        assert_eq!(selected[0].concept, "Retry pattern", "Should pick highest scored");
+        assert_eq!(
+            selected.len(),
+            1,
+            "Budget of 100 tokens should fit 1 unit (50+60>100)"
+        );
+        assert_eq!(
+            selected[0].concept, "Retry pattern",
+            "Should pick highest scored"
+        );
     }
 
     #[test]

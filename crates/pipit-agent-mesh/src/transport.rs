@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::registry::AgentId;
 
@@ -88,11 +88,7 @@ impl MeshEnvelope {
     }
 
     /// Create a reply envelope preserving the correlation chain.
-    pub fn reply(
-        &self,
-        msg_type: MeshMessageType,
-        payload: serde_json::Value,
-    ) -> Self {
+    pub fn reply(&self, msg_type: MeshMessageType, payload: serde_json::Value) -> Self {
         Self {
             message_id: uuid::Uuid::new_v4().to_string(),
             from: self.to.clone(),
@@ -132,10 +128,7 @@ pub trait MeshTransport: Send + Sync + 'static {
     async fn broadcast(&self, envelope: MeshEnvelope) -> Result<(), TransportError>;
 
     /// Start listening for incoming messages.
-    async fn listen(
-        &self,
-        handler: mpsc::Sender<MeshEnvelope>,
-    ) -> Result<(), TransportError>;
+    async fn listen(&self, handler: mpsc::Sender<MeshEnvelope>) -> Result<(), TransportError>;
 
     /// Connect to a peer.
     async fn connect(&self, addr: SocketAddr) -> Result<(), TransportError>;
@@ -248,10 +241,7 @@ impl MeshTransport for TcpTransport {
         Ok(())
     }
 
-    async fn listen(
-        &self,
-        handler: mpsc::Sender<MeshEnvelope>,
-    ) -> Result<(), TransportError> {
+    async fn listen(&self, handler: mpsc::Sender<MeshEnvelope>) -> Result<(), TransportError> {
         let listener = TcpListener::bind(self.bind_addr).await?;
         let peers = self.peers.clone();
         let max_size = self.max_message_size;
@@ -320,9 +310,9 @@ impl MeshTransport for TcpTransport {
     }
 
     async fn connect(&self, addr: SocketAddr) -> Result<(), TransportError> {
-        let stream = TcpStream::connect(addr).await.map_err(|e| {
-            TransportError::ConnectionRefused(format!("{}: {}", addr, e))
-        })?;
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| TransportError::ConnectionRefused(format!("{}: {}", addr, e)))?;
 
         let (reader, writer) = tokio::io::split(stream);
 
@@ -371,10 +361,7 @@ impl MeshTransport for TcpTransport {
 
     fn peer_count(&self) -> usize {
         // Can't await in a sync fn, use try_read
-        self.peers
-            .try_read()
-            .map(|p| p.len())
-            .unwrap_or(0)
+        self.peers.try_read().map(|p| p.len()).unwrap_or(0)
     }
 }
 
@@ -426,10 +413,7 @@ impl MeshTransport for InProcessTransport {
         Ok(())
     }
 
-    async fn listen(
-        &self,
-        _handler: mpsc::Sender<MeshEnvelope>,
-    ) -> Result<(), TransportError> {
+    async fn listen(&self, _handler: mpsc::Sender<MeshEnvelope>) -> Result<(), TransportError> {
         // In-process: messages are sent directly via registered peer senders.
         Ok(())
     }
@@ -454,7 +438,12 @@ mod tests {
 
     #[test]
     fn test_envelope_wire_format() {
-        let env = MeshEnvelope::new("agent-1", "agent-2", MeshMessageType::Ping, serde_json::json!({}));
+        let env = MeshEnvelope::new(
+            "agent-1",
+            "agent-2",
+            MeshMessageType::Ping,
+            serde_json::json!({}),
+        );
         let wire = env.to_wire().unwrap();
 
         // First 4 bytes are length

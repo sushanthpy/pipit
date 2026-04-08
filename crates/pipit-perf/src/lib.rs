@@ -3,10 +3,10 @@
 //! Bet 4: Profile ingestion, optimization hypothesis generation,
 //! and automated benchmark-driven rewrite loop.
 
-pub mod profile;
 pub mod hypothesis;
+pub mod profile;
 pub mod rewrite_loop;
 
-pub use profile::{ProfileReport, HotFunction, parse_folded_stacks};
-pub use hypothesis::{OptimizationHypothesis, BottleneckKind, generate_hypotheses};
+pub use hypothesis::{BottleneckKind, OptimizationHypothesis, generate_hypotheses};
+pub use profile::{HotFunction, ProfileReport, parse_folded_stacks};
 pub use rewrite_loop::{RewriteLoop, RewriteResult};

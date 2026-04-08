@@ -66,7 +66,12 @@ impl LoopDetector {
     /// Mark the most recent call for a given tool as failed.
     /// Only failed calls count toward loop detection.
     pub fn mark_last_failed(&mut self, name: &str) {
-        if let Some(fp) = self.history.iter_mut().rev().find(|fp| fp.tool_name == name) {
+        if let Some(fp) = self
+            .history
+            .iter_mut()
+            .rev()
+            .find(|fp| fp.tool_name == name)
+        {
             fp.failed = true;
         }
     }
@@ -83,7 +88,8 @@ impl LoopDetector {
     /// Used by the semantic loop detector.
     pub fn record_thinking(&mut self, text: &str) {
         // Normalize: collapse whitespace, lowercase, trim to first 300 chars
-        let normalized: String = text.split_whitespace()
+        let normalized: String = text
+            .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
             .to_lowercase()
@@ -109,12 +115,15 @@ impl LoopDetector {
         if current.is_empty() {
             return None;
         }
-        let recent: Vec<&String> = self.thinking_history.iter()
+        let recent: Vec<&String> = self
+            .thinking_history
+            .iter()
             .rev()
-            .skip(1)  // skip current
+            .skip(1) // skip current
             .take(3)
             .collect();
-        let similar_count = recent.iter()
+        let similar_count = recent
+            .iter()
             .filter(|prev| normalized_levenshtein(prev, current) > 0.70)
             .count() as u32;
         if similar_count >= 2 {
@@ -179,12 +188,10 @@ fn normalize_json(value: &serde_json::Value) -> serde_json::Value {
 
             serde_json::Value::Object(normalized)
         }
-        serde_json::Value::Array(values) => serde_json::Value::Array(
-            values.iter().map(normalize_json).collect(),
-        ),
-        serde_json::Value::String(text) => {
-            serde_json::Value::String(normalize_string(text))
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(normalize_json).collect())
         }
+        serde_json::Value::String(text) => serde_json::Value::String(normalize_string(text)),
         _ => value.clone(),
     }
 }
@@ -249,10 +256,12 @@ fn normalized_levenshtein(a: &str, b: &str) -> f64 {
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

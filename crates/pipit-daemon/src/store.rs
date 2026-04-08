@@ -19,10 +19,10 @@
 //! - `put_durable()` — immediate fsync
 //! - `apply_atomic_batch()` — N writes + 1 commit
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use pipit_channel::{NormalizedTask, TaskRecord, TaskStatus, TaskUpdate, TaskUpdateKind};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -56,7 +56,8 @@ impl DaemonStore {
             std::fs::create_dir_all(parent)?;
         }
 
-        let db = sled::open(path).map_err(|e| anyhow!("failed to open store at {}: {}", path.display(), e))?;
+        let db = sled::open(path)
+            .map_err(|e| anyhow!("failed to open store at {}: {}", path.display(), e))?;
 
         // Persistence self-test: canary write → read-back
         let canary_key = b"__canary__";
@@ -166,8 +167,8 @@ impl DaemonStore {
         let mut results = Vec::new();
         for item in self.db.scan_prefix(prefix.as_bytes()) {
             let (key, value) = item.map_err(|e| anyhow!("scan failed: {e}"))?;
-            let key_str = String::from_utf8(key.to_vec())
-                .map_err(|e| anyhow!("invalid utf-8 key: {e}"))?;
+            let key_str =
+                String::from_utf8(key.to_vec()).map_err(|e| anyhow!("invalid utf-8 key: {e}"))?;
             results.push((key_str, value.to_vec()));
         }
         Ok(results)
@@ -188,7 +189,9 @@ impl DaemonStore {
 
     /// Flush WAL to disk.
     pub fn checkpoint(&self) -> Result<()> {
-        self.db.flush().map_err(|e| anyhow!("checkpoint failed: {e}"))?;
+        self.db
+            .flush()
+            .map_err(|e| anyhow!("checkpoint failed: {e}"))?;
         Ok(())
     }
 
@@ -353,22 +356,24 @@ impl DaemonStore {
         let mut verified = 0u64;
 
         for (_, value) in &entries {
-            let stored: serde_json::Value = serde_json::from_slice(value)
-                .map_err(|e| anyhow!("failed to parse event: {e}"))?;
+            let stored: serde_json::Value =
+                serde_json::from_slice(value).map_err(|e| anyhow!("failed to parse event: {e}"))?;
 
-            let recorded_hash = stored.get("chain_hash")
+            let recorded_hash = stored
+                .get("chain_hash")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let recorded_prev = stored.get("prev_hash")
+            let recorded_prev = stored
+                .get("prev_hash")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let seq = stored.get("seq")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let timestamp_str = stored.get("timestamp")
+            let seq = stored.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+            let timestamp_str = stored
+                .get("timestamp")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let event_json = stored.get("event")
+            let event_json = stored
+                .get("event")
                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                 .unwrap_or_default();
 
@@ -376,7 +381,9 @@ impl DaemonStore {
             if recorded_prev != prev_hash {
                 return Err(anyhow!(
                     "chain break at seq {}: expected prev_hash '{}', got '{}'",
-                    seq, prev_hash, recorded_prev
+                    seq,
+                    prev_hash,
+                    recorded_prev
                 ));
             }
 
@@ -389,7 +396,9 @@ impl DaemonStore {
             if expected_hash != recorded_hash {
                 return Err(anyhow!(
                     "tamper detected at seq {}: expected hash '{}', got '{}'",
-                    seq, expected_hash, recorded_hash
+                    seq,
+                    expected_hash,
+                    recorded_hash
                 ));
             }
 
@@ -404,8 +413,9 @@ impl DaemonStore {
     fn get_chain_hash(&self, task_id: &str) -> Result<Option<String>> {
         let key = format!("tasks/{}/chain_hash", task_id);
         match self.get(&key)? {
-            Some(bytes) => Ok(Some(String::from_utf8(bytes)
-                .map_err(|e| anyhow!("invalid chain hash: {e}"))?)),
+            Some(bytes) => Ok(Some(
+                String::from_utf8(bytes).map_err(|e| anyhow!("invalid chain hash: {e}"))?,
+            )),
             None => Ok(None),
         }
     }
@@ -518,7 +528,12 @@ impl DaemonStore {
     // -----------------------------------------------------------------------
 
     /// Store an embedding vector for a task.
-    pub fn store_vector(&self, task_id: &str, embedding: &[f32], metadata: &serde_json::Value) -> Result<()> {
+    pub fn store_vector(
+        &self,
+        task_id: &str,
+        embedding: &[f32],
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
         let data_key = format!("vectors/tasks/{}/data", task_id);
         let meta_key = format!("vectors/tasks/{}/meta", task_id);
 
@@ -530,10 +545,7 @@ impl DaemonStore {
 
         let meta_json = serde_json::to_vec(metadata)?;
 
-        self.apply_atomic_batch(&[
-            (data_key.as_str(), &bytes),
-            (meta_key.as_str(), &meta_json),
-        ])?;
+        self.apply_atomic_batch(&[(data_key.as_str(), &bytes), (meta_key.as_str(), &meta_json)])?;
 
         Ok(())
     }
@@ -566,11 +578,7 @@ impl DaemonStore {
     /// Find k-nearest task embeddings via brute-force cosine similarity.
     /// For small N (<10,000), this O(N×d) scan is sufficient.
     /// Can be replaced with HNSW index as task count grows.
-    pub fn search_similar_tasks(
-        &self,
-        query: &[f32],
-        k: usize,
-    ) -> Result<Vec<(String, f32)>> {
+    pub fn search_similar_tasks(&self, query: &[f32], k: usize) -> Result<Vec<(String, f32)>> {
         let prefix = "vectors/tasks/";
         let entries = self.scan(prefix)?;
 
@@ -673,7 +681,11 @@ impl DaemonStore {
     }
 
     /// Search knowledge units by semantic similarity.
-    pub fn search_knowledge(&self, query_embedding: &[f32], k: usize) -> Result<Vec<(KnowledgeUnit, f32)>> {
+    pub fn search_knowledge(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+    ) -> Result<Vec<(KnowledgeUnit, f32)>> {
         let vec_results = self.search_similar_tasks(query_embedding, k * 2)?;
         let mut results = Vec::new();
 

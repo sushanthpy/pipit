@@ -32,8 +32,8 @@ impl Default for FaultConfig {
     fn default() -> Self {
         Self {
             fault_probability: 0.02,
-            latency_mu: 2.3,     // median ≈ 10ms
-            latency_sigma: 1.0,   // P99 ≈ 220ms
+            latency_mu: 2.3,    // median ≈ 10ms
+            latency_sigma: 1.0, // P99 ≈ 220ms
             rate_limit_capacity: 100,
             rate_limit_refill: 100.0,
             error_codes: vec![500, 502, 503, 429],
@@ -148,39 +148,54 @@ pub struct EnvironmentSimulator {
 
 impl EnvironmentSimulator {
     pub fn new() -> Self {
-        Self { services: HashMap::new() }
+        Self {
+            services: HashMap::new(),
+        }
     }
 
     /// Add a service with default fault config.
     pub fn add_service(&mut self, name: &str, config: FaultConfig) {
-        self.services.insert(name.to_string(), ServiceMock::new(name, config));
+        self.services
+            .insert(name.to_string(), ServiceMock::new(name, config));
     }
 
     /// Create a pre-configured e-commerce environment.
     pub fn ecommerce() -> Self {
         let mut env = Self::new();
-        env.add_service("payment_gateway", FaultConfig {
-            fault_probability: 0.02,
-            latency_mu: 3.0,  // median ~20ms
-            ..Default::default()
-        });
-        env.add_service("inventory_api", FaultConfig {
-            fault_probability: 0.01,
-            latency_mu: 2.0,  // median ~7ms
-            ..Default::default()
-        });
-        env.add_service("email_service", FaultConfig {
-            fault_probability: 0.05, // Less reliable
-            latency_mu: 4.0,  // median ~55ms
-            ..Default::default()
-        });
-        env.add_service("database", FaultConfig {
-            fault_probability: 0.001, // Very reliable
-            latency_mu: 1.0,  // median ~3ms
-            rate_limit_capacity: 1000,
-            rate_limit_refill: 500.0,
-            ..Default::default()
-        });
+        env.add_service(
+            "payment_gateway",
+            FaultConfig {
+                fault_probability: 0.02,
+                latency_mu: 3.0, // median ~20ms
+                ..Default::default()
+            },
+        );
+        env.add_service(
+            "inventory_api",
+            FaultConfig {
+                fault_probability: 0.01,
+                latency_mu: 2.0, // median ~7ms
+                ..Default::default()
+            },
+        );
+        env.add_service(
+            "email_service",
+            FaultConfig {
+                fault_probability: 0.05, // Less reliable
+                latency_mu: 4.0,         // median ~55ms
+                ..Default::default()
+            },
+        );
+        env.add_service(
+            "database",
+            FaultConfig {
+                fault_probability: 0.001, // Very reliable
+                latency_mu: 1.0,          // median ~3ms
+                rate_limit_capacity: 1000,
+                rate_limit_refill: 500.0,
+                ..Default::default()
+            },
+        );
         env
     }
 
@@ -191,14 +206,17 @@ impl EnvironmentSimulator {
 
     /// Get aggregate stats across all services.
     pub fn aggregate_stats(&self) -> HashMap<String, ServiceStats> {
-        self.services.iter()
+        self.services
+            .iter()
             .map(|(name, svc)| (name.clone(), svc.stats.clone()))
             .collect()
     }
 }
 
 impl Default for EnvironmentSimulator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -211,26 +229,43 @@ mod tests {
         let mut ok_count = 0;
         for _ in 0..100 {
             let resp = svc.call();
-            if resp.status_code == 200 { ok_count += 1; }
+            if resp.status_code == 200 {
+                ok_count += 1;
+            }
         }
-        assert!(ok_count > 80, "Most requests should succeed: {}/100", ok_count);
+        assert!(
+            ok_count > 80,
+            "Most requests should succeed: {}/100",
+            ok_count
+        );
         assert!(svc.stats.total_requests == 100);
     }
 
     #[test]
     fn test_fault_injection_probability() {
-        let mut svc = ServiceMock::new("test", FaultConfig {
-            fault_probability: 0.5, // 50% fault rate
-            rate_limit_capacity: 10000,
-            rate_limit_refill: 10000.0,
-            ..Default::default()
-        });
+        let mut svc = ServiceMock::new(
+            "test",
+            FaultConfig {
+                fault_probability: 0.5, // 50% fault rate
+                rate_limit_capacity: 10000,
+                rate_limit_refill: 10000.0,
+                ..Default::default()
+            },
+        );
         for _ in 0..1000 {
             svc.call();
         }
         // With p=0.5, expect ~500 faults ± noise
-        assert!(svc.stats.faults_injected > 350, "faults: {}", svc.stats.faults_injected);
-        assert!(svc.stats.faults_injected < 650, "faults: {}", svc.stats.faults_injected);
+        assert!(
+            svc.stats.faults_injected > 350,
+            "faults: {}",
+            svc.stats.faults_injected
+        );
+        assert!(
+            svc.stats.faults_injected < 650,
+            "faults: {}",
+            svc.stats.faults_injected
+        );
     }
 
     #[test]
@@ -247,12 +282,15 @@ mod tests {
 
     #[test]
     fn test_log_normal_latency_distribution() {
-        let mut svc = ServiceMock::new("test", FaultConfig {
-            fault_probability: 0.0, // No faults
-            rate_limit_capacity: 10000,
-            rate_limit_refill: 10000.0,
-            ..Default::default()
-        });
+        let mut svc = ServiceMock::new(
+            "test",
+            FaultConfig {
+                fault_probability: 0.0, // No faults
+                rate_limit_capacity: 10000,
+                rate_limit_refill: 10000.0,
+                ..Default::default()
+            },
+        );
         let mut latencies = Vec::new();
         for _ in 0..1000 {
             let resp = svc.call();
@@ -262,7 +300,11 @@ mod tests {
         let median = latencies[500];
         let p99 = latencies[990];
         // With μ=2.3, σ=1.0: median ≈ e^2.3 ≈ 10ms, P99 ≈ 220ms
-        assert!(median > 2.0 && median < 50.0, "Median latency: {}ms", median);
+        assert!(
+            median > 2.0 && median < 50.0,
+            "Median latency: {}ms",
+            median
+        );
         assert!(p99 > median, "P99 should > median: p99={}ms", p99);
     }
 }

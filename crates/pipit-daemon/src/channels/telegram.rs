@@ -5,7 +5,7 @@
 
 use crate::config::TelegramConfig;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use pipit_channel::*;
 use reqwest::Client;
@@ -42,16 +42,13 @@ impl TelegramChannel {
         project_names: HashSet<String>,
         cancel: CancellationToken,
     ) -> Self {
-        let default_project = config
-            .default_project
-            .clone()
-            .unwrap_or_else(|| {
-                project_names
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_else(|| "default".to_string())
-            });
+        let default_project = config.default_project.clone().unwrap_or_else(|| {
+            project_names
+                .iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "default".to_string())
+        });
 
         Self {
             config,
@@ -101,7 +98,9 @@ impl TelegramChannel {
                 if attempt > max_retries {
                     return Err(anyhow!(
                         "telegram rate limited on {} after {} retries (retry_after={}s)",
-                        method, max_retries, retry_after
+                        method,
+                        max_retries,
+                        retry_after
                     ));
                 }
 
@@ -131,7 +130,12 @@ impl TelegramChannel {
                     tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
                     continue;
                 }
-                return Err(anyhow!("telegram api {} returned {}: {}", method, status, body));
+                return Err(anyhow!(
+                    "telegram api {} returned {}: {}",
+                    method,
+                    status,
+                    body
+                ));
             }
 
             let api_resp: TelegramApiResponse<R> =
@@ -271,7 +275,9 @@ impl TelegramChannel {
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to submit telegram task");
-                let _ = self.send_text(chat_id, "⚠ Queue is full. Try again later.").await;
+                let _ = self
+                    .send_text(chat_id, "⚠ Queue is full. Try again later.")
+                    .await;
             }
         }
     }
@@ -307,7 +313,10 @@ impl TelegramChannel {
             }
             "/status" => {
                 let _ = self
-                    .send_text(chat_id, "Status endpoint: use the HTTP API for detailed status.")
+                    .send_text(
+                        chat_id,
+                        "Status endpoint: use the HTTP API for detailed status.",
+                    )
                     .await;
             }
             "/projects" => {
@@ -316,9 +325,7 @@ impl TelegramChannel {
                 let _ = self.send_text(chat_id, &msg).await;
             }
             _ => {
-                let _ = self
-                    .send_text(chat_id, "Unknown command. Try /help")
-                    .await;
+                let _ = self.send_text(chat_id, "Unknown command. Try /help").await;
             }
         }
     }
@@ -477,10 +484,7 @@ impl StreamingChannel for TelegramChannel {
                 let bot_token = bot_token.clone();
                 async move {
                     let client = Client::new();
-                    let url = format!(
-                        "{}{}/editMessageText",
-                        TELEGRAM_API_BASE, bot_token
-                    );
+                    let url = format!("{}{}/editMessageText", TELEGRAM_API_BASE, bot_token);
                     let params = serde_json::json!({
                         "chat_id": chat_id,
                         "message_id": message_id,
@@ -496,9 +500,7 @@ impl StreamingChannel for TelegramChannel {
                 }
             }))
         } else {
-            Err(ChannelError::Other(
-                "not a telegram origin".to_string(),
-            ))
+            Err(ChannelError::Other("not a telegram origin".to_string()))
         }
     }
 }

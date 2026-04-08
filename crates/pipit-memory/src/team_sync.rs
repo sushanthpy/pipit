@@ -148,7 +148,7 @@ impl TeamSyncWorker {
         watch_dir: &Path,
         tx: mpsc::Sender<PathBuf>,
     ) -> Result<notify::RecommendedWatcher, String> {
-        use notify::{Watcher, RecursiveMode, Config};
+        use notify::{Config, RecursiveMode, Watcher};
 
         let mut watcher = notify::RecommendedWatcher::new(
             move |res: Result<notify::Event, notify::Error>| {
@@ -169,11 +169,12 @@ impl TeamSyncWorker {
                     }
                 }
             },
-            Config::default()
-                .with_poll_interval(Duration::from_secs(2)),
-        ).map_err(|e| format!("Failed to create file watcher: {}", e))?;
+            Config::default().with_poll_interval(Duration::from_secs(2)),
+        )
+        .map_err(|e| format!("Failed to create file watcher: {}", e))?;
 
-        watcher.watch(watch_dir, RecursiveMode::NonRecursive)
+        watcher
+            .watch(watch_dir, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch {}: {}", watch_dir.display(), e))?;
 
         info!("Watching {} for team changes", watch_dir.display());
@@ -198,7 +199,8 @@ impl TeamSyncWorker {
 
         // Push to daemon (best-effort)
         if let (Some(daemon_url), Some(team_id)) = (&self.config.daemon_url, &self.config.team_id) {
-            let file_name = path.file_name()
+            let file_name = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
@@ -234,16 +236,26 @@ impl TeamSyncWorker {
 
     /// Pull team memory from daemon and merge into local files.
     async fn pull(&mut self) -> Result<(), String> {
-        let daemon_url = self.config.daemon_url.as_deref()
+        let daemon_url = self
+            .config
+            .daemon_url
+            .as_deref()
             .ok_or("No daemon URL configured")?;
-        let team_id = self.config.team_id.as_deref()
+        let team_id = self
+            .config
+            .team_id
+            .as_deref()
             .ok_or("No team ID configured")?;
 
-        let since = self.last_pull
+        let since = self
+            .last_pull
             .map(|t| t.elapsed().as_secs().to_string())
             .unwrap_or_else(|| "0".to_string());
 
-        let url = format!("{}/api/teams/{}/memory?since={}", daemon_url, team_id, since);
+        let url = format!(
+            "{}/api/teams/{}/memory?since={}",
+            daemon_url, team_id, since
+        );
 
         let resp = reqwest::Client::new()
             .get(&url)
@@ -256,7 +268,8 @@ impl TeamSyncWorker {
             return Err(format!("Daemon returned {}", resp.status()));
         }
 
-        let body: serde_json::Value = resp.json()
+        let body: serde_json::Value = resp
+            .json()
             .await
             .map_err(|e| format!("Failed to parse pull response: {}", e))?;
 
@@ -271,7 +284,10 @@ impl TeamSyncWorker {
                     continue;
                 }
 
-                let file_name = entry.get("file_name").and_then(|v| v.as_str()).unwrap_or("shared.toml");
+                let file_name = entry
+                    .get("file_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("shared.toml");
                 let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                 if content.is_empty() {
@@ -280,7 +296,10 @@ impl TeamSyncWorker {
 
                 // Secret scan incoming content too
                 if secret_scanner::contains_secrets(content) {
-                    warn!("SECRET DETECTED in pulled team entry from {}. Skipping.", author);
+                    warn!(
+                        "SECRET DETECTED in pulled team entry from {}. Skipping.",
+                        author
+                    );
                     continue;
                 }
 
@@ -294,8 +313,9 @@ impl TeamSyncWorker {
                     let existing = std::fs::read_to_string(&local_path).unwrap_or_default();
                     if !existing.contains(content.trim()) {
                         let merged = format!("{}\n\n{}", existing.trim(), content.trim());
-                        std::fs::write(&local_path, merged)
-                            .map_err(|e| format!("Failed to write {}: {}", local_path.display(), e))?;
+                        std::fs::write(&local_path, merged).map_err(|e| {
+                            format!("Failed to write {}: {}", local_path.display(), e)
+                        })?;
                     }
                 }
 
@@ -311,16 +331,22 @@ impl TeamSyncWorker {
     fn merge_toml(&self, local_path: &Path, remote_content: &str) -> Result<(), String> {
         let local_content = std::fs::read_to_string(local_path).unwrap_or_default();
 
-        let mut local: toml::Value = local_content.parse()
+        let mut local: toml::Value = local_content
+            .parse()
             .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-        let remote: toml::Value = remote_content.parse()
+        let remote: toml::Value = remote_content
+            .parse()
             .map_err(|e| format!("Failed to parse remote TOML: {}", e))?;
 
         // Merge: remote keys override local (last-writer-wins)
-        if let (toml::Value::Table(local_table), toml::Value::Table(remote_table)) = (&mut local, &remote) {
+        if let (toml::Value::Table(local_table), toml::Value::Table(remote_table)) =
+            (&mut local, &remote)
+        {
             for (section_key, remote_section) in remote_table {
-                if let (Some(toml::Value::Table(local_section)), toml::Value::Table(remote_entries)) =
-                    (local_table.get_mut(section_key), remote_section)
+                if let (
+                    Some(toml::Value::Table(local_section)),
+                    toml::Value::Table(remote_entries),
+                ) = (local_table.get_mut(section_key), remote_section)
                 {
                     for (key, value) in remote_entries {
                         local_section.insert(key.clone(), value.clone());
@@ -382,7 +408,11 @@ mod tests {
     #[test]
     fn test_secret_scan_blocks_push() {
         // Verify that content with secrets is detected
-        assert!(secret_scanner::contains_secrets("my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN1234567890"));
-        assert!(!secret_scanner::contains_secrets("normal team convention text"));
+        assert!(secret_scanner::contains_secrets(
+            "my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN1234567890"
+        ));
+        assert!(!secret_scanner::contains_secrets(
+            "normal team convention text"
+        ));
     }
 }

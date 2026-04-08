@@ -75,12 +75,15 @@ impl ChangeClaim {
                 "Evidence should exist for any claimed improvement.".to_string(),
             ],
             assumptions: vec![Assumption {
-                description: "The provided objective is sufficient to drive the next valid state transition.".to_string(),
+                description:
+                    "The provided objective is sufficient to drive the next valid state transition."
+                        .to_string(),
                 verified: false,
             }],
             verification_plan: vec![
                 VerificationStep {
-                    description: "Read relevant code and documentation before mutating.".to_string(),
+                    description: "Read relevant code and documentation before mutating."
+                        .to_string(),
                 },
                 VerificationStep {
                     description: "Run deterministic checks or commands when available.".to_string(),
@@ -235,10 +238,7 @@ impl ChangeClaim {
 
         format!(
             "## Active Change Claim\nHypothesis: {}\n\nExpected Effects:\n{}\n\nVerification Plan:\n{}\n\nAssumptions:\n{}\n",
-            self.hypothesis,
-            expected_effects,
-            verification_plan,
-            assumptions,
+            self.hypothesis, expected_effects, verification_plan, assumptions,
         )
     }
 

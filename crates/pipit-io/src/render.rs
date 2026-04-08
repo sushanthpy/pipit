@@ -2,12 +2,11 @@
 /// into rendered terminal output.
 ///
 /// Uses syntect for syntax-highlighted code blocks when a language is specified.
-
 use once_cell::sync::Lazy;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use syntect::util::{LinesWithEndings, as_24_bit_terminal_escaped};
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
@@ -113,22 +112,34 @@ impl StreamingMarkdownRenderer {
                 language: self.code_lang.clone(),
             }]
         } else {
-            vec![RenderedLine::Text {
-                text: remaining,
-            }]
+            vec![RenderedLine::Text { text: remaining }]
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum RenderedLine {
-    Text { text: String },
-    Heading { level: u8, text: String },
-    CodeBlockStart { language: Option<String> },
-    Code { text: String, language: Option<String> },
+    Text {
+        text: String,
+    },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    CodeBlockStart {
+        language: Option<String>,
+    },
+    Code {
+        text: String,
+        language: Option<String>,
+    },
     CodeBlockEnd,
-    ListItem { text: String },
-    BlockQuote { text: String },
+    ListItem {
+        text: String,
+    },
+    BlockQuote {
+        text: String,
+    },
     Empty,
 }
 

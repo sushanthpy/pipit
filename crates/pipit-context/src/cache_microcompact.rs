@@ -33,10 +33,7 @@ pub struct CacheMicrocompactResult {
 ///   2. No subsequent message references its call_id
 ///
 /// Returns the call_ids of stale tool results.
-pub fn find_stale_tool_results(
-    messages: &[Message],
-    stale_turn_threshold: usize,
-) -> Vec<String> {
+pub fn find_stale_tool_results(messages: &[Message], stale_turn_threshold: usize) -> Vec<String> {
     let total = messages.len();
     let cutoff = total.saturating_sub(stale_turn_threshold * 2); // 2 msgs per turn approx
     let mut stale_ids = Vec::new();
@@ -48,7 +45,10 @@ pub fn find_stale_tool_results(
 
         // Find tool result call_ids
         for block in &msg.content {
-            if let pipit_provider::ContentBlock::ToolResult { call_id, is_error, .. } = block {
+            if let pipit_provider::ContentBlock::ToolResult {
+                call_id, is_error, ..
+            } = block
+            {
                 if !is_error {
                     // Check if any later message references this call_id
                     let referenced = messages[i + 1..].iter().any(|later_msg| {
@@ -88,8 +88,11 @@ pub async fn cache_aware_microcompact(
 
     // Try cache-edit first
     if provider.supports_cache_edit() {
-        let edits: Vec<CacheEdit> = stale_ids.iter()
-            .map(|id| CacheEdit::RemoveToolResult { call_id: id.clone() })
+        let edits: Vec<CacheEdit> = stale_ids
+            .iter()
+            .map(|id| CacheEdit::RemoveToolResult {
+                call_id: id.clone(),
+            })
             .collect();
 
         match provider.edit_cache(&edits).await {
@@ -129,7 +132,10 @@ fn remove_by_call_ids(messages: &mut Vec<Message>, call_ids: &[String]) -> u64 {
 
     messages.retain(|msg| {
         let dominated_by_stale = msg.content.iter().all(|block| {
-            if let pipit_provider::ContentBlock::ToolResult { call_id, content, .. } = block {
+            if let pipit_provider::ContentBlock::ToolResult {
+                call_id, content, ..
+            } = block
+            {
                 if call_ids.contains(call_id) {
                     tokens_freed += (content.len() / 4) as u64;
                     return true; // This block is stale
@@ -152,7 +158,9 @@ mod tests {
 
     fn tool_result(call_id: &str, content: &str) -> Message {
         Message {
-            role: Role::ToolResult { call_id: call_id.to_string() },
+            role: Role::ToolResult {
+                call_id: call_id.to_string(),
+            },
             content: vec![ContentBlock::ToolResult {
                 call_id: call_id.to_string(),
                 content: content.to_string(),

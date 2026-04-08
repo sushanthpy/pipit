@@ -245,7 +245,9 @@ impl LineageDAG {
         if let Some(branch) = self.branches.get_mut(task_id) {
             if matches!(
                 status,
-                BranchStatus::Completed | BranchStatus::Failed { .. } | BranchStatus::Cancelled { .. }
+                BranchStatus::Completed
+                    | BranchStatus::Failed { .. }
+                    | BranchStatus::Cancelled { .. }
             ) {
                 branch.completed_at = Some(current_timestamp());
             }
@@ -263,15 +265,9 @@ impl LineageDAG {
     /// Validate a merge contract: check changed-file manifests for conflicts.
     /// Uses sorted sets for O(Δ log Δ) validation.
     pub fn validate_merge(&self, task_id: &str) -> Result<MergeValidation, String> {
-        let branch = self
-            .branches
-            .get(task_id)
-            .ok_or("Branch not found")?;
+        let branch = self.branches.get(task_id).ok_or("Branch not found")?;
 
-        let contract = branch
-            .merge_contract
-            .as_ref()
-            .ok_or("No merge contract")?;
+        let contract = branch.merge_contract.as_ref().ok_or("No merge contract")?;
 
         // Collect all files changed by sibling branches
         let siblings = branch
@@ -319,11 +315,7 @@ impl LineageDAG {
     pub fn children_of(&self, task_id: &str) -> Vec<&ExecutionBranch> {
         self.children
             .get(task_id)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.branches.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.branches.get(id)).collect())
             .unwrap_or_default()
     }
 
@@ -331,8 +323,7 @@ impl LineageDAG {
     /// merge_allowed = complete(contract) ∧ obligations_passed ∧ budget_ok ∧ lineage_consistent
     /// This is a predicate over contract completeness, not a UI hint.
     pub fn merge_allowed(&self, task_id: &str) -> Result<MergeDecision, String> {
-        let branch = self.branches.get(task_id)
-            .ok_or("Branch not found")?;
+        let branch = self.branches.get(task_id).ok_or("Branch not found")?;
 
         // 1. Branch must be Completed
         if !matches!(branch.status, BranchStatus::Completed) {
@@ -347,9 +338,12 @@ impl LineageDAG {
         // 2. Must have a merge contract
         let contract = match &branch.merge_contract {
             Some(c) => c,
-            None => return Ok(MergeDecision::Denied {
-                reason: "No merge contract set. Branch must produce a structured contract.".into(),
-            }),
+            None => {
+                return Ok(MergeDecision::Denied {
+                    reason: "No merge contract set. Branch must produce a structured contract."
+                        .into(),
+                });
+            }
         };
 
         // 3. Contract must self-report complete
@@ -431,9 +425,7 @@ pub enum MergeDecision {
         confidence: f32,
     },
     /// Merge is denied — at least one predicate failed.
-    Denied {
-        reason: String,
-    },
+    Denied { reason: String },
 }
 
 fn current_timestamp() -> u64 {
@@ -453,13 +445,16 @@ mod tests {
         dag.set_root("root".to_string(), "main task");
 
         dag.spawn(
-            "root", "child-1".to_string(), "subtask 1",
+            "root",
+            "child-1".to_string(),
+            "subtask 1",
             CapabilitySet::READ_ONLY,
             TokenBudget::new(10000, 5000),
             Duration::from_secs(60),
             vec!["read_file".to_string()],
             false,
-        ).unwrap();
+        )
+        .unwrap();
 
         let child = dag.get("child-1").unwrap();
         assert_eq!(child.depth, 1);
@@ -476,12 +471,16 @@ mod tests {
 
         // Child requests FULL_AUTO — gets meet (intersection)
         dag.spawn(
-            "root", "child".to_string(), "subtask",
+            "root",
+            "child".to_string(),
+            "subtask",
             CapabilitySet::FULL_AUTO,
             TokenBudget::new(10000, 5000),
             Duration::from_secs(60),
-            vec![], false,
-        ).unwrap();
+            vec![],
+            false,
+        )
+        .unwrap();
 
         let child = dag.get("child").unwrap();
         let child_caps = CapabilitySet::from_bits(child.capabilities);
@@ -496,43 +495,73 @@ mod tests {
         let mut dag = LineageDAG::new();
         dag.set_root("root".to_string(), "main");
 
-        dag.spawn("root", "a".to_string(), "task a", CapabilitySet::EDIT,
-            TokenBudget::new(10000, 5000), Duration::from_secs(60), vec![], true).unwrap();
-        dag.spawn("root", "b".to_string(), "task b", CapabilitySet::EDIT,
-            TokenBudget::new(10000, 5000), Duration::from_secs(60), vec![], true).unwrap();
+        dag.spawn(
+            "root",
+            "a".to_string(),
+            "task a",
+            CapabilitySet::EDIT,
+            TokenBudget::new(10000, 5000),
+            Duration::from_secs(60),
+            vec![],
+            true,
+        )
+        .unwrap();
+        dag.spawn(
+            "root",
+            "b".to_string(),
+            "task b",
+            CapabilitySet::EDIT,
+            TokenBudget::new(10000, 5000),
+            Duration::from_secs(60),
+            vec![],
+            true,
+        )
+        .unwrap();
 
         // Both change the same file
-        dag.set_merge_contract("a", MergeContract {
-            changed_files: vec![ChangedFile {
-                path: "src/lib.rs".to_string(),
-                change_type: FileChangeType::Modified,
-                lines_added: 5, lines_removed: 2,
-            }],
-            intent: "fix bug".to_string(),
-            verification_obligations: vec![],
-            rollback_point: "abc123".to_string(),
-            self_reported_complete: true,
-            confidence: 0.9,
-            diff_summary: String::new(),
-            branch_name: None,
-        });
-        dag.set_merge_contract("b", MergeContract {
-            changed_files: vec![ChangedFile {
-                path: "src/lib.rs".to_string(),
-                change_type: FileChangeType::Modified,
-                lines_added: 3, lines_removed: 1,
-            }],
-            intent: "add feature".to_string(),
-            verification_obligations: vec![],
-            rollback_point: "def456".to_string(),
-            self_reported_complete: true,
-            confidence: 0.8,
-            diff_summary: String::new(),
-            branch_name: None,
-        });
+        dag.set_merge_contract(
+            "a",
+            MergeContract {
+                changed_files: vec![ChangedFile {
+                    path: "src/lib.rs".to_string(),
+                    change_type: FileChangeType::Modified,
+                    lines_added: 5,
+                    lines_removed: 2,
+                }],
+                intent: "fix bug".to_string(),
+                verification_obligations: vec![],
+                rollback_point: "abc123".to_string(),
+                self_reported_complete: true,
+                confidence: 0.9,
+                diff_summary: String::new(),
+                branch_name: None,
+            },
+        );
+        dag.set_merge_contract(
+            "b",
+            MergeContract {
+                changed_files: vec![ChangedFile {
+                    path: "src/lib.rs".to_string(),
+                    change_type: FileChangeType::Modified,
+                    lines_added: 3,
+                    lines_removed: 1,
+                }],
+                intent: "add feature".to_string(),
+                verification_obligations: vec![],
+                rollback_point: "def456".to_string(),
+                self_reported_complete: true,
+                confidence: 0.8,
+                diff_summary: String::new(),
+                branch_name: None,
+            },
+        );
 
         let validation = dag.validate_merge("b").unwrap();
         assert!(!validation.can_merge);
-        assert!(validation.conflicting_files.contains(&"src/lib.rs".to_string()));
+        assert!(
+            validation
+                .conflicting_files
+                .contains(&"src/lib.rs".to_string())
+        );
     }
 }

@@ -103,24 +103,35 @@ impl TypedTool for ScheduleTool {
         _ctx: &ToolContext,
         _cancel: CancellationToken,
     ) -> Result<TypedToolResult, ToolError> {
-        let mut store = self.store.lock().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         match input {
-            ScheduleInput::Create { cron_expr, prompt, name } => {
+            ScheduleInput::Create {
+                cron_expr,
+                prompt,
+                name,
+            } => {
                 // Validate cron expression
-                cron_expr.parse::<cron::Schedule>()
+                cron_expr
+                    .parse::<cron::Schedule>()
                     .map_err(|e| ToolError::InvalidArgs(format!("Invalid cron expression: {e}")))?;
 
                 store.next_id += 1;
                 let id = format!("job_{}", store.next_id);
                 let job_name = name.unwrap_or_else(|| format!("job-{}", store.next_id));
-                store.jobs.insert(id.clone(), ScheduledJob {
-                    id: id.clone(),
-                    name: job_name.clone(),
-                    cron_expr: cron_expr.clone(),
-                    prompt: prompt.clone(),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                });
+                store.jobs.insert(
+                    id.clone(),
+                    ScheduledJob {
+                        id: id.clone(),
+                        name: job_name.clone(),
+                        cron_expr: cron_expr.clone(),
+                        prompt: prompt.clone(),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
 
                 Ok(TypedToolResult::mutating(format!(
                     "Created scheduled job '{job_name}' (id: {id})\n  Cron: {cron_expr}\n  Prompt: {prompt}"
@@ -131,10 +142,21 @@ impl TypedTool for ScheduleTool {
                 if store.jobs.is_empty() {
                     return Ok(TypedToolResult::text("No scheduled jobs."));
                 }
-                let lines: Vec<String> = store.jobs.values()
-                    .map(|j| format!("[{}] {} — cron: {} — prompt: {}", j.id, j.name, j.cron_expr, j.prompt))
+                let lines: Vec<String> = store
+                    .jobs
+                    .values()
+                    .map(|j| {
+                        format!(
+                            "[{}] {} — cron: {} — prompt: {}",
+                            j.id, j.name, j.cron_expr, j.prompt
+                        )
+                    })
                     .collect();
-                Ok(TypedToolResult::text(format!("{} job(s):\n{}", lines.len(), lines.join("\n"))))
+                Ok(TypedToolResult::text(format!(
+                    "{} job(s):\n{}",
+                    lines.len(),
+                    lines.join("\n")
+                )))
             }
 
             ScheduleInput::Delete { id } => {

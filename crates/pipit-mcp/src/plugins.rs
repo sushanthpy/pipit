@@ -65,7 +65,10 @@ impl PluginRegistry {
         } else {
             Vec::new()
         };
-        Self { plugins, registry_dir }
+        Self {
+            plugins,
+            registry_dir,
+        }
     }
 
     /// List all installed plugins.
@@ -79,17 +82,16 @@ impl PluginRegistry {
         if !manifest_path.exists() {
             return Err(format!("No plugin.json found in {}", source.display()));
         }
-        let content = std::fs::read_to_string(&manifest_path)
-            .map_err(|e| format!("Read error: {}", e))?;
-        let manifest: PluginManifest = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid plugin.json: {}", e))?;
+        let content =
+            std::fs::read_to_string(&manifest_path).map_err(|e| format!("Read error: {}", e))?;
+        let manifest: PluginManifest =
+            serde_json::from_str(&content).map_err(|e| format!("Invalid plugin.json: {}", e))?;
 
         let install_dir = self.registry_dir.join(&manifest.name);
         let _ = std::fs::create_dir_all(&install_dir);
 
         // Copy plugin files
-        copy_dir_recursive(source, &install_dir)
-            .map_err(|e| format!("Copy failed: {}", e))?;
+        copy_dir_recursive(source, &install_dir).map_err(|e| format!("Copy failed: {}", e))?;
 
         let installed = InstalledPlugin {
             manifest,
@@ -98,7 +100,8 @@ impl PluginRegistry {
         };
 
         // Remove old version if exists
-        self.plugins.retain(|p| p.manifest.name != installed.manifest.name);
+        self.plugins
+            .retain(|p| p.manifest.name != installed.manifest.name);
         self.plugins.push(installed);
         self.save();
 
@@ -107,7 +110,9 @@ impl PluginRegistry {
 
     /// Uninstall a plugin.
     pub fn uninstall(&mut self, name: &str) -> Result<(), String> {
-        let idx = self.plugins.iter()
+        let idx = self
+            .plugins
+            .iter()
             .position(|p| p.manifest.name == name)
             .ok_or_else(|| format!("Plugin '{}' not installed", name))?;
         let plugin = self.plugins.remove(idx);

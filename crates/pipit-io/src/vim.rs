@@ -72,10 +72,7 @@ pub enum CommandState {
     /// Accumulating a count prefix.
     AccumulatingCount(u32),
     /// An operator is pending, waiting for a motion or text object.
-    PendingMotion {
-        operator: Operator,
-        count: u32,
-    },
+    PendingMotion { operator: Operator, count: u32 },
     /// Waiting for the char argument of f/F/t/T.
     PendingFindChar {
         operator: Option<Operator>,
@@ -288,19 +285,58 @@ impl VimStateMachine {
                 self.mode = VimMode::Insert;
                 Some(VimCommand::OpenAbove)
             }
-            'h' => Some(VimCommand::Move { motion: Motion::Left, count: 1 }),
-            'l' => Some(VimCommand::Move { motion: Motion::Right, count: 1 }),
-            'j' => Some(VimCommand::Move { motion: Motion::Down, count: 1 }),
-            'k' => Some(VimCommand::Move { motion: Motion::Up, count: 1 }),
-            'w' => Some(VimCommand::Move { motion: Motion::WordForward, count: 1 }),
-            'b' => Some(VimCommand::Move { motion: Motion::WordBackward, count: 1 }),
-            'e' => Some(VimCommand::Move { motion: Motion::WordEnd, count: 1 }),
-            'W' => Some(VimCommand::Move { motion: Motion::BigWordForward, count: 1 }),
-            'B' => Some(VimCommand::Move { motion: Motion::BigWordBackward, count: 1 }),
-            'E' => Some(VimCommand::Move { motion: Motion::BigWordEnd, count: 1 }),
-            '0' => Some(VimCommand::Move { motion: Motion::LineStart, count: 1 }),
-            '^' => Some(VimCommand::Move { motion: Motion::FirstNonBlank, count: 1 }),
-            '$' => Some(VimCommand::Move { motion: Motion::LineEnd, count: 1 }),
+            'h' => Some(VimCommand::Move {
+                motion: Motion::Left,
+                count: 1,
+            }),
+            'l' => Some(VimCommand::Move {
+                motion: Motion::Right,
+                count: 1,
+            }),
+            'j' => Some(VimCommand::Move {
+                motion: Motion::Down,
+                count: 1,
+            }),
+            'k' => Some(VimCommand::Move {
+                motion: Motion::Up,
+                count: 1,
+            }),
+            'w' => Some(VimCommand::Move {
+                motion: Motion::WordForward,
+                count: 1,
+            }),
+            'b' => Some(VimCommand::Move {
+                motion: Motion::WordBackward,
+                count: 1,
+            }),
+            'e' => Some(VimCommand::Move {
+                motion: Motion::WordEnd,
+                count: 1,
+            }),
+            'W' => Some(VimCommand::Move {
+                motion: Motion::BigWordForward,
+                count: 1,
+            }),
+            'B' => Some(VimCommand::Move {
+                motion: Motion::BigWordBackward,
+                count: 1,
+            }),
+            'E' => Some(VimCommand::Move {
+                motion: Motion::BigWordEnd,
+                count: 1,
+            }),
+            '0' => Some(VimCommand::Move {
+                motion: Motion::LineStart,
+                count: 1,
+            }),
+            '^' => Some(VimCommand::Move {
+                motion: Motion::FirstNonBlank,
+                count: 1,
+            }),
+            '$' => Some(VimCommand::Move {
+                motion: Motion::LineEnd,
+                count: 1,
+            }),
             'x' => Some(VimCommand::DeleteChar { count: 1 }),
             'X' => Some(VimCommand::DeleteCharBefore { count: 1 }),
             'd' => {
@@ -336,25 +372,37 @@ impl VimStateMachine {
             '<' => Some(VimCommand::IndentLeft { count: 1 }),
             'f' => {
                 self.state = CommandState::PendingFindChar {
-                    operator: None, count: 1, forward: true, inclusive: true,
+                    operator: None,
+                    count: 1,
+                    forward: true,
+                    inclusive: true,
                 };
                 None
             }
             'F' => {
                 self.state = CommandState::PendingFindChar {
-                    operator: None, count: 1, forward: false, inclusive: true,
+                    operator: None,
+                    count: 1,
+                    forward: false,
+                    inclusive: true,
                 };
                 None
             }
             't' => {
                 self.state = CommandState::PendingFindChar {
-                    operator: None, count: 1, forward: true, inclusive: false,
+                    operator: None,
+                    count: 1,
+                    forward: true,
+                    inclusive: false,
                 };
                 None
             }
             'T' => {
                 self.state = CommandState::PendingFindChar {
-                    operator: None, count: 1, forward: false, inclusive: false,
+                    operator: None,
+                    count: 1,
+                    forward: false,
+                    inclusive: false,
                 };
                 None
             }
@@ -380,23 +428,50 @@ impl VimStateMachine {
         let count = current;
         match ch {
             'd' => {
-                self.state = CommandState::PendingMotion { operator: Operator::Delete, count };
+                self.state = CommandState::PendingMotion {
+                    operator: Operator::Delete,
+                    count,
+                };
                 None
             }
             'c' => {
-                self.state = CommandState::PendingMotion { operator: Operator::Change, count };
+                self.state = CommandState::PendingMotion {
+                    operator: Operator::Change,
+                    count,
+                };
                 None
             }
             'y' => {
-                self.state = CommandState::PendingMotion { operator: Operator::Yank, count };
+                self.state = CommandState::PendingMotion {
+                    operator: Operator::Yank,
+                    count,
+                };
                 None
             }
-            'h' => Some(VimCommand::Move { motion: Motion::Left, count }),
-            'l' => Some(VimCommand::Move { motion: Motion::Right, count }),
-            'j' => Some(VimCommand::Move { motion: Motion::Down, count }),
-            'k' => Some(VimCommand::Move { motion: Motion::Up, count }),
-            'w' => Some(VimCommand::Move { motion: Motion::WordForward, count }),
-            'b' => Some(VimCommand::Move { motion: Motion::WordBackward, count }),
+            'h' => Some(VimCommand::Move {
+                motion: Motion::Left,
+                count,
+            }),
+            'l' => Some(VimCommand::Move {
+                motion: Motion::Right,
+                count,
+            }),
+            'j' => Some(VimCommand::Move {
+                motion: Motion::Down,
+                count,
+            }),
+            'k' => Some(VimCommand::Move {
+                motion: Motion::Up,
+                count,
+            }),
+            'w' => Some(VimCommand::Move {
+                motion: Motion::WordForward,
+                count,
+            }),
+            'b' => Some(VimCommand::Move {
+                motion: Motion::WordBackward,
+                count,
+            }),
             'x' => Some(VimCommand::DeleteChar { count }),
             _ => None,
         }
@@ -426,11 +501,19 @@ impl VimStateMachine {
 
         // Check for text objects (i/a prefix)
         if ch == 'i' {
-            self.state = CommandState::PendingTextObject { operator, count, inner: true };
+            self.state = CommandState::PendingTextObject {
+                operator,
+                count,
+                inner: true,
+            };
             return None;
         }
         if ch == 'a' {
-            self.state = CommandState::PendingTextObject { operator, count, inner: false };
+            self.state = CommandState::PendingTextObject {
+                operator,
+                count,
+                inner: false,
+            };
             return None;
         }
 
@@ -444,7 +527,10 @@ impl VimStateMachine {
                 _ => unreachable!(),
             };
             self.state = CommandState::PendingFindChar {
-                operator: Some(operator), count, forward, inclusive,
+                operator: Some(operator),
+                count,
+                forward,
+                inclusive,
             };
             return None;
         }
@@ -470,7 +556,11 @@ impl VimStateMachine {
         if operator == Operator::Change {
             self.mode = VimMode::Insert;
         }
-        Some(VimCommand::OperatorMotion { operator, motion, count })
+        Some(VimCommand::OperatorMotion {
+            operator,
+            motion,
+            count,
+        })
     }
 
     fn process_find_char(
@@ -496,7 +586,11 @@ impl VimStateMachine {
                 if op == Operator::Change {
                     self.mode = VimMode::Insert;
                 }
-                Some(VimCommand::OperatorMotion { operator: op, motion, count })
+                Some(VimCommand::OperatorMotion {
+                    operator: op,
+                    motion,
+                    count,
+                })
             }
             None => Some(VimCommand::Move { motion, count }),
         }
@@ -515,16 +609,32 @@ impl VimStateMachine {
             'w' if inner => TextObject::InnerWord,
             'w' => TextObject::AWord,
             '"' | '\'' | '`' => {
-                if inner { TextObject::InnerQuote(ch) } else { TextObject::AQuote(ch) }
+                if inner {
+                    TextObject::InnerQuote(ch)
+                } else {
+                    TextObject::AQuote(ch)
+                }
             }
             '(' | ')' => {
-                if inner { TextObject::InnerParen } else { TextObject::AParen }
+                if inner {
+                    TextObject::InnerParen
+                } else {
+                    TextObject::AParen
+                }
             }
             '{' | '}' => {
-                if inner { TextObject::InnerBrace } else { TextObject::ABrace }
+                if inner {
+                    TextObject::InnerBrace
+                } else {
+                    TextObject::ABrace
+                }
             }
             '[' | ']' => {
-                if inner { TextObject::InnerBracket } else { TextObject::ABracket }
+                if inner {
+                    TextObject::InnerBracket
+                } else {
+                    TextObject::ABracket
+                }
             }
             _ => return None,
         };
@@ -532,7 +642,11 @@ impl VimStateMachine {
         if operator == Operator::Change {
             self.mode = VimMode::Insert;
         }
-        Some(VimCommand::OperatorTextObject { operator, text_object, count })
+        Some(VimCommand::OperatorTextObject {
+            operator,
+            text_object,
+            count,
+        })
     }
 }
 
@@ -561,7 +675,13 @@ mod tests {
         sm.mode = VimMode::Normal;
         assert!(sm.process_key('d').is_none());
         let cmd = sm.process_key('d');
-        assert!(matches!(cmd, Some(VimCommand::OperatorLine { operator: Operator::Delete, count: 1 })));
+        assert!(matches!(
+            cmd,
+            Some(VimCommand::OperatorLine {
+                operator: Operator::Delete,
+                count: 1
+            })
+        ));
     }
 
     #[test]
@@ -570,7 +690,13 @@ mod tests {
         sm.mode = VimMode::Normal;
         sm.process_key('3');
         let cmd = sm.process_key('w');
-        assert!(matches!(cmd, Some(VimCommand::Move { motion: Motion::WordForward, count: 3 })));
+        assert!(matches!(
+            cmd,
+            Some(VimCommand::Move {
+                motion: Motion::WordForward,
+                count: 3
+            })
+        ));
     }
 
     #[test]
@@ -580,11 +706,14 @@ mod tests {
         sm.process_key('d');
         sm.process_key('i');
         let cmd = sm.process_key('w');
-        assert!(matches!(cmd, Some(VimCommand::OperatorTextObject {
-            operator: Operator::Delete,
-            text_object: TextObject::InnerWord,
-            count: 1,
-        })));
+        assert!(matches!(
+            cmd,
+            Some(VimCommand::OperatorTextObject {
+                operator: Operator::Delete,
+                text_object: TextObject::InnerWord,
+                count: 1,
+            })
+        ));
     }
 
     #[test]
@@ -594,11 +723,14 @@ mod tests {
         sm.process_key('c');
         sm.process_key('i');
         let cmd = sm.process_key('"');
-        assert!(matches!(cmd, Some(VimCommand::OperatorTextObject {
-            operator: Operator::Change,
-            text_object: TextObject::InnerQuote('"'),
-            ..
-        })));
+        assert!(matches!(
+            cmd,
+            Some(VimCommand::OperatorTextObject {
+                operator: Operator::Change,
+                text_object: TextObject::InnerQuote('"'),
+                ..
+            })
+        ));
         assert_eq!(sm.mode, VimMode::Insert);
     }
 }

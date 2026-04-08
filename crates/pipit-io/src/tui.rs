@@ -230,8 +230,14 @@ impl PipitUi {
         // Draw horizontal rule + bar
         let rule = "─".repeat(term_width.min(120));
         eprintln!("{DIM}┌{rule}┐{RESET}");
-        eprintln!("{BG_DARK}{FG_WHITE}{}{RESET}", pad_to(&line1, term_width.min(120)));
-        eprintln!("{BG_DARK}{FG_GRAY}{}{RESET}", pad_to(&line2, term_width.min(120)));
+        eprintln!(
+            "{BG_DARK}{FG_WHITE}{}{RESET}",
+            pad_to(&line1, term_width.min(120))
+        );
+        eprintln!(
+            "{BG_DARK}{FG_GRAY}{}{RESET}",
+            pad_to(&line2, term_width.min(120))
+        );
         eprintln!("{DIM}└{rule}┘{RESET}");
     }
 
@@ -283,9 +289,7 @@ impl PipitUi {
 
     /// Print the input prompt (composer).
     pub fn print_prompt(&self) {
-        eprint!(
-            "{BOLD_GREEN}you›{RESET} ",
-        );
+        eprint!("{BOLD_GREEN}you›{RESET} ",);
         let _ = io::stderr().flush();
     }
 
@@ -368,10 +372,22 @@ impl PipitUi {
     pub fn print_permissions(&self) {
         eprintln!("{BOLD}Approval Modes{RESET}");
         let modes = [
-            (ApprovalMode::Suggest, "Read-only; all writes and commands need approval"),
-            (ApprovalMode::AutoEdit, "File edits need approval; reads are free"),
-            (ApprovalMode::CommandReview, "Shell commands need approval; edits are free"),
-            (ApprovalMode::FullAuto, "No routine prompts in trusted folders"),
+            (
+                ApprovalMode::Suggest,
+                "Read-only; all writes and commands need approval",
+            ),
+            (
+                ApprovalMode::AutoEdit,
+                "File edits need approval; reads are free",
+            ),
+            (
+                ApprovalMode::CommandReview,
+                "Shell commands need approval; edits are free",
+            ),
+            (
+                ApprovalMode::FullAuto,
+                "No routine prompts in trusted folders",
+            ),
         ];
         for (mode, desc) in &modes {
             let marker = if *mode == self.status.approval_mode {
@@ -379,7 +395,12 @@ impl PipitUi {
             } else {
                 format!(" ")
             };
-            eprintln!("  {} {BOLD}{:<14}{RESET} {DIM}{}{RESET}", marker, mode.label(), desc);
+            eprintln!(
+                "  {} {BOLD}{:<14}{RESET} {DIM}{}{RESET}",
+                marker,
+                mode.label(),
+                desc
+            );
         }
         eprintln!();
         eprintln!("{DIM}Switch with: /permissions <mode>{RESET}");
@@ -483,9 +504,7 @@ impl PipitUi {
                     eprintln!("{RESET}");
                 }
                 // Strip thinking tags that leak from some providers
-                let cleaned = text
-                    .replace("</think>", "")
-                    .replace("<think>", "");
+                let cleaned = text.replace("</think>", "").replace("<think>", "");
                 if cleaned.trim().is_empty() && text.contains("think>") {
                     // Pure thinking tag, skip entirely
                     return;
@@ -545,14 +564,49 @@ impl PipitUi {
                 match result {
                     pipit_core::ToolCallOutcome::Success { content, mutated } => {
                         if *mutated {
+                            // Distinguish Created (new file) vs Updated (existing file)
+                            let (icon, color) = if content.starts_with("Created") {
+                                ("+", GREEN)
+                            } else if content.starts_with("Updated") {
+                                ("~", YELLOW)
+                            } else {
+                                ("●", GREEN)
+                            };
+                            self.push_activity(ActivityKind::Edit, content.clone());
+                            eprintln!("{color}  {icon} {content}{RESET}");
+                        } else {
+                            // Show brief result for read/query operations
+                            let line_count = content.lines().count();
+                            let preview = match name.as_str() {
+                                "bash" => {
+                                    let first: String =
+                                        content.lines().take(3).collect::<Vec<_>>().join(" | ");
+                                    if line_count > 3 {
+                                        format!(
+                                            "{} ({} lines total)",
+                                            truncate(&first, 80),
+                                            line_count
+                                        )
+                                    } else {
+                                        truncate(&first, 100).to_string()
+                                    }
+                                }
+                                "list_directory" => {
+                                    format!("{} entries", line_count)
+                                }
+                                "read_file" => {
+                                    format!("{} lines", line_count)
+                                }
+                                _ => truncate(content, 80).to_string(),
+                            };
                             self.push_activity(
-                                ActivityKind::Edit,
-                                format!("{} ✓ modified", name),
+                                ActivityKind::Read,
+                                format!("{} → {}", name, preview),
                             );
-                            eprintln!("{GREEN}  ● {name} updated files{RESET}");
-                        } else if self.show_trace {
-                            let preview = truncate(content, 120);
-                            eprintln!("{DIM}  ○ {name} ok | {preview}{RESET}");
+                            if self.show_trace || matches!(name.as_str(), "bash" | "list_directory")
+                            {
+                                eprintln!("{DIM}  ○ {name} → {preview}{RESET}");
+                            }
                         }
                     }
                     pipit_core::ToolCallOutcome::PolicyBlocked { message, .. } => {
@@ -570,10 +624,7 @@ impl PipitUi {
                             ActivityKind::Error,
                             format!("{} failed: {}", name, truncate(message, 60)),
                         );
-                        eprintln!(
-                            "{RED}  ✗ {name} failed | {}{RESET}",
-                            truncate(message, 120)
-                        );
+                        eprintln!("{RED}  ✗ {name} failed | {}{RESET}", truncate(message, 120));
                     }
                 }
             }
@@ -602,7 +653,10 @@ impl PipitUi {
             } => {
                 self.push_activity(
                     ActivityKind::Info,
-                    format!("Compressed: {} msgs, ~{} tokens freed", messages_removed, tokens_freed),
+                    format!(
+                        "Compressed: {} msgs, ~{} tokens freed",
+                        messages_removed, tokens_freed
+                    ),
                 );
                 if self.show_trace {
                     eprintln!(
@@ -617,9 +671,7 @@ impl PipitUi {
                 self.status.cost = *cost;
 
                 if self.show_token_usage && self.show_trace {
-                    eprintln!(
-                        "{DIM}usage› tokens {used}/{limit} | ${cost:.4}{RESET}",
-                    );
+                    eprintln!("{DIM}usage› tokens {used}/{limit} | ${cost:.4}{RESET}",);
                 }
             }
             AgentEvent::PlanSelected {
@@ -682,14 +734,20 @@ impl PipitUi {
                 self.finish_inline_sections();
                 eprintln!("{BOLD_BLUE}pipit›{RESET} {DIM}{mode}{RESET} · {to}");
             }
-            AgentEvent::VerifierVerdict { verdict, confidence, findings_summary } => {
+            AgentEvent::VerifierVerdict {
+                verdict,
+                confidence,
+                findings_summary,
+            } => {
                 self.finish_inline_sections();
                 let color = match verdict.as_str() {
                     "PASS" => GREEN,
                     "REPAIRABLE" => YELLOW,
                     _ => RED,
                 };
-                eprintln!("{color}verify› {verdict}{RESET} {DIM}(confidence: {confidence:.0}%){RESET}");
+                eprintln!(
+                    "{color}verify› {verdict}{RESET} {DIM}(confidence: {confidence:.0}%){RESET}"
+                );
                 if !findings_summary.is_empty() {
                     for line in findings_summary.lines() {
                         eprintln!("  {DIM}{line}{RESET}");
@@ -716,11 +774,14 @@ impl PipitUi {
                     pipit_core::TurnEndReason::Cancelled => "cancelled",
                 };
                 let tools = self.tool_calls_this_turn;
-                eprintln!(
-                    "{DIM}turn {turn_number} · {tools} tool(s) · {reason_label}{RESET}"
-                );
+                eprintln!("{DIM}turn {turn_number} · {tools} tool(s) · {reason_label}{RESET}");
             }
-            AgentEvent::TurnPhaseEntered { turn, phase, detail, .. } => {
+            AgentEvent::TurnPhaseEntered {
+                turn,
+                phase,
+                detail,
+                ..
+            } => {
                 // Live turn trace: show canonical phase transitions in activity feed
                 let detail_str = detail.as_deref().unwrap_or("");
                 let label = if detail_str.is_empty() {
@@ -729,6 +790,12 @@ impl PipitUi {
                     format!("phase› {phase} ({detail_str})")
                 };
                 self.push_activity(ActivityKind::Info, label);
+            }
+            AgentEvent::BudgetExtended { new_approved } => {
+                self.push_activity(
+                    ActivityKind::Info,
+                    format!("budget extended to {} turns", new_approved),
+                );
             }
         }
     }
@@ -759,7 +826,10 @@ impl PipitUi {
 
 fn truncate(text: &str, max_chars: usize) -> String {
     // Strip newlines for single-line display
-    let flat: String = text.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    let flat: String = text
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
     if flat.chars().count() <= max_chars {
         flat
     } else {
@@ -784,15 +854,26 @@ fn tool_summary(name: &str, args: &serde_json::Value) -> String {
     match name {
         "read_file" => {
             let path = args["path"].as_str().unwrap_or("?");
-            format!("Read {}", path)
+            let start = args["start_line"].as_u64();
+            let end = args["end_line"].as_u64();
+            match (start, end) {
+                (Some(s), Some(e)) => format!("Read {} (lines {}-{})", path, s, e),
+                _ => format!("Read {}", path),
+            }
         }
         "write_file" => {
             let path = args["path"].as_str().unwrap_or("?");
-            format!("Write {}", path)
+            let content = args["content"].as_str().unwrap_or("");
+            let lines = content.lines().count();
+            format!("Write {} ({} lines)", path, lines)
         }
         "edit_file" => {
             let path = args["path"].as_str().unwrap_or("?");
             format!("Edit {}", path)
+        }
+        "multi_edit" => {
+            let path = args["path"].as_str().unwrap_or("?");
+            format!("MultiEdit {}", path)
         }
         "bash" => {
             let cmd = args["command"].as_str().unwrap_or("");
@@ -808,7 +889,12 @@ fn tool_summary(name: &str, args: &serde_json::Value) -> String {
         }
         "list_directory" => {
             let path = args["path"].as_str().unwrap_or(".");
-            format!("List {}", path)
+            format!("ls {}", path)
+        }
+        "scaffold_project" => {
+            let root = args["project_root"].as_str().unwrap_or("?");
+            let file_count = args["files"].as_array().map(|a| a.len()).unwrap_or(0);
+            format!("Scaffold {} ({} files)", root, file_count)
         }
         _ => {
             format!("{} …", name)
@@ -850,7 +936,9 @@ fn terminal_width() -> usize {
             return n;
         }
     }
-    crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(100)
+    crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(100)
 }
 
 /// Pad (or truncate) a string to exactly `width` visible characters.
@@ -989,7 +1077,10 @@ impl ApprovalHandler for InteractiveApprovalHandler {
                 eprintln!("{RED}  ✗ denied{RESET}");
             }
             ApprovalDecision::ScopedGrant(grant) => {
-                eprintln!("{GREEN}  ✓ approved (scoped grant, {} constraints){RESET}", grant.constraints.len());
+                eprintln!(
+                    "{GREEN}  ✓ approved (scoped grant, {} constraints){RESET}",
+                    grant.constraints.len()
+                );
             }
         }
 
@@ -999,7 +1090,7 @@ impl ApprovalHandler for InteractiveApprovalHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::{concise_provider_error, truncate, visible_char_count, render_bar, pad_to};
+    use super::{concise_provider_error, pad_to, render_bar, truncate, visible_char_count};
 
     #[test]
     fn truncate_short_text_is_unchanged() {

@@ -5,15 +5,15 @@
 //! capability envelopes, and explicit runtime states — not loose prompt
 //! content or ad-hoc hooks.
 
+use crate::capability::CapabilitySet;
 use crate::skill_activation::{ActivationRule, ActivationScope, SkillActivationIndex};
 use crate::skill_budget::{
-    allocate_skill_budget, create_budget_variants, InclusionLevel, SkillBudgetCandidate,
+    InclusionLevel, SkillBudgetCandidate, allocate_skill_budget, create_budget_variants,
 };
 use crate::skill_kernel::{
-    CompiledSkill, ExecutionMode, SkillKernel, SkillSandbox, SkillTokenBudget,
-    SkillTrigger, SkillTrustTier, SkillValidation,
+    CompiledSkill, ExecutionMode, SkillKernel, SkillSandbox, SkillTokenBudget, SkillTrigger,
+    SkillTrustTier, SkillValidation,
 };
-use crate::capability::CapabilitySet;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -108,10 +108,7 @@ impl SkillRuntime {
         let kernel_matches = self.kernel.find_matching_skills(active_files, languages);
 
         // 2. Also find matches via the activation index (path-prefix trie).
-        let mut matched_ids: Vec<String> = kernel_matches
-            .iter()
-            .map(|s| s.id.clone())
-            .collect();
+        let mut matched_ids: Vec<String> = kernel_matches.iter().map(|s| s.id.clone()).collect();
 
         let activated = self.activation_index.activate(active_files, languages);
         for id in activated {
@@ -148,20 +145,23 @@ impl SkillRuntime {
         let mut total_tokens = 0u64;
 
         // Build a map from skill_id to inclusion level
-        let level_map: HashMap<String, InclusionLevel> = allocation.allocations
-            .iter()
-            .cloned()
-            .collect();
+        let level_map: HashMap<String, InclusionLevel> =
+            allocation.allocations.iter().cloned().collect();
 
         for candidate in &candidates {
-            let level = level_map.get(&candidate.skill_id).copied().unwrap_or(InclusionLevel::Excluded);
+            let level = level_map
+                .get(&candidate.skill_id)
+                .copied()
+                .unwrap_or(InclusionLevel::Excluded);
             match level {
                 InclusionLevel::Excluded => {
                     excluded.push(candidate.skill_id.clone());
                 }
                 InclusionLevel::NameOnly => {
                     downgraded.push(candidate.skill_id.clone());
-                    let name = self.kernel.get(&candidate.skill_id)
+                    let name = self
+                        .kernel
+                        .get(&candidate.skill_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_else(|| candidate.skill_id.clone());
                     segments.push(SkillSegment {
@@ -174,7 +174,9 @@ impl SkillRuntime {
                     total_tokens += candidate.name_tokens;
                 }
                 InclusionLevel::Truncated => {
-                    let name = self.kernel.get(&candidate.skill_id)
+                    let name = self
+                        .kernel
+                        .get(&candidate.skill_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_else(|| candidate.skill_id.clone());
                     segments.push(SkillSegment {
@@ -187,7 +189,9 @@ impl SkillRuntime {
                     total_tokens += candidate.truncated_tokens;
                 }
                 InclusionLevel::Full => {
-                    let name = self.kernel.get(&candidate.skill_id)
+                    let name = self
+                        .kernel
+                        .get(&candidate.skill_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_else(|| candidate.skill_id.clone());
                     segments.push(SkillSegment {
@@ -252,7 +256,10 @@ impl SkillRuntime {
                     ));
                 }
                 InclusionLevel::NameOnly => {
-                    prompt.push_str(&format!("- {} (available on request)\n", segment.skill_name));
+                    prompt.push_str(&format!(
+                        "- {} (available on request)\n",
+                        segment.skill_name
+                    ));
                 }
                 InclusionLevel::Excluded => {}
             }
@@ -265,9 +272,10 @@ impl SkillRuntime {
 fn extract_path_patterns(trigger: &SkillTrigger) -> Vec<String> {
     match trigger {
         SkillTrigger::PathPattern { patterns } => patterns.clone(),
-        SkillTrigger::All { triggers } | SkillTrigger::Any { triggers } => {
-            triggers.iter().flat_map(|t| extract_path_patterns(t)).collect()
-        }
+        SkillTrigger::All { triggers } | SkillTrigger::Any { triggers } => triggers
+            .iter()
+            .flat_map(|t| extract_path_patterns(t))
+            .collect(),
         _ => vec![],
     }
 }
@@ -276,9 +284,10 @@ fn extract_path_patterns(trigger: &SkillTrigger) -> Vec<String> {
 fn extract_language_patterns(trigger: &SkillTrigger) -> Vec<String> {
     match trigger {
         SkillTrigger::Language { languages } => languages.clone(),
-        SkillTrigger::All { triggers } | SkillTrigger::Any { triggers } => {
-            triggers.iter().flat_map(|t| extract_language_patterns(t)).collect()
-        }
+        SkillTrigger::All { triggers } | SkillTrigger::Any { triggers } => triggers
+            .iter()
+            .flat_map(|t| extract_language_patterns(t))
+            .collect(),
         _ => vec![],
     }
 }
@@ -327,9 +336,15 @@ mod tests {
         let rust_skill = test_skill(
             "rust-testing",
             "Rust Testing",
-            SkillTrigger::Language { languages: vec!["rust".into()] },
+            SkillTrigger::Language {
+                languages: vec!["rust".into()],
+            },
         );
-        runtime.register_skill(rust_skill, test_content("Rust Testing"), ActivationScope::Project);
+        runtime.register_skill(
+            rust_skill,
+            test_content("Rust Testing"),
+            ActivationScope::Project,
+        );
 
         assert_eq!(runtime.skill_count(), 2);
 
@@ -337,7 +352,9 @@ mod tests {
         let injection = runtime.activate_for_context(&["src/main.rs"], &["rust"]);
         assert!(!injection.prompt_segments.is_empty());
         // At minimum the always-active skill should be present
-        let ids: Vec<&str> = injection.prompt_segments.iter()
+        let ids: Vec<&str> = injection
+            .prompt_segments
+            .iter()
             .map(|s| s.skill_id.as_str())
             .collect();
         assert!(ids.contains(&"fmt"));
@@ -366,15 +383,13 @@ mod tests {
     #[test]
     fn format_injection_produces_valid_markdown() {
         let injection = SkillInjection {
-            prompt_segments: vec![
-                SkillSegment {
-                    skill_id: "test".into(),
-                    skill_name: "Testing".into(),
-                    content: "Always run tests".into(),
-                    inclusion_level: InclusionLevel::Full,
-                    tokens: 10,
-                },
-            ],
+            prompt_segments: vec![SkillSegment {
+                skill_id: "test".into(),
+                skill_name: "Testing".into(),
+                content: "Always run tests".into(),
+                inclusion_level: InclusionLevel::Full,
+                tokens: 10,
+            }],
             total_tokens: 10,
             excluded: vec![],
             downgraded: vec![],

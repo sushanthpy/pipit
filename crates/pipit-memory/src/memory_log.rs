@@ -14,8 +14,8 @@
 //!
 //! The log file is `.pipit/memory-log.jsonl` — one JSON object per line.
 
-use crate::secret_scanner;
 use crate::MemoryError;
+use crate::secret_scanner;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -65,7 +65,11 @@ impl EntryFingerprint {
     fn from_text(text: &str) -> Self {
         let words: HashSet<String> = text
             .split_whitespace()
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string()
+            })
             .filter(|w| w.len() > 2)
             .collect();
         Self { words }
@@ -128,7 +132,8 @@ impl MemoryLog {
             if trimmed.starts_with("- ") {
                 let entry_text = &trimmed[2..];
                 if entry_text.len() > 10 {
-                    self.committed_fingerprints.push(EntryFingerprint::from_text(entry_text));
+                    self.committed_fingerprints
+                        .push(EntryFingerprint::from_text(entry_text));
                 }
             }
         }
@@ -186,9 +191,10 @@ impl MemoryLog {
 
             // Stage 2: Dedup check (Jaccard similarity against committed entries)
             let candidate_fp = EntryFingerprint::from_text(&candidate.text);
-            let is_dup = self.committed_fingerprints.iter().any(|fp| {
-                candidate_fp.similarity(fp) > self.dedup_threshold
-            });
+            let is_dup = self
+                .committed_fingerprints
+                .iter()
+                .any(|fp| candidate_fp.similarity(fp) > self.dedup_threshold);
 
             if is_dup {
                 candidate.status = CandidateStatus::RejectedDuplicate;
@@ -279,10 +285,22 @@ impl MemoryLog {
     /// Get log statistics for diagnostics.
     pub fn stats(&self) -> MemoryLogStats {
         let entries = self.read_all().unwrap_or_default();
-        let pending = entries.iter().filter(|e| e.status == CandidateStatus::Pending).count();
-        let committed = entries.iter().filter(|e| e.status == CandidateStatus::Committed).count();
-        let rejected_secret = entries.iter().filter(|e| e.status == CandidateStatus::RejectedSecret).count();
-        let rejected_dup = entries.iter().filter(|e| e.status == CandidateStatus::RejectedDuplicate).count();
+        let pending = entries
+            .iter()
+            .filter(|e| e.status == CandidateStatus::Pending)
+            .count();
+        let committed = entries
+            .iter()
+            .filter(|e| e.status == CandidateStatus::Committed)
+            .count();
+        let rejected_secret = entries
+            .iter()
+            .filter(|e| e.status == CandidateStatus::RejectedSecret)
+            .count();
+        let rejected_dup = entries
+            .iter()
+            .filter(|e| e.status == CandidateStatus::RejectedDuplicate)
+            .count();
 
         MemoryLogStats {
             total_entries: entries.len(),
@@ -298,8 +316,7 @@ impl MemoryLog {
 
     fn append_to_file(&self, candidate: &MemoryCandidate) -> Result<(), MemoryError> {
         if let Some(parent) = self.log_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| MemoryError::Io(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| MemoryError::Io(e.to_string()))?;
         }
 
         let json = serde_json::to_string(candidate)
@@ -312,8 +329,7 @@ impl MemoryLog {
             .open(&self.log_path)
             .map_err(|e| MemoryError::Io(e.to_string()))?;
 
-        writeln!(file, "{}", json)
-            .map_err(|e| MemoryError::Io(e.to_string()))?;
+        writeln!(file, "{}", json).map_err(|e| MemoryError::Io(e.to_string()))?;
 
         Ok(())
     }
@@ -323,8 +339,8 @@ impl MemoryLog {
             return Ok(Vec::new());
         }
 
-        let content = std::fs::read_to_string(&self.log_path)
-            .map_err(|e| MemoryError::Io(e.to_string()))?;
+        let content =
+            std::fs::read_to_string(&self.log_path).map_err(|e| MemoryError::Io(e.to_string()))?;
 
         let mut entries = Vec::new();
         for line in content.lines() {
@@ -342,8 +358,7 @@ impl MemoryLog {
 
     fn rewrite_log(&self, entries: &[MemoryCandidate]) -> Result<(), MemoryError> {
         if let Some(parent) = self.log_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| MemoryError::Io(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| MemoryError::Io(e.to_string()))?;
         }
 
         let mut content = String::new();
@@ -354,8 +369,7 @@ impl MemoryLog {
             content.push('\n');
         }
 
-        std::fs::write(&self.log_path, &content)
-            .map_err(|e| MemoryError::Io(e.to_string()))?;
+        std::fs::write(&self.log_path, &content).map_err(|e| MemoryError::Io(e.to_string()))?;
 
         Ok(())
     }
@@ -406,8 +420,20 @@ mod tests {
         let mut log = MemoryLog::open(dir.path());
 
         // Append candidates
-        log.append_candidate("Use Tokio for async runtime", "architecture", "session-1", 0.8).unwrap();
-        log.append_candidate("Prefer explicit error types over anyhow", "preferences", "session-1", 0.7).unwrap();
+        log.append_candidate(
+            "Use Tokio for async runtime",
+            "architecture",
+            "session-1",
+            0.8,
+        )
+        .unwrap();
+        log.append_candidate(
+            "Prefer explicit error types over anyhow",
+            "preferences",
+            "session-1",
+            0.7,
+        )
+        .unwrap();
 
         // Process pipeline
         let (committed, rejected) = log.process_pending().unwrap();
@@ -425,12 +451,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut log = MemoryLog::open(dir.path());
 
-        log.append_candidate("Use Tokio for the async runtime in this project", "architecture", "s1", 0.8).unwrap();
+        log.append_candidate(
+            "Use Tokio for the async runtime in this project",
+            "architecture",
+            "s1",
+            0.8,
+        )
+        .unwrap();
         let (c1, _) = log.process_pending().unwrap();
         assert_eq!(c1, 1);
 
         // Near-duplicate (very similar wording)
-        log.append_candidate("Use Tokio for async runtime in the project", "architecture", "s2", 0.7).unwrap();
+        log.append_candidate(
+            "Use Tokio for async runtime in the project",
+            "architecture",
+            "s2",
+            0.7,
+        )
+        .unwrap();
         let (c2, r2) = log.process_pending().unwrap();
         assert_eq!(c2, 0);
         assert_eq!(r2, 1);
@@ -443,8 +481,11 @@ mod tests {
 
         log.append_candidate(
             "API key is sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH",
-            "project", "s1", 0.5
-        ).unwrap();
+            "project",
+            "s1",
+            0.5,
+        )
+        .unwrap();
         let (committed, rejected) = log.process_pending().unwrap();
         assert_eq!(committed, 0);
         assert_eq!(rejected, 1);
@@ -460,8 +501,15 @@ mod tests {
         let mut doc = crate::MemoryDocument::new_empty(&mem_path);
 
         let mut log = MemoryLog::open(dir.path());
-        log.append_candidate("Always run clippy before commits", "workflow", "s1", 0.9).unwrap();
-        log.append_candidate("Database schema lives in db/migrations/", "project", "s1", 0.8).unwrap();
+        log.append_candidate("Always run clippy before commits", "workflow", "s1", 0.9)
+            .unwrap();
+        log.append_candidate(
+            "Database schema lives in db/migrations/",
+            "project",
+            "s1",
+            0.8,
+        )
+        .unwrap();
         log.process_pending().unwrap();
 
         let projected = log.project_and_compact(&mut doc).unwrap();
@@ -487,7 +535,8 @@ mod tests {
         log.max_log_entries = 5;
 
         for i in 0..10 {
-            log.append_candidate(&format!("Fact number {i}"), "project", "s1", 0.5).unwrap();
+            log.append_candidate(&format!("Fact number {i}"), "project", "s1", 0.5)
+                .unwrap();
         }
         log.process_pending().unwrap();
         log.compact().unwrap();
@@ -501,11 +550,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut log = MemoryLog::open(dir.path());
 
-        let existing_body = "## project\n\n- Use Tokio for async runtime\n- Database is PostgreSQL\n";
+        let existing_body =
+            "## project\n\n- Use Tokio for async runtime\n- Database is PostgreSQL\n";
         log.index_existing_memory(existing_body);
 
         // Now a near-duplicate should be rejected
-        log.append_candidate("Use Tokio for the async runtime", "project", "s1", 0.8).unwrap();
+        log.append_candidate("Use Tokio for the async runtime", "project", "s1", 0.8)
+            .unwrap();
         let (committed, rejected) = log.process_pending().unwrap();
         assert_eq!(committed, 0);
         assert_eq!(rejected, 1);

@@ -4,7 +4,7 @@
 //! and custom status displays for real-time agent activity feedback.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Gauge, Wrap};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 
 // ═══════════════════════════════════════════════════════════════════════
 // 23. AnimatedSpinner — rich animated spinner (10+ styles)
@@ -29,7 +29,9 @@ impl SpinnerStyle {
             Self::Line => &["|", "/", "-", "\\"],
             Self::Arrow => &["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"],
             Self::Bounce => &["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"],
-            Self::Clock => &["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"],
+            Self::Clock => &[
+                "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛",
+            ],
         }
     }
 }
@@ -79,10 +81,7 @@ impl Widget for &AnimatedSpinner<'_> {
                 format!(" {} ", frames[idx]),
                 Style::default().fg(self.color),
             ),
-            Span::styled(
-                self.label.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(self.label.to_string(), Style::default().fg(Color::DarkGray)),
         ];
 
         if let Some(secs) = self.elapsed_secs {
@@ -101,7 +100,7 @@ impl Widget for &AnimatedSpinner<'_> {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct ProgressBar<'a> {
-    pub ratio: f64,     // 0.0 to 1.0
+    pub ratio: f64, // 0.0 to 1.0
     pub label: &'a str,
     pub color: Color,
 }
@@ -154,7 +153,11 @@ pub struct TokenCounter {
 
 impl TokenCounter {
     pub fn new(used: u64, limit: u64) -> Self {
-        Self { used, limit, cache_hits: 0 }
+        Self {
+            used,
+            limit,
+            cache_hits: 0,
+        }
     }
 
     pub fn cache_hits(mut self, hits: u64) -> Self {
@@ -223,7 +226,10 @@ pub struct CostDisplay {
 
 impl CostDisplay {
     pub fn new(total_cost: f64) -> Self {
-        Self { total_cost, session_cost: total_cost }
+        Self {
+            total_cost,
+            session_cost: total_cost,
+        }
     }
 
     pub fn session_cost(mut self, cost: f64) -> Self {
@@ -248,7 +254,8 @@ impl Widget for &CostDisplay {
                 format!("{:.4}", self.total_cost),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-        ])).render(area, buf);
+        ]))
+        .render(area, buf);
     }
 }
 
@@ -270,9 +277,14 @@ pub struct StatusBar<'a> {
 impl<'a> StatusBar<'a> {
     pub fn new(model: &'a str, mode: &'a str) -> Self {
         Self {
-            model, mode, branch: None,
-            tokens_used: 0, tokens_limit: 0, cost: 0.0,
-            turn: 0, max_turns: 0,
+            model,
+            mode,
+            branch: None,
+            tokens_used: 0,
+            tokens_limit: 0,
+            cost: 0.0,
+            turn: 0,
+            max_turns: 0,
         }
     }
 }
@@ -296,7 +308,10 @@ impl Widget for &StatusBar<'_> {
             vec![
                 Span::styled(
                     format!(" pipit v{} ", env!("CARGO_PKG_VERSION")),
-                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
                 Span::styled("─", Style::default().fg(Color::DarkGray)),
@@ -337,9 +352,20 @@ impl Widget for &StatusBar<'_> {
         if padding > 0 {
             spans.push(Span::raw(" ".repeat(padding)));
         }
-        spans.push(Span::styled(right, Style::default().fg(if no_color { Color::Reset } else { Color::DarkGray })));
+        spans.push(Span::styled(
+            right,
+            Style::default().fg(if no_color {
+                Color::Reset
+            } else {
+                Color::DarkGray
+            }),
+        ));
 
-        let bg = if no_color { Style::default() } else { Style::default().bg(Color::DarkGray) };
+        let bg = if no_color {
+            Style::default()
+        } else {
+            Style::default().bg(Color::DarkGray)
+        };
         Paragraph::new(Line::from(spans))
             .style(bg)
             .render(area, buf);
@@ -402,7 +428,10 @@ pub struct StreamingIndicator {
 
 impl StreamingIndicator {
     pub fn new(frame: u64) -> Self {
-        Self { frame, color: Color::Cyan }
+        Self {
+            frame,
+            color: Color::Cyan,
+        }
     }
 }
 
@@ -415,7 +444,8 @@ impl Widget for &StreamingIndicator {
         Paragraph::new(Line::from(vec![
             Span::styled(dots, Style::default().fg(self.color)),
             Span::styled(empty, Style::default().fg(Color::DarkGray)),
-        ])).render(area, buf);
+        ]))
+        .render(area, buf);
     }
 }
 
@@ -432,7 +462,12 @@ pub struct ToolRunning<'a> {
 
 impl<'a> ToolRunning<'a> {
     pub fn new(tool_name: &'a str, args_summary: &'a str, elapsed: u64, frame: u64) -> Self {
-        Self { tool_name, args_summary, elapsed_secs: elapsed, frame }
+        Self {
+            tool_name,
+            args_summary,
+            elapsed_secs: elapsed,
+            frame,
+        }
     }
 }
 
@@ -452,7 +487,9 @@ impl Widget for &ToolRunning<'_> {
             ),
             Span::styled(
                 format!("Running {}", self.tool_name),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(": {}", self.args_summary),
@@ -482,7 +519,12 @@ pub struct PermissionPrompt<'a> {
 
 impl<'a> PermissionPrompt<'a> {
     pub fn new(tool_name: &'a str, command: &'a str) -> Self {
-        Self { tool_name, command, risk_level: "medium", selected_yes: false }
+        Self {
+            tool_name,
+            command,
+            risk_level: "medium",
+            selected_yes: false,
+        }
     }
 
     pub fn risk(mut self, level: &'a str) -> Self {
@@ -503,7 +545,9 @@ impl Widget for &PermissionPrompt<'_> {
             Line::from(vec![
                 Span::styled(
                     format!("⚠ Allow {} ", self.tool_name),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("[{}]", self.risk_level),
@@ -518,13 +562,23 @@ impl Widget for &PermissionPrompt<'_> {
             Line::from(""),
             Line::from(vec![
                 if self.selected_yes {
-                    Span::styled(" ▸ Allow ", Style::default().fg(Color::Green).add_modifier(Modifier::REVERSED))
+                    Span::styled(
+                        " ▸ Allow ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::REVERSED),
+                    )
                 } else {
                     Span::styled("   Allow ", Style::default().fg(Color::DarkGray))
                 },
                 Span::raw("  "),
                 if !self.selected_yes {
-                    Span::styled(" ▸ Deny ", Style::default().fg(Color::Red).add_modifier(Modifier::REVERSED))
+                    Span::styled(
+                        " ▸ Deny ",
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::REVERSED),
+                    )
                 } else {
                     Span::styled("   Deny ", Style::default().fg(Color::DarkGray))
                 },
@@ -534,11 +588,12 @@ impl Widget for &PermissionPrompt<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(risk_color))
-            .title(Span::styled(" permission ", Style::default().fg(risk_color)));
+            .title(Span::styled(
+                " permission ",
+                Style::default().fg(risk_color),
+            ));
 
-        Paragraph::new(lines)
-            .block(block)
-            .render(area, buf);
+        Paragraph::new(lines).block(block).render(area, buf);
     }
 }
 
@@ -568,8 +623,12 @@ impl Widget for &ModeIndicator<'_> {
 
         Paragraph::new(Span::styled(
             format!(" {} ", self.mode.to_uppercase()),
-            Style::default().fg(color).bg(bg).add_modifier(Modifier::BOLD),
-        )).render(area, buf);
+            Style::default()
+                .fg(color)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .render(area, buf);
     }
 }
 
@@ -584,7 +643,10 @@ pub struct VerificationBadge<'a> {
 
 impl<'a> VerificationBadge<'a> {
     pub fn new(status: &'a str) -> Self {
-        Self { status, confidence: None }
+        Self {
+            status,
+            confidence: None,
+        }
     }
 
     pub fn confidence(mut self, c: f64) -> Self {
@@ -603,12 +665,13 @@ impl Widget for &VerificationBadge<'_> {
             _ => ("?", Color::DarkGray),
         };
 
-        let mut spans = vec![
-            Span::styled(
-                format!(" {} {} ", icon, self.status.to_uppercase()),
-                Style::default().fg(Color::Black).bg(color).add_modifier(Modifier::BOLD),
-            ),
-        ];
+        let mut spans = vec![Span::styled(
+            format!(" {} {} ", icon, self.status.to_uppercase()),
+            Style::default()
+                .fg(Color::Black)
+                .bg(color)
+                .add_modifier(Modifier::BOLD),
+        )];
 
         if let Some(c) = self.confidence {
             spans.push(Span::styled(
@@ -632,7 +695,10 @@ pub struct BranchIndicator<'a> {
 
 impl<'a> BranchIndicator<'a> {
     pub fn new(branch: &'a str) -> Self {
-        Self { branch, dirty: false }
+        Self {
+            branch,
+            dirty: false,
+        }
     }
 
     pub fn dirty(mut self, dirty: bool) -> Self {

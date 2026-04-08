@@ -13,9 +13,9 @@
 //! from O(n) raw history to O(s + r) where s = snapshot summary, r = recent.
 //! Blob indirection: O(1) reference insertion vs O(L) repeated prompt injection.
 
-use crate::blob_store::{BlobStore, BlobDescriptor, BlobStoreError};
-use crate::reactive::{RecoveryController, RecoveryAction, RecoveryErrorKind};
-use pipit_context::budget::{ContextManager, CompressionStats};
+use crate::blob_store::{BlobDescriptor, BlobStore, BlobStoreError};
+use crate::reactive::{RecoveryAction, RecoveryController, RecoveryErrorKind};
+use pipit_context::budget::{CompressionStats, ContextManager};
 use pipit_provider::ProviderError;
 use serde::{Deserialize, Serialize};
 
@@ -68,13 +68,9 @@ pub enum ContinuationAction {
         nudge_message: String,
     },
     /// Compact context and retry with reduced history.
-    CompactAndRetry {
-        marker: ContinuationMarker,
-    },
+    CompactAndRetry { marker: ContinuationMarker },
     /// Recovery exhausted — surface error.
-    GiveUp {
-        reason: String,
-    },
+    GiveUp { reason: String },
 }
 
 /// The continuation controller orchestrates recovery from context overflow.
@@ -145,7 +141,10 @@ impl ContinuationController {
                     turn,
                     trigger: ContinuationTrigger::ContextOverflow,
                     blob_refs: Vec::new(),
-                    compaction_summary: format!("Context overflow recovery (attempt {})", self.continuation_count),
+                    compaction_summary: format!(
+                        "Context overflow recovery (attempt {})",
+                        self.continuation_count
+                    ),
                     tokens_freed: 0,
                 };
 

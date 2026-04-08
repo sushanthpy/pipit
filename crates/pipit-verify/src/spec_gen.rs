@@ -67,21 +67,27 @@ pub fn parse_llm_spec_output(name: &str, json_text: &str) -> Result<CslSpec, Str
     // Try to extract JSON from the response (may have markdown fences)
     let json = extract_json(json_text);
 
-    let parsed: serde_json::Value = serde_json::from_str(&json)
-        .map_err(|e| format!("Invalid JSON from LLM: {}", e))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("Invalid JSON from LLM: {}", e))?;
 
     let mut spec = CslSpec::new(name);
 
     // Parse variables
     if let Some(vars) = parsed.get("variables").and_then(|v| v.as_array()) {
         for var in vars {
-            let name = var.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let name = var
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             let var_type = match var.get("var_type").and_then(|v| v.as_str()) {
                 Some("Int") => CslType::Int,
                 Some("Bool") => CslType::Bool,
                 _ => CslType::Int,
             };
-            let desc = var.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let desc = var
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             spec.add_variable(name, var_type, desc);
         }
     }
@@ -100,21 +106,33 @@ pub fn parse_llm_spec_output(name: &str, json_text: &str) -> Result<CslSpec, Str
 
 fn parse_constraint(value: &serde_json::Value) -> Option<CslConstraint> {
     if let Some(linear) = value.get("Linear") {
-        let terms: Vec<(i64, String)> = linear.get("terms")
+        let terms: Vec<(i64, String)> = linear
+            .get("terms")
             .and_then(|t| t.as_array())
-            .map(|arr| arr.iter().filter_map(|term| {
-                let arr = term.as_array()?;
-                Some((arr.first()?.as_i64()?, arr.get(1)?.as_str()?.to_string()))
-            }).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|term| {
+                        let arr = term.as_array()?;
+                        Some((arr.first()?.as_i64()?, arr.get(1)?.as_str()?.to_string()))
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         let cmp = match linear.get("comparison").and_then(|v| v.as_str()) {
-            Some("Le") => CslCmp::Le, Some("Lt") => CslCmp::Lt,
-            Some("Ge") => CslCmp::Ge, Some("Gt") => CslCmp::Gt,
-            Some("Eq") => CslCmp::Eq, Some("Ne") => CslCmp::Ne,
+            Some("Le") => CslCmp::Le,
+            Some("Lt") => CslCmp::Lt,
+            Some("Ge") => CslCmp::Ge,
+            Some("Gt") => CslCmp::Gt,
+            Some("Eq") => CslCmp::Eq,
+            Some("Ne") => CslCmp::Ne,
             _ => CslCmp::Le,
         };
         let bound = linear.get("bound").and_then(|v| v.as_i64()).unwrap_or(0);
-        return Some(CslConstraint::Linear { terms, comparison: cmp, bound });
+        return Some(CslConstraint::Linear {
+            terms,
+            comparison: cmp,
+            bound,
+        });
     }
 
     if let Some(beq) = value.get("BoolConst") {
@@ -133,8 +151,15 @@ fn parse_constraint(value: &serde_json::Value) -> Option<CslConstraint> {
 
     if let Some(review) = value.get("ReviewRequired") {
         let inner = review.get("constraint").and_then(parse_constraint)?;
-        let reason = review.get("reason").and_then(|v| v.as_str()).unwrap_or("").into();
-        return Some(CslConstraint::ReviewRequired { constraint: Box::new(inner), reason });
+        let reason = review
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into();
+        return Some(CslConstraint::ReviewRequired {
+            constraint: Box::new(inner),
+            reason,
+        });
     }
 
     None

@@ -17,7 +17,11 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     // Preserve permissions
     if let Ok(metadata) = std::fs::metadata(path) {
         if let Err(e) = std::fs::set_permissions(tmp.path(), metadata.permissions()) {
-            tracing::warn!("Failed to preserve permissions for {}: {}", path.display(), e);
+            tracing::warn!(
+                "Failed to preserve permissions for {}: {}",
+                path.display(),
+                e
+            );
         }
     }
 

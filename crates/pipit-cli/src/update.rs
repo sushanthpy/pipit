@@ -50,10 +50,7 @@ fn now_secs() -> u64 {
 
 /// Fetch the latest release tag from GitHub API.
 async fn fetch_latest_tag() -> Result<String> {
-    let url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        REPO
-    );
+    let url = format!("https://api.github.com/repos/{}/releases/latest", REPO);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
@@ -189,12 +186,20 @@ pub async fn self_update() -> Result<()> {
 
     // Use tar to extract
     let output = std::process::Command::new("tar")
-        .args(["xzf", archive_path.to_str().unwrap(), "-C", tmpdir.path().to_str().unwrap()])
+        .args([
+            "xzf",
+            archive_path.to_str().unwrap(),
+            "-C",
+            tmpdir.path().to_str().unwrap(),
+        ])
         .output()
         .context("Failed to run tar")?;
 
     if !output.status.success() {
-        anyhow::bail!("tar extraction failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "tar extraction failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     // Find the pipit binary in the extracted files
@@ -202,9 +207,7 @@ pub async fn self_update() -> Result<()> {
 
     // Get current binary path
     let current_binary = std::env::current_exe().context("Cannot determine current binary path")?;
-    let current_binary = current_binary
-        .canonicalize()
-        .unwrap_or(current_binary);
+    let current_binary = current_binary.canonicalize().unwrap_or(current_binary);
 
     eprintln!("Replacing {}...", current_binary.display());
 

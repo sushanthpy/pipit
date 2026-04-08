@@ -133,14 +133,16 @@ impl<T: Clone + Eq + std::hash::Hash + Serialize + for<'de> Deserialize<'de>> Or
 
     /// Check if an element is in the set.
     pub fn contains(&self, element: &T) -> bool {
-        self.elements.get(element)
+        self.elements
+            .get(element)
             .map(|tags| !tags.is_empty())
             .unwrap_or(false)
     }
 
     /// Get all elements currently in the set.
     pub fn elements(&self) -> Vec<&T> {
-        self.elements.iter()
+        self.elements
+            .iter()
             .filter(|(_, tags)| !tags.is_empty())
             .map(|(elem, _)| elem)
             .collect()
@@ -198,14 +200,19 @@ impl CrdtStore {
         for (path, remote_reg) in &remote.file_states {
             match self.file_states.get_mut(path) {
                 Some(local) => local.merge(remote_reg),
-                None => { self.file_states.insert(path.clone(), remote_reg.clone()); }
+                None => {
+                    self.file_states.insert(path.clone(), remote_reg.clone());
+                }
             }
         }
         self.shared_context.merge(&remote.shared_context);
         for (tid, remote_reg) in &remote.task_assignments {
             match self.task_assignments.get_mut(tid) {
                 Some(local) => local.merge(remote_reg),
-                None => { self.task_assignments.insert(tid.clone(), remote_reg.clone()); }
+                None => {
+                    self.task_assignments
+                        .insert(tid.clone(), remote_reg.clone());
+                }
             }
         }
     }
@@ -254,7 +261,10 @@ mod tests {
 
         // Merge: B's add should survive A's remove
         set_a.merge(&set_b);
-        assert!(set_a.contains(&"x".to_string()), "Concurrent add from B should survive A's remove");
+        assert!(
+            set_a.contains(&"x".to_string()),
+            "Concurrent add from B should survive A's remove"
+        );
     }
 
     #[test]
@@ -262,8 +272,12 @@ mod tests {
         let mut store_a = CrdtStore::new();
         let mut store_b = CrdtStore::new();
 
-        store_a.shared_context.add("src/main.rs".to_string(), "node-a");
-        store_b.shared_context.add("src/lib.rs".to_string(), "node-b");
+        store_a
+            .shared_context
+            .add("src/main.rs".to_string(), "node-a");
+        store_b
+            .shared_context
+            .add("src/lib.rs".to_string(), "node-b");
 
         store_a.merge_remote(&store_b);
         assert!(store_a.shared_context.contains(&"src/main.rs".to_string()));

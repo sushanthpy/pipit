@@ -1,4 +1,3 @@
-
 //! Pipit Memory — Persistent, human-editable agent memory (Task 5)
 //!
 //! Architecture:
@@ -14,9 +13,9 @@
 //! Memory truncation: If MEMORY.md exceeds L_max lines or B_max bytes,
 //! truncate at last newline before B_max (O(n) single pass).
 
-pub mod secret_scanner;
 pub mod auto_dream;
 pub mod memory_log;
+pub mod secret_scanner;
 pub mod team_sync;
 
 use serde::{Deserialize, Serialize};
@@ -55,7 +54,9 @@ pub struct MemoryFrontmatter {
     pub shared: bool,
 }
 
-fn default_version() -> u32 { 1 }
+fn default_version() -> u32 {
+    1
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Memory Document
@@ -73,8 +74,7 @@ pub struct MemoryDocument {
 impl MemoryDocument {
     /// Load a MEMORY.md file, parsing frontmatter and body.
     pub fn load(path: &Path) -> Result<Self, MemoryError> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| MemoryError::Io(e.to_string()))?;
+        let raw = std::fs::read_to_string(path).map_err(|e| MemoryError::Io(e.to_string()))?;
 
         let (frontmatter, body) = parse_frontmatter(&raw)?;
         let (body, was_truncated) = truncate_body(&body);
@@ -120,12 +120,10 @@ impl MemoryDocument {
 
         // Ensure parent directory exists
         if let Some(parent) = self.source_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| MemoryError::Io(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| MemoryError::Io(e.to_string()))?;
         }
 
-        std::fs::write(&self.source_path, &content)
-            .map_err(|e| MemoryError::Io(e.to_string()))?;
+        std::fs::write(&self.source_path, &content).map_err(|e| MemoryError::Io(e.to_string()))?;
 
         Ok(())
     }
@@ -145,11 +143,13 @@ impl MemoryDocument {
                     .map(|p| p + after_header)
                     .unwrap_or(self.body.len());
 
-                self.body.insert_str(next_section, &format!("\n- {entry}\n"));
+                self.body
+                    .insert_str(next_section, &format!("\n- {entry}\n"));
             }
         } else {
             // Create new section
-            self.body.push_str(&format!("\n{section_header}\n\n- {entry}\n"));
+            self.body
+                .push_str(&format!("\n{section_header}\n\n- {entry}\n"));
             if !self.frontmatter.categories.contains(&category.to_string()) {
                 self.frontmatter.categories.push(category.to_string());
             }
@@ -196,15 +196,15 @@ fn parse_frontmatter(raw: &str) -> Result<(MemoryFrontmatter, String), MemoryErr
 
     // Find closing ---
     let after_open = &trimmed[3..];
-    let close_pos = after_open.find("\n---")
+    let close_pos = after_open
+        .find("\n---")
         .ok_or_else(|| MemoryError::ParseError("Unclosed frontmatter".into()))?;
 
     let yaml_str = &after_open[..close_pos].trim();
     let body_start = 3 + close_pos + 4; // "---" + "\n---"
     let body = trimmed[body_start..].trim_start().to_string();
 
-    let frontmatter: MemoryFrontmatter = serde_yaml_ng::from_str(yaml_str)
-        .unwrap_or_default();
+    let frontmatter: MemoryFrontmatter = serde_yaml_ng::from_str(yaml_str).unwrap_or_default();
 
     Ok((frontmatter, body))
 }
@@ -265,7 +265,10 @@ impl MemoryManager {
     pub fn new(project_root: &Path) -> Self {
         let project_mem_path = project_root.join(".pipit").join(MEMORY_FILE_NAME);
         let global_mem_path = dirs_path().join(MEMORY_FILE_NAME);
-        let team_mem_path = project_root.join(".pipit").join("team").join(MEMORY_FILE_NAME);
+        let team_mem_path = project_root
+            .join(".pipit")
+            .join("team")
+            .join(MEMORY_FILE_NAME);
 
         let project_memory = MemoryDocument::load(&project_mem_path).ok();
         let global_memory = MemoryDocument::load(&global_mem_path).ok();
@@ -352,9 +355,15 @@ impl MemoryManager {
     /// Total estimated tokens across all memory sources.
     pub fn total_tokens(&self) -> usize {
         let mut total = 0;
-        if let Some(ref m) = self.project_memory { total += m.estimated_tokens(); }
-        if let Some(ref m) = self.global_memory { total += m.estimated_tokens(); }
-        if let Some(ref m) = self.team_memory { total += m.estimated_tokens(); }
+        if let Some(ref m) = self.project_memory {
+            total += m.estimated_tokens();
+        }
+        if let Some(ref m) = self.global_memory {
+            total += m.estimated_tokens();
+        }
+        if let Some(ref m) = self.team_memory {
+            total += m.estimated_tokens();
+        }
         total
     }
 
@@ -373,7 +382,8 @@ impl MemoryManager {
         source: &str,
         salience: f64,
     ) -> Result<u64, MemoryError> {
-        self.memory_log.append_candidate(text, category, source, salience)
+        self.memory_log
+            .append_candidate(text, category, source, salience)
     }
 
     /// Process all pending candidates and project committed ones to MEMORY.md.
@@ -499,7 +509,10 @@ categories:
 
     #[test]
     fn truncation_by_lines() {
-        let body = (0..300).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\n");
+        let body = (0..300)
+            .map(|i| format!("Line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let (truncated, was_truncated) = truncate_body(&body);
         assert!(was_truncated);
         assert!(truncated.lines().count() <= MAX_MEMORY_LINES);
@@ -546,4 +559,3 @@ categories:
         assert!(prompt.contains("</memory>"));
     }
 }
-

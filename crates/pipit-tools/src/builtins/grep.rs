@@ -69,16 +69,13 @@ impl Tool for GrepTool {
         } else {
             cmd.arg("-rn"); // recursive, line numbers
         }
-        cmd.arg("--color=never")
-            .arg("-E")
-            .arg(pattern);
+        cmd.arg("--color=never").arg("-E").arg(pattern);
 
         if let Some(inc) = include {
             cmd.arg("--include").arg(inc);
         }
 
-        cmd.arg(&search_path)
-            .current_dir(&ctx.project_root);
+        cmd.arg(&search_path).current_dir(&ctx.project_root);
 
         let output = cmd
             .output()
@@ -101,7 +98,10 @@ impl Tool for GrepTool {
         } else {
             let total_matches = stdout.lines().count();
             let truncated = if total_matches > max_results {
-                format!("\n\n[Showing first {} of {} matches]", max_results, total_matches)
+                format!(
+                    "\n\n[Showing first {} of {} matches]",
+                    max_results, total_matches
+                )
             } else {
                 String::new()
             };

@@ -1,6 +1,8 @@
 use pipit_config::{ApprovalMode, ProviderKind};
+use pipit_context::cache_optimizer::{
+    CacheBreakpoint, CacheContentType, CacheOptimizer, PromptSection,
+};
 use pipit_context::knowledge_injection;
-use pipit_context::cache_optimizer::{CacheBreakpoint, CacheContentType, CacheOptimizer, PromptSection};
 use pipit_skills::SkillRegistry;
 use pipit_tools::ToolRegistry;
 use std::path::Path;
@@ -99,6 +101,19 @@ You have these tools. Choose the RIGHT one on the FIRST try:
 7. **Batch when possible.** If you need to read multiple files, call read_file for each one in the same turn.
 8. **Don't verify cd.** After `cd /path`, don't run `pwd` to check — the tool confirms the directory change.
 
+## Response formatting
+
+Use markdown in your responses for readability:
+- Use **bold** for emphasis and `backticks` for code symbols, paths, and commands.
+- Use headers (## / ###) to organize multi-section responses.
+- Use bullet lists or numbered lists for sequential steps or multiple items.
+- Use fenced code blocks (```) with language tags for code snippets.
+- Keep paragraphs short and separated by blank lines.
+- Your response must be the user-facing answer only, not a work log.
+- Do not write internal planning like "I need to check", "I'll inspect", or "I've read".
+- Do not narrate turns, tool calls, or file reads in the response body unless the user explicitly asks for that transcript.
+- For simple Q&A, prefer a short answer with bullets or short paragraphs over a step-by-step narrative.
+
 ## Behavioral rules
 
 1. Read before editing — always understand the full context before making changes.
@@ -114,19 +129,95 @@ You have these tools. Choose the RIGHT one on the FIRST try:
         boot_listing = boot_listing,
     );
 
-    // PIPIT.md — project root instructions
-    let pipit_md_candidates = [
-        project_root.join("PIPIT.md"),
-        project_root.join(".pipit").join("PIPIT.md"),
-    ];
-    for candidate in &pipit_md_candidates {
-        if candidate.exists() {
-            if let Ok(content) = std::fs::read_to_string(candidate) {
-                prompt.push_str("\n## Project instructions (PIPIT.md)\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("\n");
+    // PIPIT.md or CLAUDE.md — hierarchical instruction loading.
+    //
+    // Walk up from project_root to the filesystem root (or $HOME, whichever
+    // comes first) collecting instruction files. Files closer to the project
+    // root take priority. This supports monorepo structures where a root-level
+    // CLAUDE.md provides org-wide instructions and subdirectory PIPIT.md adds
+    // project-specific context.
+    //
+    // Order: project root is injected LAST (highest priority, closest to code).
+    // Parent instructions are injected first (broadest context).
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    let instruction_names = ["PIPIT.md", "CLAUDE.md"];
+    let instruction_dirs = [".pipit", ".claude"];
+
+    let mut ancestor_instructions: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut current = project_root.to_path_buf();
+    loop {
+        for name in &instruction_names {
+            let candidate = current.join(name);
+            if candidate.exists() {
+                if let Ok(content) = std::fs::read_to_string(&candidate) {
+                    ancestor_instructions.push((candidate, content));
+                    break; // Only one instruction file per directory level
+                }
+            }
+        }
+        // Also check dotdirs (.pipit/PIPIT.md, .claude/CLAUDE.md)
+        if ancestor_instructions
+            .last()
+            .map(|(p, _)| p.parent() != Some(&current))
+            .unwrap_or(true)
+        {
+            for dir in &instruction_dirs {
+                for name in &instruction_names {
+                    let candidate = current.join(dir).join(name);
+                    if candidate.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&candidate) {
+                            ancestor_instructions.push((candidate, content));
+                            break;
+                        }
+                    }
+                }
+                if ancestor_instructions
+                    .last()
+                    .map(|(p, _)| p.starts_with(&current.join(dir)))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }
+
+        // Stop at home directory or filesystem root
+        if let Some(ref home_dir) = home {
+            if current == *home_dir {
                 break;
             }
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+
+    // Also check user-global instruction file (~/.config/pipit/PIPIT.md)
+    if let Some(ref home_dir) = home {
+        let global_candidate = home_dir.join(".config").join("pipit").join("PIPIT.md");
+        if global_candidate.exists() {
+            if let Ok(content) = std::fs::read_to_string(&global_candidate) {
+                ancestor_instructions.push((global_candidate, content));
+            }
+        }
+    }
+
+    // Inject in reverse order: broadest (most distant) first, project-local last
+    ancestor_instructions.reverse();
+    // Deduplicate by canonical path
+    let mut seen_paths = std::collections::HashSet::new();
+    for (path, content) in &ancestor_instructions {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen_paths.insert(canonical) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let rel = path
+                .strip_prefix(project_root)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.display().to_string());
+            prompt.push_str(&format!("\n## Project instructions ({})\n\n", rel));
+            prompt.push_str(content);
+            prompt.push_str("\n");
         }
     }
 
@@ -195,9 +286,16 @@ You have these tools. Choose the RIGHT one on the FIRST try:
         if let Ok(entries) = std::fs::read_dir(&knowledge_dir) {
             let mut units: Vec<knowledge_injection::InjectedKnowledge> = Vec::new();
             for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                        if let Ok(unit) = serde_json::from_str::<knowledge_injection::InjectedKnowledge>(&content) {
+                        if let Ok(unit) =
+                            serde_json::from_str::<knowledge_injection::InjectedKnowledge>(&content)
+                        {
                             units.push(unit);
                         }
                     }
@@ -244,7 +342,14 @@ fn generate_boot_listing(project_root: &Path) -> String {
         // Skip build artifacts
         if matches!(
             name.as_str(),
-            "node_modules" | "target" | "__pycache__" | ".next" | "dist" | "build" | "venv" | ".venv"
+            "node_modules"
+                | "target"
+                | "__pycache__"
+                | ".next"
+                | "dist"
+                | "build"
+                | "venv"
+                | ".venv"
         ) {
             continue;
         }
@@ -303,7 +408,12 @@ pub fn build_prompt_with_cache_sections(
 ) -> (Vec<PromptSection>, String) {
     // Build the full prompt first
     let full_prompt = build_system_prompt(
-        project_root, tools, approval_mode, provider, skills, workflow_assets,
+        project_root,
+        tools,
+        approval_mode,
+        provider,
+        skills,
+        workflow_assets,
     );
 
     // Decompose into sections for cache analysis

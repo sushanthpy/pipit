@@ -323,6 +323,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2668,7 +2683,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pipit-agent-mesh"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2684,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-agents"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2697,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-arch-evolution"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -2707,7 +2722,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-bench"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "pipit-config",
@@ -2721,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-bridge"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -2736,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-browser"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2755,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-channel"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2770,9 +2785,10 @@ dependencies = [
 
 [[package]]
 name = "pipit-cli"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "clap_complete",
@@ -2796,6 +2812,7 @@ dependencies = [
  "pipit-tools",
  "pipit-voice",
  "ratatui 0.29.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -2808,7 +2825,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-compliance"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "serde",
@@ -2818,7 +2835,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-config"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dirs 5.0.1",
  "reqwest",
@@ -2832,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-context"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2849,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -2873,6 +2890,7 @@ dependencies = [
  "pipit-spec",
  "pipit-tools",
  "pipit-verify",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2885,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-daemon"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2926,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-deps"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "reqwest",
  "serde",
@@ -2939,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-edit"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "pipit-provider",
  "serde",
@@ -2952,7 +2970,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-env"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "serde",
@@ -2963,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-evolve"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -2977,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-extensions"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -2996,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-hw-codesign"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -3006,7 +3024,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-intelligence"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dashmap",
  "ignore",
@@ -3029,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-io"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "ansi-to-tui",
  "async-trait",
@@ -3061,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-lsp"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -3072,7 +3090,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-mcp"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3092,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-memory"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -3112,7 +3130,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-mesh"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "pipit-agent-mesh",
@@ -3130,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-perf"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -3140,7 +3158,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-permissions"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3158,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-provider"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3180,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-skills"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "serde",
@@ -3192,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-spec"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -3201,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-test-universe"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -3213,7 +3231,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-tools"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3245,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-verify"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -3257,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-voice"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "async-trait",
  "cpal",
@@ -3347,6 +3365,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
+dependencies = [
+ "bit-set",
+ "bit-vec",
+ "bitflags 2.11.0",
+ "num-traits",
+ "rand 0.9.2",
+ "rand_chacha 0.9.0",
+ "rand_xorshift",
+ "regex-syntax",
+ "rusty-fork",
+ "tempfile",
+ "unarray",
+]
+
+[[package]]
 name = "psm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3374,6 +3411,12 @@ name = "pulldown-cmark-escape"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
+
+[[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-xml"
@@ -3517,6 +3560,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rand_xorshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+dependencies = [
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -3862,6 +3914,18 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error",
+ "tempfile",
+ "wait-timeout",
+]
 
 [[package]]
 name = "ryu"
@@ -4928,6 +4992,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5087,6 +5157,15 @@ checksum = "2e369bee1b05d510a7b4ed645f5faa90619e05437111783ea5848f28d97d3c2e"
 dependencies = [
  "proc-macro2",
  "quote",
+]
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

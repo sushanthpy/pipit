@@ -94,9 +94,7 @@ impl Transport for InProcessTransport {
 
     async fn recv(&self) -> Result<BridgeMessage, TransportError> {
         let mut rx = self.incoming.lock().await;
-        rx.recv()
-            .await
-            .ok_or(TransportError::ConnectionClosed)
+        rx.recv().await.ok_or(TransportError::ConnectionClosed)
     }
 
     fn is_connected(&self) -> bool {
@@ -116,10 +114,7 @@ pub struct LamportClock {
 
 impl LamportClock {
     pub fn new() -> Self {
-        Self {
-            counter: 0,
-            seq: 0,
-        }
+        Self { counter: 0, seq: 0 }
     }
 
     /// Generate the next message ID.

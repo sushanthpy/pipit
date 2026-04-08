@@ -1,4 +1,3 @@
-
 //! Built-In Agent Definitions — 5 purpose-built agents.
 //!
 //! Each agent has:
@@ -181,7 +180,8 @@ You have access to all tools. You can read, write, edit, execute, and search.
 - Prefer small, focused changes over large rewrites
 - Always check existing tests after modifications
 - Leave the codebase in a working state
-- If unsure about something, explore first (grep, read) before modifying"#.into(),
+- If unsure about something, explore first (grep, read) before modifying"#
+            .into(),
         allowed_tools: HashSet::new(), // Empty = all tools allowed
         denied_tools: HashSet::new(),
         max_turns: 50,
@@ -196,8 +196,10 @@ You have access to all tools. You can read, write, edit, execute, and search.
 fn guide_agent() -> AgentDefinition {
     AgentDefinition {
         name: "guide".into(),
-        description: "Documentation and onboarding assistant. Explains the codebase to newcomers.".into(),
-        system_prompt: r#"You are an onboarding guide. Your job is to help developers understand this codebase.
+        description: "Documentation and onboarding assistant. Explains the codebase to newcomers."
+            .into(),
+        system_prompt:
+            r#"You are an onboarding guide. Your job is to help developers understand this codebase.
 
 === YOUR CAPABILITIES ===
 You can read the entire codebase. You CANNOT modify anything.
@@ -220,14 +222,20 @@ When asked "how do I...":
 - Be welcoming and encouraging
 - Use concrete examples from the actual codebase
 - Link explanations to specific files and line numbers
-- Build understanding incrementally"#.into(),
+- Build understanding incrementally"#
+                .into(),
         allowed_tools: HashSet::from([
-            "read_file".into(), "list_directory".into(),
-            "grep".into(), "glob".into(),
+            "read_file".into(),
+            "list_directory".into(),
+            "grep".into(),
+            "glob".into(),
         ]),
         denied_tools: HashSet::from([
-            "bash".into(), "write_file".into(), "edit_file".into(),
-            "multi_edit".into(), "notebook_edit".into(),
+            "bash".into(),
+            "write_file".into(),
+            "edit_file".into(),
+            "multi_edit".into(),
+            "notebook_edit".into(),
         ]),
         max_turns: 25,
         can_write: false,
@@ -273,4 +281,3 @@ mod tests {
         assert!(!guide.is_tool_allowed("bash"));
     }
 }
-

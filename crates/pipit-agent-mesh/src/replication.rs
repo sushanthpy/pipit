@@ -244,12 +244,7 @@ impl MeshState {
     }
 
     /// Register an agent in the mesh state.
-    pub fn register_agent(
-        &mut self,
-        agent_id: &str,
-        capability_hash: &str,
-        node_id: &str,
-    ) {
+    pub fn register_agent(&mut self, agent_id: &str, capability_hash: &str, node_id: &str) {
         self.active_agents.add(agent_id.to_string(), node_id);
 
         let reg = self
@@ -461,7 +456,10 @@ mod tests {
         result_2_1.merge(&s1);
 
         // Both orders should produce the same active agents
-        assert_eq!(result_1_2.active_agents.len(), result_2_1.active_agents.len());
+        assert_eq!(
+            result_1_2.active_agents.len(),
+            result_2_1.active_agents.len()
+        );
         assert_eq!(
             result_1_2.tasks_completed.value(),
             result_2_1.tasks_completed.value()

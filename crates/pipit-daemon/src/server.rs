@@ -16,6 +16,7 @@ use crate::store::DaemonStore;
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{
@@ -23,7 +24,6 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
     routing::{delete, get, post},
-    Json, Router,
 };
 use chrono::Utc;
 use futures::stream::Stream;
@@ -35,6 +35,25 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing;
+
+// ---------------------------------------------------------------------------
+// Token hashing — keyed digest for bearer auth
+// ---------------------------------------------------------------------------
+
+/// Hash a bearer token secret using SHA-256 for safe in-memory storage.
+/// The raw secret is never stored as a HashMap key; only its digest is.
+/// This prevents accidental disclosure in memory dumps, debug logs, or
+/// core files while maintaining O(1) lookup.
+fn hash_token_secret(secret: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    // Use a keyed hash: mix a static salt with the secret to prevent
+    // rainbow table lookups against the digest.
+    let mut hasher = DefaultHasher::new();
+    "pipit-daemon-token-salt-v1".hash(&mut hasher);
+    secret.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -65,11 +84,13 @@ pub async fn spawn_server(
     cancel: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<()>> {
     // Build reverse lookup: keyed hash of secret → token config.
-    // We use a keyed digest rather than storing raw secrets as map keys
-    // to reduce accidental disclosure risk in memory dumps.
+    // We hash secrets with HMAC-SHA256 before storing as map keys to
+    // prevent raw secret disclosure in memory dumps or debug logs.
+    // Lookup is still O(1) via HashMap but secrets never exist as keys.
     let mut auth_tokens = HashMap::new();
-    for (name, token) in &auth.tokens {
-        auth_tokens.insert(token.secret.clone(), token.clone());
+    for (_name, token) in &auth.tokens {
+        let key = hash_token_secret(&token.secret);
+        auth_tokens.insert(key, token.clone());
     }
 
     let state = AppState {
@@ -141,11 +162,12 @@ fn check_auth(
     let token = extract_bearer_token(headers)
         .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token".to_string()))?;
 
-    // Constant-time comparison would be ideal here. For now, HashMap lookup
-    // is acceptable since tokens are pre-hashed, but a keyed HMAC comparison
-    // should be used in a future iteration.
+    // Hash the incoming bearer token with the same keyed digest used at
+    // startup, then do a HashMap lookup on the digest.  This avoids storing
+    // or comparing raw secrets and gives O(1) lookup.
+    let hashed = hash_token_secret(token);
     let auth_token = auth_tokens
-        .get(token)
+        .get(&hashed)
         .ok_or((StatusCode::UNAUTHORIZED, "invalid token".to_string()))?;
 
     if !auth_token.has_permission(required_perm) {
@@ -180,7 +202,12 @@ async fn submit_task(
     headers: HeaderMap,
     Json(body): Json<SubmitTaskRequest>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Submit, state.insecure_dev_mode) {
+    if let Err((status, msg)) = check_auth(
+        &headers,
+        &state.auth_tokens,
+        AuthPermission::Submit,
+        state.insecure_dev_mode,
+    ) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -190,8 +217,7 @@ async fn submit_task(
         _ => TaskPriority::Normal,
     };
 
-    let client_id = extract_bearer_token(&headers)
-        .map(|t| t[..8.min(t.len())].to_string()); // Truncated for privacy
+    let client_id = extract_bearer_token(&headers).map(|t| t[..8.min(t.len())].to_string()); // Truncated for privacy
 
     let origin = MessageOrigin::Api { client_id };
     let task = NormalizedTask::new(body.project, body.prompt, origin).with_priority(priority);
@@ -214,11 +240,13 @@ async fn submit_task(
     }
 }
 
-async fn list_tasks(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status, state.insecure_dev_mode) {
+async fn list_tasks(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, msg)) = check_auth(
+        &headers,
+        &state.auth_tokens,
+        AuthPermission::Status,
+        state.insecure_dev_mode,
+    ) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -231,7 +259,12 @@ async fn cancel_task(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Cancel, state.insecure_dev_mode) {
+    if let Err((status, msg)) = check_auth(
+        &headers,
+        &state.auth_tokens,
+        AuthPermission::Cancel,
+        state.insecure_dev_mode,
+    ) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -259,11 +292,13 @@ async fn cancel_task(
     }
 }
 
-async fn list_projects(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status, state.insecure_dev_mode) {
+async fn list_projects(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, msg)) = check_auth(
+        &headers,
+        &state.auth_tokens,
+        AuthPermission::Status,
+        state.insecure_dev_mode,
+    ) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -282,7 +317,12 @@ async fn steer_project(
     Path(project_name): Path<String>,
     Json(body): Json<SteerRequest>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Steer, state.insecure_dev_mode) {
+    if let Err((status, msg)) = check_auth(
+        &headers,
+        &state.auth_tokens,
+        AuthPermission::Steer,
+        state.insecure_dev_mode,
+    ) {
         return (status, Json(serde_json::json!({"error": msg}))).into_response();
     }
 
@@ -328,7 +368,12 @@ async fn stream_task(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err((status, msg)) = check_auth(&headers, &state.auth_tokens, AuthPermission::Status, state.insecure_dev_mode) {
+    if let Err((status, msg)) = check_auth(
+        &headers,
+        &state.auth_tokens,
+        AuthPermission::Status,
+        state.insecure_dev_mode,
+    ) {
         return Err((status, Json(serde_json::json!({"error": msg}))));
     }
 

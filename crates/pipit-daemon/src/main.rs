@@ -37,9 +37,9 @@ async fn main() -> Result<()> {
 
     // Load and validate config
     let config_path = config::resolve_config_path();
-    let raw_toml = tokio::fs::read_to_string(&config_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to read config at {}: {}", config_path.display(), e))?;
+    let raw_toml = tokio::fs::read_to_string(&config_path).await.map_err(|e| {
+        anyhow::anyhow!("failed to read config at {}: {}", config_path.display(), e)
+    })?;
     let daemon_config = config::DaemonConfig::from_toml_str(&raw_toml)?;
     daemon_config.validate()?;
 

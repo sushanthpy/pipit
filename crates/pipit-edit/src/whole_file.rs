@@ -1,5 +1,5 @@
-use crate::{AppliedEdit, EditError, EditFormat, EditOp};
 use crate::apply::atomic_write;
+use crate::{AppliedEdit, EditError, EditFormat, EditOp};
 use std::path::{Path, PathBuf};
 
 /// Whole-file format — for small files or weak models.

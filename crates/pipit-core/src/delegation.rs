@@ -74,7 +74,8 @@ impl DelegationProxy {
         // If a specific agent is requested, look it up directly
         if let Some(ref target) = request.target_agent {
             let agents = self.registry.list_agents();
-            return agents.into_iter()
+            return agents
+                .into_iter()
                 .find(|a| a.id == *target)
                 .map(|a| (a, 1.0));
         }
@@ -87,7 +88,8 @@ impl DelegationProxy {
         };
 
         let matches = self.registry.discover(&query);
-        matches.into_iter()
+        matches
+            .into_iter()
             .find(|(_, score)| *score >= self.config.min_capability_score)
     }
 
@@ -124,7 +126,8 @@ impl DelegationProxy {
     ) -> Result<crate::worktree::WorktreeHandle, String> {
         let manager = crate::worktree::WorktreeManager::new(project_root)
             .map_err(|e| format!("Worktree setup failed: {}", e))?;
-        manager.create(agent_name)
+        manager
+            .create(agent_name)
             .map_err(|e| format!("Worktree creation failed: {}", e))
     }
 }

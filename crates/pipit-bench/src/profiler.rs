@@ -43,7 +43,9 @@ impl ProfileSession {
 
     /// Productivity score: 1 - (loop_hits / total_turns).
     pub fn productivity_score(&self) -> f64 {
-        if self.turns.is_empty() { return 1.0; }
+        if self.turns.is_empty() {
+            return 1.0;
+        }
         let productive = self.turns.iter().filter(|t| t.productive).count();
         productive as f64 / self.turns.len() as f64
     }
@@ -56,13 +58,24 @@ impl ProfileSession {
         for turn in &self.turns {
             let bar_len = (turn.total_ms as f64 / max_ms as f64 * width as f64) as usize;
             let bar: String = "█".repeat(bar_len.max(1));
-            let color = if turn.cost_usd > 0.10 { "31" } // red for expensive
-            else if turn.cost_usd > 0.03 { "33" } // yellow for moderate
-            else { "32" }; // green for cheap
+            let color = if turn.cost_usd > 0.10 {
+                "31"
+            }
+            // red for expensive
+            else if turn.cost_usd > 0.03 {
+                "33"
+            }
+            // yellow for moderate
+            else {
+                "32"
+            }; // green for cheap
             lines.push(format!(
                 "T{:2} \x1b[{}m{}\x1b[0m {:.0}ms ${:.4} {}tok",
-                turn.turn_number, color, bar,
-                turn.total_ms, turn.cost_usd,
+                turn.turn_number,
+                color,
+                bar,
+                turn.total_ms,
+                turn.cost_usd,
                 turn.input_tokens + turn.output_tokens
             ));
         }

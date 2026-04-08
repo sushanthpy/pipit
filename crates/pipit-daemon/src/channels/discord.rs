@@ -6,15 +6,15 @@
 
 use crate::config::DiscordConfig;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use pipit_channel::*;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing;
@@ -53,16 +53,13 @@ impl DiscordChannel {
         project_names: HashSet<String>,
         cancel: CancellationToken,
     ) -> Self {
-        let default_project = config
-            .default_project
-            .clone()
-            .unwrap_or_else(|| {
-                project_names
-                    .iter()
-                    .next()
-                    .cloned()
-                    .unwrap_or_else(|| "default".to_string())
-            });
+        let default_project = config.default_project.clone().unwrap_or_else(|| {
+            project_names
+                .iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "default".to_string())
+        });
 
         Self {
             config,
@@ -95,7 +92,12 @@ impl DiscordChannel {
         let body = resp.text().await?;
 
         if !status.is_success() {
-            return Err(anyhow!("discord api GET {} returned {}: {}", path, status, body));
+            return Err(anyhow!(
+                "discord api GET {} returned {}: {}",
+                path,
+                status,
+                body
+            ));
         }
 
         serde_json::from_str(&body).map_err(|e| anyhow!("discord parse error: {e}"))
@@ -120,7 +122,12 @@ impl DiscordChannel {
         let body = resp.text().await?;
 
         if !status.is_success() {
-            return Err(anyhow!("discord api POST {} returned {}: {}", path, status, body));
+            return Err(anyhow!(
+                "discord api POST {} returned {}: {}",
+                path,
+                status,
+                body
+            ));
         }
 
         serde_json::from_str(&body).map_err(|e| anyhow!("discord parse error: {e}"))
@@ -177,12 +184,7 @@ impl DiscordChannel {
     }
 
     /// Edit an existing message.
-    async fn edit_message(
-        &self,
-        channel_id: u64,
-        message_id: u64,
-        content: &str,
-    ) -> Result<()> {
+    async fn edit_message(&self, channel_id: u64, message_id: u64, content: &str) -> Result<()> {
         let content = if content.len() > DISCORD_MAX_MESSAGE_LEN {
             format!("{}…", &content[..DISCORD_MAX_MESSAGE_LEN - 1])
         } else {
@@ -215,8 +217,8 @@ impl DiscordChannel {
     /// Implements spec-compliant lifecycle: proactive heartbeat, ACK tracking,
     /// session resume, op 7/9 handling.
     async fn gateway_loop(&self, sink: TaskSink) {
+        use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::connect_async;
-        use futures::{StreamExt, SinkExt};
 
         let mut backoff_secs = 1u64;
 
@@ -302,10 +304,8 @@ impl DiscordChannel {
                 };
 
                 if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                    match self.handle_gateway_event_v2(
-                        &text, &sink, &cmd_tx
-                    ).await {
-                        Ok(GatewayAction::Continue) => {},
+                    match self.handle_gateway_event_v2(&text, &sink, &cmd_tx).await {
+                        Ok(GatewayAction::Continue) => {}
                         Ok(GatewayAction::Reconnect) => {
                             should_resume = true;
                             break;
@@ -339,14 +339,20 @@ impl DiscordChannel {
 
             if !should_resume {
                 // Fresh identify — jittered 1-5s delay per spec
-                let jitter = 1 + (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_millis() % 4000) as u64 / 1000;
+                let jitter = 1
+                    + (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_millis()
+                        % 4000) as u64
+                        / 1000;
                 tracing::info!(delay = jitter, "re-identifying after invalid session");
                 tokio::time::sleep(std::time::Duration::from_secs(jitter)).await;
             } else {
-                tracing::warn!(backoff = backoff_secs, "discord gateway disconnected, reconnecting");
+                tracing::warn!(
+                    backoff = backoff_secs,
+                    "discord gateway disconnected, reconnecting"
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(60);
             }
@@ -390,7 +396,9 @@ impl DiscordChannel {
                     let jitter = (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
-                        .subsec_millis() as u64 * interval_ms) / 1000;
+                        .subsec_millis() as u64
+                        * interval_ms)
+                        / 1000;
                     let first_delay = jitter % interval_ms;
                     tokio::time::sleep(std::time::Duration::from_millis(first_delay)).await;
 
@@ -432,7 +440,9 @@ impl DiscordChannel {
                             "seq": s
                         }
                     });
-                    cmd_tx.send(resume.to_string()).await
+                    cmd_tx
+                        .send(resume.to_string())
+                        .await
                         .map_err(|e| anyhow!("resume send failed: {e}"))?;
                     tracing::info!("sent RESUME");
                 } else {
@@ -449,7 +459,9 @@ impl DiscordChannel {
                             }
                         }
                     });
-                    cmd_tx.send(identify.to_string()).await
+                    cmd_tx
+                        .send(identify.to_string())
+                        .await
                         .map_err(|e| anyhow!("identify send failed: {e}"))?;
                     tracing::info!("sent IDENTIFY");
                 }
@@ -459,7 +471,9 @@ impl DiscordChannel {
             1 => {
                 let seq_val = *self.sequence.lock().await;
                 let hb = serde_json::json!({ "op": 1, "d": seq_val });
-                cmd_tx.send(hb.to_string()).await
+                cmd_tx
+                    .send(hb.to_string())
+                    .await
                     .map_err(|e| anyhow!("heartbeat send failed: {e}"))?;
             }
 
@@ -476,10 +490,7 @@ impl DiscordChannel {
 
             // Opcode 9: Invalid Session — re-identify (d: false) or resume (d: true)
             9 => {
-                let resumable = event.d
-                    .as_ref()
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let resumable = event.d.as_ref().and_then(|v| v.as_bool()).unwrap_or(false);
 
                 if resumable {
                     tracing::info!("invalid session (resumable), reconnecting");
@@ -518,7 +529,9 @@ impl DiscordChannel {
                                 if let Some(sid) = d.get("session_id").and_then(|v| v.as_str()) {
                                     *self.session_id.lock().await = Some(sid.to_string());
                                 }
-                                if let Some(url) = d.get("resume_gateway_url").and_then(|v| v.as_str()) {
+                                if let Some(url) =
+                                    d.get("resume_gateway_url").and_then(|v| v.as_str())
+                                {
                                     let resume_url = format!("{}/?v=10&encoding=json", url);
                                     *self.resume_gateway_url.lock().await = Some(resume_url);
                                 }
@@ -869,11 +882,7 @@ impl ThreadedChannel for DiscordChannel {
 
 #[async_trait]
 impl ReactiveChannel for DiscordChannel {
-    async fn add_reaction(
-        &self,
-        origin: &MessageOrigin,
-        emoji: &str,
-    ) -> Result<(), ChannelError> {
+    async fn add_reaction(&self, origin: &MessageOrigin, emoji: &str) -> Result<(), ChannelError> {
         if let MessageOrigin::Discord {
             channel_id,
             message_id: Some(msg_id),

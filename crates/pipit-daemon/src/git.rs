@@ -3,7 +3,7 @@
 //! Before any mutating tool call, creates `pipit/{task_id_short}` branch.
 //! Protected path enforcement via compiled glob patterns.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::path::Path;
 use std::process::Command;
@@ -25,10 +25,7 @@ impl GitSafety {
     ) -> Result<String> {
         // Verify git repo
         if !project_root.join(".git").exists() {
-            return Err(anyhow!(
-                "not a git repository: {}",
-                project_root.display()
-            ));
+            return Err(anyhow!("not a git repository: {}", project_root.display()));
         }
 
         // Use first 8 chars of task_id for branch name
@@ -43,7 +40,11 @@ impl GitSafety {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("git checkout -b '{}' failed: {}", branch_name, stderr));
+            return Err(anyhow!(
+                "git checkout -b '{}' failed: {}",
+                branch_name,
+                stderr
+            ));
         }
 
         tracing::info!(
