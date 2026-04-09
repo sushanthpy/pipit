@@ -27,6 +27,11 @@ fn sanitize_injected_content(content: &str, source: &str) -> String {
 ///
 /// Includes tool selection heuristics, efficiency maxims, boot orientation,
 /// and provider-specific hints to minimize unnecessary tool calls.
+///
+/// Returns `(system_prompt, boot_listing)`. The boot listing should be
+/// injected as the first user message (turn-1 context) rather than baked
+/// into the system prompt — this keeps the system prompt cache-stable
+/// across sessions within the same project.
 pub fn build_system_prompt(
     project_root: &Path,
     tools: &ToolRegistry,
@@ -34,7 +39,7 @@ pub fn build_system_prompt(
     provider: ProviderKind,
     skills: &SkillRegistry,
     workflow_assets: &WorkflowAssets,
-) -> String {
+) -> (String, String) {
     let project_name = project_root
         .file_name()
         .and_then(|n| n.to_str())
@@ -49,9 +54,6 @@ pub fn build_system_prompt(
 - Working directory: {root}
 - Project: {name}
 - Platform: {platform}
-
-## Initial project structure
-{boot_listing}
 
 ## Tool selection guide
 
@@ -90,6 +92,20 @@ You have these tools. Choose the RIGHT one on the FIRST try:
   **`cd` persists across calls.** Run `cd /path` once and subsequent commands
   run there. You do NOT need `cd /path && command` every time.
 
+**Tracking multi-step work → `todo`**
+  Use todo for any task with multiple concrete steps, files, or verification tasks.
+  Create a short checklist as soon as the work stops being trivial.
+  Keep statuses accurate (`pending` → `in_progress` → `done`) as you progress.
+  Do NOT use todo for one-shot answers or single quick edits.
+
+**Delegating independent work → `subagent`**
+  Use subagent only for bounded, parallelizable side tasks that do NOT block your
+  immediate next step. Good examples: isolated investigation, independent test
+  authoring, or reviewing a separate module while you continue locally.
+  Do NOT spawn a subagent just to do your first read, to replace normal tool use,
+  or when the very next action depends on its answer.
+  Prefer at most 1-2 active subagents at a time, and record delegated work in todo.
+
 ## Efficiency rules
 
 1. **Minimize turns.** Each tool call costs a full round-trip. Accomplish the task in as few turns as possible.
@@ -100,6 +116,8 @@ You have these tools. Choose the RIGHT one on the FIRST try:
 6. **Use the structure.** You have the project listing above. Use it to navigate directly instead of exploring blindly.
 7. **Batch when possible.** If you need to read multiple files, call read_file for each one in the same turn.
 8. **Don't verify cd.** After `cd /path`, don't run `pwd` to check — the tool confirms the directory change.
+9. **Track real work.** For non-trivial implementation tasks, use `todo` instead of keeping the plan implicit in prose.
+10. **Delegate surgically.** Spawn `subagent` only when the subtask is truly independent and worth parallelizing.
 
 ## Response formatting
 
@@ -122,11 +140,12 @@ Use markdown in your responses for readability:
 4. If you encounter an error, analyze it and try a different approach.
 5. Prefer existing patterns and conventions found in the codebase.
 6. When asked a QUESTION (not a task), answer directly from what you know or can quickly look up. Don't create plans or strategies for Q&A.
+7. When the task spans several steps, create and maintain a `todo` list before diving into execution.
+8. Before delegating with `subagent`, verify that you can keep making progress locally while it runs.
 "#,
         root = project_root.display(),
         name = project_name,
         platform = std::env::consts::OS,
-        boot_listing = boot_listing,
     );
 
     // PIPIT.md or CLAUDE.md — hierarchical instruction loading.
@@ -207,16 +226,23 @@ Use markdown in your responses for readability:
     ancestor_instructions.reverse();
     // Deduplicate by canonical path
     let mut seen_paths = std::collections::HashSet::new();
+    // Cap instruction content to prevent unbounded prompt inflation.
+    // 8000 chars ≈ ~2000 tokens — enough for meaningful instructions without starving context.
+    const INSTRUCTION_MAX_CHARS: usize = 8000;
     for (path, content) in &ancestor_instructions {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
         if seen_paths.insert(canonical) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
             let rel = path
                 .strip_prefix(project_root)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| path.display().to_string());
             prompt.push_str(&format!("\n## Project instructions ({})\n\n", rel));
-            prompt.push_str(content);
+            let truncated = if content.len() > INSTRUCTION_MAX_CHARS {
+                &content[..INSTRUCTION_MAX_CHARS]
+            } else {
+                content.as_str()
+            };
+            prompt.push_str(&sanitize_injected_content(truncated, &rel));
             prompt.push_str("\n");
         }
     }
@@ -242,27 +268,50 @@ Use markdown in your responses for readability:
     );
 
     // Provider-specific hints
-    match provider {
-        ProviderKind::Anthropic | ProviderKind::AnthropicCompatible => {
-            prompt.push_str("\n## Model hints\n");
-            prompt.push_str(
-                "You support parallel tool use — call multiple tools in a single response when possible.\n",
-            );
-        }
-        ProviderKind::OpenAi | ProviderKind::OpenAiCompatible => {
-            prompt.push_str("\n## Model hints\n");
-            prompt.push_str(
-                "You support parallel function calling. Use it to batch reads and searches.\n",
-            );
-        }
-        ProviderKind::DeepSeek => {
-            prompt.push_str("\n## Model hints\n");
-            prompt.push_str(
-                "When using your thinking capability, plan your tool calls before executing. \
-                 Prefer a single well-chosen tool over a sequence of exploratory ones.\n",
-            );
-        }
-        _ => {}
+    // Provider-specific hints — covers all major providers and compatibility modes.
+    // Providers using the same transport share the same hints.
+    let hint = match provider {
+        ProviderKind::Anthropic
+        | ProviderKind::AnthropicCompatible
+        | ProviderKind::AmazonBedrock
+        | ProviderKind::MiniMax
+        | ProviderKind::MiniMaxCn => Some(
+            "You support parallel tool use — call multiple tools in a single response when possible.",
+        ),
+        ProviderKind::OpenAi
+        | ProviderKind::OpenAiCompatible
+        | ProviderKind::AzureOpenAi
+        | ProviderKind::GitHubCopilot
+        | ProviderKind::OpenRouter
+        | ProviderKind::VercelAiGateway
+        | ProviderKind::HuggingFace
+        | ProviderKind::Cerebras
+        | ProviderKind::Groq
+        | ProviderKind::Mistral
+        | ProviderKind::XAi
+        | ProviderKind::ZAi
+        | ProviderKind::Ollama
+        | ProviderKind::OpenAiCodex
+        | ProviderKind::Opencode
+        | ProviderKind::OpencodeGo
+        | ProviderKind::KimiCoding => Some(
+            "You support parallel function calling. Use it to batch reads and searches.",
+        ),
+        ProviderKind::Google
+        | ProviderKind::GoogleGeminiCli
+        | ProviderKind::GoogleAntigravity
+        | ProviderKind::Vertex => Some(
+            "You support parallel function calling. Batch tools aggressively — reads, searches, and edits can all be issued together.",
+        ),
+        ProviderKind::DeepSeek => Some(
+            "When using your thinking capability, plan your tool calls before executing. \
+             Prefer a single well-chosen tool over a sequence of exploratory ones.",
+        ),
+    };
+    if let Some(hint_text) = hint {
+        prompt.push_str("\n## Model hints\n");
+        prompt.push_str(hint_text);
+        prompt.push('\n');
     }
 
     // Project conventions
@@ -313,7 +362,7 @@ Use markdown in your responses for readability:
         }
     }
 
-    prompt
+    (prompt, boot_listing)
 }
 
 /// Generate a compact top-level listing of the project root.
@@ -395,7 +444,7 @@ fn generate_boot_listing(project_root: &Path) -> String {
 
 /// Decompose the system prompt into sections for cache optimizer analysis.
 ///
-/// Returns `(sections, full_prompt)`. Pass `sections` to
+/// Returns `(sections, full_prompt, boot_listing)`. Pass `sections` to
 /// `CacheOptimizer::analyze_request()` to get cache breakpoint placements
 /// for the Anthropic `cache_control` API parameter.
 pub fn build_prompt_with_cache_sections(
@@ -405,9 +454,9 @@ pub fn build_prompt_with_cache_sections(
     provider: ProviderKind,
     skills: &SkillRegistry,
     workflow_assets: &WorkflowAssets,
-) -> (Vec<PromptSection>, String) {
+) -> (Vec<PromptSection>, String, String) {
     // Build the full prompt first
-    let full_prompt = build_system_prompt(
+    let (full_prompt, boot_listing) = build_system_prompt(
         project_root,
         tools,
         approval_mode,
@@ -451,7 +500,7 @@ pub fn build_prompt_with_cache_sections(
         });
     }
 
-    (sections, full_prompt)
+    (sections, full_prompt, boot_listing)
 }
 
 /// Analyze prompt sections and return cache breakpoints.

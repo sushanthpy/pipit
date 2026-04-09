@@ -184,9 +184,7 @@ impl TypedTool for WorktreeTool {
                 gateway
                     .create_worktree_async(&name, &name, &wt_path, base)
                     .await
-                    .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
-                    })?;
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
 
                 Ok(TypedToolResult::mutating(format!(
                     "Created worktree '{}' at {} (based on {})",
@@ -201,9 +199,7 @@ impl TypedTool for WorktreeTool {
                 let gateway = pipit_vcs::VcsGateway::new(root.clone());
                 let list_output = gateway
                     .list_worktrees()
-                    .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
-                    })?;
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
 
                 let wt_path = root.join(format!("../.pipit-worktrees/{}", name));
                 let wt_path_str = wt_path.to_string_lossy();
@@ -242,9 +238,7 @@ impl TypedTool for WorktreeTool {
                 gateway
                     .remove_worktree_async(&name, &wt_path, &name, true)
                     .await
-                    .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
-                    })?;
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
 
                 Ok(TypedToolResult::mutating(format!(
                     "Removed worktree '{name}'"
@@ -256,9 +250,7 @@ impl TypedTool for WorktreeTool {
                 let gateway = pipit_vcs::VcsGateway::new(root.clone());
                 let stdout = gateway
                     .list_worktrees()
-                    .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
-                    })?;
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
 
                 Ok(TypedToolResult::text(if stdout.is_empty() {
                     "No worktrees found.".into()

@@ -324,6 +324,10 @@ pub enum ToolCallOutcome {
     Success {
         content: String,
         mutated: bool,
+        /// Evidence artifacts from typed tools.
+        artifacts: Vec<pipit_tools::typed_tool::ArtifactKind>,
+        /// Realized file edits from typed tools.
+        edits: Vec<pipit_tools::typed_tool::RealizedEdit>,
     },
     PolicyBlocked {
         message: String,
@@ -533,9 +537,9 @@ impl RuntimeEvent {
                 result,
             } => {
                 let (success, mutated, summary) = match result {
-                    ToolCallOutcome::Success { content, mutated } => {
-                        (true, *mutated, content.chars().take(200).collect())
-                    }
+                    ToolCallOutcome::Success {
+                        content, mutated, ..
+                    } => (true, *mutated, content.chars().take(200).collect()),
                     ToolCallOutcome::PolicyBlocked { message, .. } => {
                         (false, false, message.clone())
                     }

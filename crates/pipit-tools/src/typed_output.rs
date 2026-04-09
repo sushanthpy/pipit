@@ -215,6 +215,8 @@ impl RichToolResult {
             display: self.display.clone(),
             mutated: self.mutated,
             content_bytes: self.content.len(),
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         }
     }
 }

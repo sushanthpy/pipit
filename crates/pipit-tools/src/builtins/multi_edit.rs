@@ -247,6 +247,8 @@ impl Tool for MultiEditTool {
             }),
             mutated: true,
             content_bytes: result_content.len(),
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         })
     }
 }

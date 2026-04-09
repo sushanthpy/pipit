@@ -24,6 +24,8 @@ pub struct LlmPlanner {
     provider: Arc<dyn LlmProvider>,
     model_id: String,
     repo_summary: String,
+    /// Optional RepoMap text for grounded file path recommendations.
+    repo_map: Option<String>,
     /// Heuristic fallback for parse failures and as a baseline portfolio.
     heuristic: Planner,
 }
@@ -35,8 +37,15 @@ impl LlmPlanner {
             provider: role_provider.provider.clone(),
             model_id: role_provider.model_id.clone(),
             repo_summary,
+            repo_map: None,
             heuristic: Planner,
         }
+    }
+
+    /// Set the RepoMap text for grounded file references in plans.
+    pub fn with_repo_map(mut self, repo_map: Option<String>) -> Self {
+        self.repo_map = repo_map;
+        self
     }
 
     /// Extract JSON from a response that may contain markdown fences or preamble.
@@ -99,7 +108,7 @@ impl LlmPlanner {
             Err(_) => return None,
         };
 
-        let system_prompt = planner_system_prompt(&self.repo_summary);
+        let system_prompt = planner_system_prompt(&self.repo_summary, self.repo_map.as_deref());
         let request = CompletionRequest {
             system: system_prompt,
             messages: vec![Message {
@@ -140,6 +149,21 @@ impl LlmPlanner {
 
 fn classify_strategy(description: &str) -> StrategyKind {
     let lower = description.to_ascii_lowercase();
+    // Exact enum name matching (canonical from planner prompt)
+    match lower.trim() {
+        "minimalpatch" | "minimal_patch" => return StrategyKind::MinimalPatch,
+        "rootcauserepair" | "root_cause_repair" => return StrategyKind::RootCauseRepair,
+        "architecturalrepair" | "architectural_repair" => {
+            return StrategyKind::ArchitecturalRepair
+        }
+        "diagnosticonly" | "diagnostic_only" => return StrategyKind::DiagnosticOnly,
+        "characterizationfirst" | "characterization_first" => {
+            return StrategyKind::CharacterizationFirst
+        }
+        "greenfield" => return StrategyKind::Greenfield,
+        _ => {}
+    }
+    // Fuzzy fallback for models that paraphrase despite instructions
     if lower.contains("minimal") || lower.contains("patch") || lower.contains("surgical") {
         StrategyKind::MinimalPatch
     } else if lower.contains("root cause")
@@ -162,8 +186,14 @@ fn classify_strategy(description: &str) -> StrategyKind {
         || lower.contains("baseline")
     {
         StrategyKind::CharacterizationFirst
+    } else if lower.contains("greenfield")
+        || lower.contains("from scratch")
+        || lower.contains("new project")
+    {
+        StrategyKind::Greenfield
     } else {
-        StrategyKind::RootCauseRepair // Default for LLM plans
+        // Default to MinimalPatch (safest: fewest changes on ambiguity)
+        StrategyKind::MinimalPatch
     }
 }
 

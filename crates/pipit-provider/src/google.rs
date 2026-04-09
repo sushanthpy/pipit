@@ -151,7 +151,8 @@ impl GoogleProvider {
     /// - Nullable is expressed via `"nullable": true`, not `"type": ["string", "null"]`
     fn convert_schema_for_gemini(schema: &serde_json::Value) -> serde_json::Value {
         // Extract top-level definitions for $ref resolution
-        let definitions = schema.get("definitions")
+        let definitions = schema
+            .get("definitions")
             .or_else(|| schema.get("$defs"))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
@@ -190,9 +191,9 @@ impl GoogleProvider {
             // Also merge any sibling keys (e.g. description alongside allOf)
             for (k, v) in obj {
                 if k != "allOf" {
-                    merged.entry(k.clone()).or_insert_with(|| {
-                        Self::resolve_schema_node(v, definitions)
-                    });
+                    merged
+                        .entry(k.clone())
+                        .or_insert_with(|| Self::resolve_schema_node(v, definitions));
                 }
             }
             return Self::clean_gemini_object(&merged, definitions);
@@ -240,8 +241,14 @@ impl GoogleProvider {
         for (key, value) in obj {
             match key.as_str() {
                 // Strip unsupported fields
-                "additionalProperties" | "$schema" | "title" | "default"
-                | "examples" | "definitions" | "$defs" | "$ref" => continue,
+                "additionalProperties"
+                | "$schema"
+                | "title"
+                | "default"
+                | "examples"
+                | "definitions"
+                | "$defs"
+                | "$ref" => continue,
 
                 // Handle type arrays: ["string", "null"] -> "string" + nullable
                 "type" => {
@@ -276,13 +283,19 @@ impl GoogleProvider {
                                 Self::resolve_schema_node(pval, definitions),
                             );
                         }
-                        cleaned.insert("properties".to_string(), serde_json::Value::Object(clean_props));
+                        cleaned.insert(
+                            "properties".to_string(),
+                            serde_json::Value::Object(clean_props),
+                        );
                     }
                 }
 
                 // Recurse into items (array items schema)
                 "items" => {
-                    cleaned.insert("items".to_string(), Self::resolve_schema_node(value, definitions));
+                    cleaned.insert(
+                        "items".to_string(),
+                        Self::resolve_schema_node(value, definitions),
+                    );
                 }
 
                 // Pass through everything else (type, description, enum, required, format, nullable, etc.)

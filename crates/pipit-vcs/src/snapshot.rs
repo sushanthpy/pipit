@@ -195,11 +195,8 @@ impl SnapshotGraph {
     /// Find the common ancestor between two snapshots.
     /// Complexity: O(A + B) for both ancestor chains.
     pub fn common_ancestor(&self, a: &str, b: &str) -> Option<&Snapshot> {
-        let ancestors_a: std::collections::HashSet<&str> = self
-            .ancestors(a)
-            .iter()
-            .map(|s| s.id.as_str())
-            .collect();
+        let ancestors_a: std::collections::HashSet<&str> =
+            self.ancestors(a).iter().map(|s| s.id.as_str()).collect();
 
         for ancestor in self.ancestors(b) {
             if ancestors_a.contains(ancestor.id.as_str()) {
@@ -212,11 +209,7 @@ impl SnapshotGraph {
     /// Check if restoring a snapshot would conflict with current files.
     /// Returns the set of conflicting file paths.
     /// Complexity: O(F₁ + F₂) for touched-file intersection.
-    pub fn conflict_check(
-        &self,
-        snapshot_id: &str,
-        current_modified: &[String],
-    ) -> Vec<String> {
+    pub fn conflict_check(&self, snapshot_id: &str, current_modified: &[String]) -> Vec<String> {
         let snapshot = match self.get(snapshot_id) {
             Some(s) => s,
             None => return Vec::new(),
@@ -243,12 +236,7 @@ impl SnapshotGraph {
     }
 
     /// Compute a content-addressable ID for a snapshot.
-    fn compute_id(
-        branch: &str,
-        commit: &str,
-        files: &[String],
-        parent: &Option<String>,
-    ) -> String {
+    fn compute_id(branch: &str, commit: &str, files: &[String], parent: &Option<String>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(branch.as_bytes());
         hasher.update(commit.as_bytes());

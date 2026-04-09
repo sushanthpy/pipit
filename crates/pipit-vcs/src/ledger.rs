@@ -225,24 +225,50 @@ impl RepositoryLedger {
     }
 
     /// Get entries for a specific workspace.
-    pub fn workspace_history(&self, workspace_id: &str) -> Result<Vec<LedgerEntry>, std::io::Error> {
+    pub fn workspace_history(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<LedgerEntry>, std::io::Error> {
         let all = self.read_all()?;
         Ok(all
             .into_iter()
             .filter(|e| match &e.event {
-                LedgerEvent::WorkspaceCreated { workspace_id: id, .. }
-                | LedgerEvent::PhaseTransition { workspace_id: id, .. }
-                | LedgerEvent::SnapshotCreated { workspace_id: id, .. }
-                | LedgerEvent::VerificationCompleted { workspace_id: id, .. }
-                | LedgerEvent::ContractCreated { workspace_id: id, .. }
-                | LedgerEvent::GateEvaluated { workspace_id: id, .. }
-                | LedgerEvent::PromotionExecuted { workspace_id: id, .. }
-                | LedgerEvent::WorkspaceReconciled { workspace_id: id, .. }
-                | LedgerEvent::FirewallBlocked { workspace_id: id, .. } => id == workspace_id,
-                LedgerEvent::Note { workspace_id: Some(id), .. } => id == workspace_id,
-                LedgerEvent::ConflictDetected { workspace_a, workspace_b, .. } => {
-                    workspace_a == workspace_id || workspace_b == workspace_id
+                LedgerEvent::WorkspaceCreated {
+                    workspace_id: id, ..
                 }
+                | LedgerEvent::PhaseTransition {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::SnapshotCreated {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::VerificationCompleted {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::ContractCreated {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::GateEvaluated {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::PromotionExecuted {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::WorkspaceReconciled {
+                    workspace_id: id, ..
+                }
+                | LedgerEvent::FirewallBlocked {
+                    workspace_id: id, ..
+                } => id == workspace_id,
+                LedgerEvent::Note {
+                    workspace_id: Some(id),
+                    ..
+                } => id == workspace_id,
+                LedgerEvent::ConflictDetected {
+                    workspace_a,
+                    workspace_b,
+                    ..
+                } => workspace_a == workspace_id || workspace_b == workspace_id,
                 _ => false,
             })
             .collect())

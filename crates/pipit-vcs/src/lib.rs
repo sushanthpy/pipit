@@ -20,7 +20,9 @@ pub mod reconcile;
 pub mod snapshot;
 pub mod workflow;
 
-pub use contract::{BranchContract, ContractPredicate, GateResult, PromotionGate};
+pub use contract::{
+    BranchContract, ContractPredicate, ContractRegistry, GateResult, PromotionGate,
+};
 pub use firewall::{FirewallDecision, GitFirewall, ThreatClass};
 pub use gateway::{GatewayError, VcsGateway};
 pub use ledger::{LedgerEntry, LedgerEvent, RepositoryLedger};

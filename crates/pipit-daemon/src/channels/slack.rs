@@ -66,10 +66,7 @@ impl SlackChannel {
         let resp = self
             .client
             .post(&url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.config.bot_token),
-            )
+            .header("Authorization", format!("Bearer {}", self.config.bot_token))
             .header("Content-Type", "application/json")
             .json(body)
             .send()
@@ -104,9 +101,7 @@ impl SlackChannel {
 
     /// Discover bot user ID via auth.test.
     async fn discover_bot_id(&self) -> Result<String> {
-        let resp = self
-            .api_call("auth.test", &serde_json::json!({}))
-            .await?;
+        let resp = self.api_call("auth.test", &serde_json::json!({})).await?;
         let user_id = resp["user_id"]
             .as_str()
             .ok_or_else(|| anyhow!("auth.test returned no user_id"))?
@@ -137,12 +132,7 @@ impl SlackChannel {
     }
 
     /// Edit an existing message.
-    async fn update_message(
-        &self,
-        channel: &str,
-        ts: &str,
-        text: &str,
-    ) -> Result<()> {
+    async fn update_message(&self, channel: &str, ts: &str, text: &str) -> Result<()> {
         let body = serde_json::json!({
             "channel": channel,
             "ts": ts,
@@ -236,7 +226,10 @@ impl SlackChannel {
                 break;
             }
 
-            tracing::warn!(backoff = backoff_secs, "slack socket mode disconnected, reconnecting");
+            tracing::warn!(
+                backoff = backoff_secs,
+                "slack socket mode disconnected, reconnecting"
+            );
             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
             backoff_secs = (backoff_secs * 2).min(60);
         }
@@ -244,9 +237,11 @@ impl SlackChannel {
 
     /// Get a WebSocket URL from Socket Mode.
     async fn get_socket_url(&self) -> Result<String> {
-        let app_token = self.config.app_token.as_deref().ok_or_else(|| {
-            anyhow!("slack app_token required for Socket Mode (xapp-...)")
-        })?;
+        let app_token = self
+            .config
+            .app_token
+            .as_deref()
+            .ok_or_else(|| anyhow!("slack app_token required for Socket Mode (xapp-...)"))?;
 
         let resp = self
             .client

@@ -36,6 +36,19 @@ impl Message {
         }
     }
 
+    /// An ephemeral control-plane message. Included in the next API request
+    /// but stripped from context afterward to avoid polluting future requests.
+    pub fn control_plane(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text(text.into())],
+            metadata: MessageMetadata {
+                ephemeral: true,
+                ..Default::default()
+            },
+        }
+    }
+
     pub fn tool_result(
         call_id: impl Into<String>,
         content: impl Into<String>,
@@ -191,6 +204,12 @@ pub struct MessageMetadata {
     pub is_summary: bool,
     #[serde(default)]
     pub summarized_message_ids: Vec<String>,
+    /// Ephemeral control-plane messages are included in the next API request
+    /// but stripped afterward so they do not contaminate future requests.
+    /// Used for loop-recovery nudges, budget warnings, verification feedback,
+    /// and auto-continue prompts.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// Completion request sent to a provider.

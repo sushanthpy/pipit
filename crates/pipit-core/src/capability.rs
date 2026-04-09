@@ -54,7 +54,24 @@ impl CapabilitySet {
     pub const EMPTY: CapabilitySet = CapabilitySet(0);
 
     /// All capabilities granted.
-    pub const ALL: CapabilitySet = CapabilitySet(0x1FFF); // 13 bits
+    /// Computed from declared variants — adding a Capability variant
+    /// without updating this will cause a test failure.
+    pub const ALL: CapabilitySet = CapabilitySet(Self::VALID_MASK);
+
+    /// Bitmask of all valid capability bits.
+    const VALID_MASK: u32 = Capability::FsRead as u32
+        | Capability::FsWrite as u32
+        | Capability::FsReadExternal as u32
+        | Capability::FsWriteExternal as u32
+        | Capability::ProcessExec as u32
+        | Capability::ProcessExecMutating as u32
+        | Capability::NetworkRead as u32
+        | Capability::NetworkWrite as u32
+        | Capability::McpInvoke as u32
+        | Capability::Delegate as u32
+        | Capability::Verify as u32
+        | Capability::ConfigModify as u32
+        | Capability::EnvAccess as u32;
 
     /// Read-only capabilities (safe for any mode).
     pub const READ_ONLY: CapabilitySet =
@@ -113,11 +130,39 @@ impl CapabilitySet {
         self.0
     }
 
-    /// Create from raw bits.
+    /// Create from raw bits, masking out invalid capability bits.
+    /// Bits beyond the declared variants are silently cleared to prevent
+    /// privilege escalation via crafted serialization.
     pub fn from_bits(bits: u32) -> Self {
-        CapabilitySet(bits)
+        CapabilitySet(bits & Self::VALID_MASK)
+    }
+
+    /// Create from raw bits, rejecting invalid bits.
+    pub fn try_from_bits(bits: u32) -> Result<Self, InvalidCapabilityBits> {
+        let invalid = bits & !Self::VALID_MASK;
+        if invalid != 0 {
+            Err(InvalidCapabilityBits {
+                invalid_bits: invalid,
+            })
+        } else {
+            Ok(CapabilitySet(bits))
+        }
     }
 }
+
+/// Error returned when `try_from_bits` receives bits outside the valid mask.
+#[derive(Debug, Clone)]
+pub struct InvalidCapabilityBits {
+    pub invalid_bits: u32,
+}
+
+impl std::fmt::Display for InvalidCapabilityBits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid capability bits: 0x{:X}", self.invalid_bits)
+    }
+}
+
+impl std::error::Error for InvalidCapabilityBits {}
 
 impl std::fmt::Display for CapabilitySet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -973,5 +1018,36 @@ mod tests {
         assert!(child_grant.has(Capability::FsRead));
         assert!(child_grant.has(Capability::FsWrite));
         assert!(!child_grant.has(Capability::ProcessExecMutating)); // Parent doesn't have this
+    }
+
+    #[test]
+    fn all_equals_valid_mask() {
+        // If you add a Capability variant, ALL must cover it.
+        // This test will fail if VALID_MASK doesn't include the new variant.
+        assert_eq!(
+            CapabilitySet::ALL.bits(),
+            0x1FFF,
+            "ALL must equal 13-bit mask"
+        );
+        assert_eq!(CapabilitySet::ALL.bits(), CapabilitySet::VALID_MASK);
+    }
+
+    #[test]
+    fn from_bits_masks_invalid() {
+        // Crafting 0xFFFFFFFF should be masked to VALID_MASK
+        let crafted = CapabilitySet::from_bits(0xFFFFFFFF);
+        assert_eq!(crafted.bits(), CapabilitySet::VALID_MASK);
+        // The masked set should satisfy ALL (since all valid bits are set)
+        assert!(crafted.satisfies(CapabilitySet::ALL));
+        // But it should NOT have any bit beyond the valid mask
+        assert_eq!(crafted.bits() & !CapabilitySet::VALID_MASK, 0);
+    }
+
+    #[test]
+    fn try_from_bits_rejects_invalid() {
+        assert!(CapabilitySet::try_from_bits(0x1FFF).is_ok());
+        assert!(CapabilitySet::try_from_bits(0x2000).is_err());
+        assert!(CapabilitySet::try_from_bits(0xFFFFFFFF).is_err());
+        assert!(CapabilitySet::try_from_bits(0).is_ok());
     }
 }

@@ -228,7 +228,11 @@ fn truncate_body(body: &str) -> (String, bool) {
 
     // Byte truncation at last newline before limit
     if result.len() > MAX_MEMORY_BYTES {
-        let truncated_view = &result[..MAX_MEMORY_BYTES];
+        let mut end = MAX_MEMORY_BYTES;
+        while end > 0 && !result.is_char_boundary(end) {
+            end -= 1;
+        }
+        let truncated_view = &result[..end];
         if let Some(last_newline) = truncated_view.rfind('\n') {
             result = result[..last_newline].to_string();
         } else {

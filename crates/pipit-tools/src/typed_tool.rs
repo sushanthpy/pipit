@@ -245,7 +245,7 @@ impl TypedToolResult {
         self
     }
 
-    /// Convert to the legacy ToolResult (for bridge adapter).
+    /// Convert to ToolResult, preserving artifacts and edits.
     pub fn into_legacy(self) -> ToolResult {
         let bytes = self.content.len();
         ToolResult {
@@ -253,6 +253,8 @@ impl TypedToolResult {
             display: self.display,
             mutated: self.mutated,
             content_bytes: bytes,
+            artifacts: self.artifacts,
+            edits: self.edits,
         }
     }
 }
@@ -343,7 +345,11 @@ impl<T: TypedTool> TypedToolAdapter<T> {
 
             if !has_type && has_one_of {
                 // Tagged enum — collect all properties from all variants into one object
-                let variants_key = if obj.contains_key("oneOf") { "oneOf" } else { "anyOf" };
+                let variants_key = if obj.contains_key("oneOf") {
+                    "oneOf"
+                } else {
+                    "anyOf"
+                };
                 if let Some(variants) = obj.get(variants_key).and_then(|v| v.as_array()).cloned() {
                     let mut all_properties = serde_json::Map::new();
                     let mut all_required: Vec<String> = Vec::new();
@@ -366,34 +372,44 @@ impl<T: TypedTool> TypedToolAdapter<T> {
                     }
 
                     // Find the discriminant (field present in all variants, usually "action" or "type")
-                    let discriminant = variants.iter()
+                    let discriminant = variants
+                        .iter()
                         .filter_map(|v| v.get("properties").and_then(|p| p.as_object()))
                         .fold(None::<Vec<String>>, |acc, props| {
                             let keys: Vec<String> = props.keys().cloned().collect();
                             match acc {
                                 None => Some(keys),
-                                Some(prev) => Some(prev.into_iter().filter(|k| keys.contains(k)).collect()),
+                                Some(prev) => {
+                                    Some(prev.into_iter().filter(|k| keys.contains(k)).collect())
+                                }
                             }
                         })
                         .unwrap_or_default();
 
                     // Build a permissive enum for the discriminant field
                     for disc_key in &discriminant {
-                        let values: Vec<String> = variants.iter()
+                        let values: Vec<String> = variants
+                            .iter()
                             .filter_map(|v| {
                                 v.get("properties")
                                     .and_then(|p| p.get(disc_key))
-                                    .and_then(|p| p.get("const").or_else(|| p.get("enum").and_then(|e| e.get(0))))
+                                    .and_then(|p| {
+                                        p.get("const")
+                                            .or_else(|| p.get("enum").and_then(|e| e.get(0)))
+                                    })
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string())
                             })
                             .collect();
                         if !values.is_empty() {
-                            all_properties.insert(disc_key.clone(), serde_json::json!({
-                                "type": "string",
-                                "enum": values,
-                                "description": format!("Action to perform")
-                            }));
+                            all_properties.insert(
+                                disc_key.clone(),
+                                serde_json::json!({
+                                    "type": "string",
+                                    "enum": values,
+                                    "description": format!("Action to perform")
+                                }),
+                            );
                             all_required = vec![disc_key.clone()];
                         }
                     }
@@ -402,7 +418,10 @@ impl<T: TypedTool> TypedToolAdapter<T> {
                     // by not including them in required
 
                     obj.insert("type".to_string(), serde_json::json!("object"));
-                    obj.insert("properties".to_string(), serde_json::Value::Object(all_properties));
+                    obj.insert(
+                        "properties".to_string(),
+                        serde_json::Value::Object(all_properties),
+                    );
                     if !all_required.is_empty() {
                         obj.insert("required".to_string(), serde_json::json!(all_required));
                     }

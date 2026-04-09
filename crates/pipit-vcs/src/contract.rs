@@ -228,10 +228,7 @@ impl BranchContract {
                     )
                 }
                 ContractPredicate::NotExpired => {
-                    let not_expired = self
-                        .expires_at
-                        .map(|e| Utc::now() < e)
-                        .unwrap_or(true);
+                    let not_expired = self.expires_at.map(|e| Utc::now() < e).unwrap_or(true);
                     (
                         not_expired,
                         if not_expired {
@@ -256,9 +253,7 @@ impl BranchContract {
                         format!("{} protected files checked externally", files.len()),
                     )
                 }
-                ContractPredicate::Custom(desc) => {
-                    (gate.satisfied, format!("Custom: {}", desc))
-                }
+                ContractPredicate::Custom(desc) => (gate.satisfied, format!("Custom: {}", desc)),
             };
             gate.satisfied = passed;
             results.push((gate.name.clone(), passed, reason));
@@ -272,7 +267,7 @@ impl BranchContract {
     }
 
     /// Update contract state based on current check results and gates.
-    fn evaluate_state(&mut self) {
+    pub fn evaluate_state(&mut self) {
         if self.failure_count > self.failure_budget {
             self.state = ContractState::Blocked;
             return;
@@ -295,20 +290,35 @@ impl BranchContract {
     }
 }
 
-/// Registry of active contracts.
+/// Registry of active contracts with on-disk persistence.
 pub struct ContractRegistry {
     contracts: HashMap<String, BranchContract>,
+    /// Directory for persistence (e.g. `.pipit/contracts/`).
+    persist_dir: Option<std::path::PathBuf>,
 }
 
 impl ContractRegistry {
     pub fn new() -> Self {
         Self {
             contracts: HashMap::new(),
+            persist_dir: None,
         }
     }
 
+    /// Create a registry with on-disk persistence.
+    pub fn with_persistence(dir: std::path::PathBuf) -> Self {
+        let mut reg = Self {
+            contracts: HashMap::new(),
+            persist_dir: Some(dir),
+        };
+        reg.load_all();
+        reg
+    }
+
     pub fn register(&mut self, contract: BranchContract) {
-        self.contracts.insert(contract.workspace_id.clone(), contract);
+        self.persist_one(&contract);
+        self.contracts
+            .insert(contract.workspace_id.clone(), contract);
     }
 
     pub fn get(&self, workspace_id: &str) -> Option<&BranchContract> {
@@ -317,6 +327,21 @@ impl ContractRegistry {
 
     pub fn get_mut(&mut self, workspace_id: &str) -> Option<&mut BranchContract> {
         self.contracts.get_mut(workspace_id)
+    }
+
+    /// Update a contract and persist.
+    pub fn update(&mut self, contract: BranchContract) {
+        self.persist_one(&contract);
+        self.contracts
+            .insert(contract.workspace_id.clone(), contract);
+    }
+
+    /// Check if a workspace has an active contract.
+    pub fn has_contract(&self, workspace_id: &str) -> bool {
+        self.contracts
+            .get(workspace_id)
+            .map(|c| c.state == ContractState::Active || c.state == ContractState::Satisfied)
+            .unwrap_or(false)
     }
 
     /// Find contracts that depend on the given workspace.
@@ -333,6 +358,35 @@ impl ContractRegistry {
             .values()
             .filter(|c| c.is_promotable())
             .collect()
+    }
+
+    /// Persist a single contract to disk.
+    fn persist_one(&self, contract: &BranchContract) {
+        if let Some(ref dir) = self.persist_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let path = dir.join(format!("{}.json", contract.id));
+            if let Ok(json) = serde_json::to_string_pretty(contract) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+
+    /// Load all contracts from the persistence directory.
+    fn load_all(&mut self) {
+        if let Some(ref dir) = self.persist_dir {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
+                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                            if let Ok(contract) = serde_json::from_str::<BranchContract>(&content) {
+                                self.contracts
+                                    .insert(contract.workspace_id.clone(), contract);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -17,3 +17,6 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 globset = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

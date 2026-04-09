@@ -125,6 +125,8 @@ impl Tool for ReadFileTool {
                     display: None,
                     mutated: false,
                     content_bytes: raw_bytes.len(),
+                    artifacts: Vec::new(),
+                    edits: Vec::new(),
                 });
             }
         }

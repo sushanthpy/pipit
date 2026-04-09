@@ -318,7 +318,7 @@ impl Default for ModelConfig {
         Self {
             default_model: "claude-sonnet-4-20250514".to_string(),
             context_window: 200_000,
-            max_output_tokens: 8192,
+            max_output_tokens: 16_384,
             temperature: 0.0,
         }
     }

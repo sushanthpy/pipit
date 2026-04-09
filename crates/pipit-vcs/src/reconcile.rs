@@ -55,10 +55,7 @@ pub enum ReconcileAction {
         force_snapshot: bool,
     },
     /// Stale: workspace is old with no recent activity — suggest cleanup.
-    SuggestCleanup {
-        age_days: u64,
-        reason: String,
-    },
+    SuggestCleanup { age_days: u64, reason: String },
     /// Conflict: workspace conflicts with another workspace.
     ResolveConflict {
         conflicting_workspace: String,
@@ -111,7 +108,8 @@ impl WorkspaceReconciler {
 
         // Check for staleness
         if age_days > self.stale_threshold_days
-            && (Utc::now() - state.last_active).num_days().unsigned_abs() > self.stale_threshold_days
+            && (Utc::now() - state.last_active).num_days().unsigned_abs()
+                > self.stale_threshold_days
         {
             return ReconcileAction::SuggestCleanup {
                 age_days,
@@ -145,11 +143,7 @@ impl WorkspaceReconciler {
     /// Check for file-level conflicts between two workspaces.
     ///
     /// Complexity: O(F₁ + F₂) for file-set intersection.
-    pub fn check_conflicts(
-        &self,
-        a: &WorkspaceState,
-        b: &WorkspaceState,
-    ) -> Vec<String> {
+    pub fn check_conflicts(&self, a: &WorkspaceState, b: &WorkspaceState) -> Vec<String> {
         let files_a: HashSet<&str> = a.modified_files.iter().map(|s| s.as_str()).collect();
         let files_b: HashSet<&str> = b.modified_files.iter().map(|s| s.as_str()).collect();
 
@@ -161,11 +155,7 @@ impl WorkspaceReconciler {
 
     /// Phase 2: Commit to a reconciliation action.
     /// This should only be called after the user/system approves the proposed action.
-    pub fn commit_action(
-        &self,
-        workspace_id: &str,
-        action: &ReconcileAction,
-    ) -> ReconcileOutcome {
+    pub fn commit_action(&self, workspace_id: &str, action: &ReconcileAction) -> ReconcileOutcome {
         ReconcileOutcome {
             workspace_id: workspace_id.to_string(),
             action: action.clone(),

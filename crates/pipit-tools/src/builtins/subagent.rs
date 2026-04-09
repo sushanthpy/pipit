@@ -10,6 +10,13 @@ use tokio_util::sync::CancellationToken;
 pub struct SubagentTranscript {
     pub id: String,
     pub parent_session_id: String,
+    /// Lineage branch ID from the core lineage DAG (if available).
+    /// Links this transcript to the runtime execution graph.
+    #[serde(default)]
+    pub lineage_branch_id: Option<String>,
+    /// Parent lineage branch ID (for causal tracing).
+    #[serde(default)]
+    pub parent_lineage_id: Option<String>,
     pub task: String,
     pub allowed_tools: Vec<String>,
     pub isolated: bool,
@@ -279,7 +286,9 @@ impl Tool for SubagentTool {
                     // Persist transcript for session resume
                     let transcript = SubagentTranscript {
                         id: uuid::Uuid::new_v4().to_string(),
-                        parent_session_id: String::new(),
+                        parent_session_id: ctx.session_id.clone().unwrap_or_default(),
+                        lineage_branch_id: None, // Assigned by the runtime after spawn
+                        parent_lineage_id: ctx.lineage_branch_id.clone(),
                         task: task.clone(),
                         allowed_tools: allowed_tools.clone(),
                         isolated: false,

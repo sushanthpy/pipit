@@ -63,13 +63,37 @@ impl OpenAiProvider {
     }
 
     fn capabilities_for_model(model: &str) -> ModelCapabilities {
+        let lower = model.to_lowercase();
+
+        // Infer max_output_tokens from model family.
+        // Modern open-weight models (Qwen-3, Llama-4, DeepSeek-V3, Mistral-Large)
+        // support at least 32K output tokens.  GPT-4o supports 16K.  Unknown
+        // models get a generous 16K default — much better than 8K which truncates
+        // any non-trivial write_file call.
+        let max_output_tokens = if lower.contains("qwen") {
+            // Qwen 2.5/3/3.5 all support 32K+ output
+            32_768
+        } else if lower.contains("llama") || lower.contains("meta-llama") {
+            32_768
+        } else if lower.contains("deepseek") {
+            32_768
+        } else if lower.contains("mistral") || lower.contains("codestral") {
+            32_768
+        } else if lower.contains("gpt-4o") || lower.contains("gpt-4-turbo") {
+            16_384
+        } else if lower.contains("gpt-4") {
+            16_384
+        } else if lower.contains("o1") || lower.contains("o3") || lower.contains("o4") {
+            32_768
+        } else {
+            // Unknown model — default to 16K which is safe for most modern models
+            // and dramatically better than 8K for write-heavy tasks.
+            16_384
+        };
+
         ModelCapabilities {
             context_window: 128_000,
-            max_output_tokens: if model.contains("gpt-4") {
-                16_384
-            } else {
-                8192
-            },
+            max_output_tokens,
             supports_tool_use: true,
             supports_streaming: true,
             supports_thinking: false,
@@ -87,8 +111,7 @@ impl OpenAiProvider {
                 .header("Editor-Version", "vscode/1.107.0")
                 .header("Editor-Plugin-Version", "copilot-chat/0.35.0")
                 .header("Copilot-Integration-Id", "vscode-chat"),
-            "azure_openai" => builder
-                .header("api-key", &self.api_key),
+            "azure_openai" => builder.header("api-key", &self.api_key),
             _ => builder,
         }
     }

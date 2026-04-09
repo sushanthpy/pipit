@@ -453,19 +453,26 @@ impl Default for PevConfig {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Build the system prompt for the Planner role.
-pub fn planner_system_prompt(repo_summary: &str) -> String {
+pub fn planner_system_prompt(repo_summary: &str, repo_map: Option<&str>) -> String {
+    let repo_map_section = match repo_map {
+        Some(map) if !map.is_empty() => format!(
+            "\n## Repository File Map\nUse these REAL paths in files_to_read and files_to_modify:\n{}\n",
+            map
+        ),
+        _ => String::new(),
+    };
     format!(
         r#"You are a planning agent. Your job is to analyze a task and produce a structured execution plan.
 
 ## Repository Context
-{repo_summary}
+{repo_summary}{repo_map_section}
 
 ## Output Format
 You MUST respond with ONLY a JSON object matching this exact schema:
 ```json
 {{
   "objective": "what the user wants achieved",
-  "strategy": "high-level approach",
+  "strategy": "MinimalPatch | RootCauseRepair | CharacterizationFirst | ArchitecturalRepair | DiagnosticOnly | Greenfield",
   "rationale": "why this approach over alternatives",
   "files_to_read": ["paths to read for context"],
   "files_to_modify": ["paths expected to change"],
@@ -475,6 +482,16 @@ You MUST respond with ONLY a JSON object matching this exact schema:
   "stop_conditions": ["when to stop early"]
 }}
 ```
+
+## Strategy Definitions
+- **MinimalPatch**: Surgical, focused change — fewest files, smallest diff.
+- **RootCauseRepair**: Investigate the underlying bug, then fix it.
+- **CharacterizationFirst**: Write tests to capture current behavior, then change code.
+- **ArchitecturalRepair**: Refactor/restructure that touches multiple modules.
+- **DiagnosticOnly**: Read-only investigation — gather information, report findings.
+- **Greenfield**: Create new files/modules from scratch.
+
+Choose EXACTLY ONE of the six strategy names above. Do not paraphrase.
 
 ## Rules
 - Do NOT execute any tools. You are a planner only.
@@ -522,12 +539,43 @@ pub fn verifier_system_prompt(plan: &PlanSpec) -> String {
         .map(|(i, s)| format!("  {}. {}", i + 1, s))
         .collect::<Vec<_>>()
         .join("\n");
+    let files_to_modify = if plan.files_to_modify.is_empty() {
+        "  (none specified)".to_string()
+    } else {
+        plan.files_to_modify
+            .iter()
+            .map(|f| format!("  - {}", f))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let risks = if plan.risks.is_empty() {
+        "  (none identified)".to_string()
+    } else {
+        plan.risks
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format!("  {}. {}", i + 1, r))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     format!(
         r#"You are a verification agent. Your job is to review execution results and produce a machine-readable verdict.
 
 ## Original Plan Objective
 {objective}
+
+## Strategy
+{strategy}
+
+## Rationale
+{rationale}
+
+## Expected Files to Modify
+{files_to_modify}
+
+## Known Risks
+{risks}
 
 ## Invariants (must all hold)
 {invariants}
@@ -562,8 +610,12 @@ You MUST respond with ONLY a JSON object matching this exact schema:
 - Do NOT suggest stylistic improvements — only check correctness.
 - "Repairable" means the approach is sound but execution has fixable bugs.
 - "Fail" means the approach is wrong and needs replanning.
-- "Inconclusive" means you need more evidence to decide."#,
-        objective = plan.objective
+- "Inconclusive" means you need more evidence to decide.
+- Cross-check actual modified files against the expected list above.
+- If strategy-specific risks materialized, note them in findings."#,
+        objective = plan.objective,
+        strategy = plan.strategy,
+        rationale = plan.rationale
     )
 }
 
@@ -665,5 +717,14 @@ impl Finding {
 }
 
 fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        // Find a valid char boundary at or before max
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
 }

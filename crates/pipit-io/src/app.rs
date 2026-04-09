@@ -86,6 +86,26 @@ pub struct ActiveToolInfo {
     pub started_at: std::time::Instant,
 }
 
+/// Live state for a subagent invocation tracked in the TUI.
+#[derive(Debug, Clone)]
+pub struct SubagentRun {
+    pub call_id: String,
+    pub task: String,
+    pub tools: Vec<String>,
+    pub started_at: std::time::Instant,
+    pub finished_at: Option<std::time::Instant>,
+    pub status: SubagentStatus,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 /// UI mode — determines which screen is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
@@ -211,6 +231,7 @@ const MAX_STREAMING_BYTES: usize = 256_000;
 #[derive(Debug)]
 pub struct TuiState {
     pub status: StatusBarState,
+    pub project_root: PathBuf,
     /// Current UI mode.
     pub ui_mode: UiMode,
     /// Current overlay (temporary modal/drawer).
@@ -289,6 +310,12 @@ pub struct TuiState {
     /// Completion status — set when the agent finishes a task.
     /// Rendered as a prominent banner in the phase strip.
     pub completion_status: Option<CompletionBanner>,
+    /// Non-coding tab scroll offset.
+    pub side_tab_scroll_offset: u16,
+    /// Active and recent subagent runs tracked from tool lifecycle events.
+    pub subagent_runs: Vec<SubagentRun>,
+    /// Kill request raised from the Agents tab and consumed by the outer TUI loop.
+    pub kill_active_subagents_requested: bool,
 }
 
 /// Prominent completion indicator shown after the agent finishes.
@@ -303,6 +330,7 @@ impl TuiState {
     pub fn new(status: StatusBarState, project_root: PathBuf) -> Self {
         Self {
             status,
+            project_root: project_root.clone(),
             ui_mode: UiMode::Shell,
             overlay: Overlay::None,
             active_tab: TabView::Coding,
@@ -340,6 +368,9 @@ impl TuiState {
             total_content_produced: 0,
             last_frame_time: None,
             completion_status: None,
+            side_tab_scroll_offset: 0,
+            subagent_runs: Vec::new(),
+            kill_active_subagents_requested: false,
         }
     }
 
@@ -383,6 +414,27 @@ impl TuiState {
         self.auto_scroll_content();
     }
 
+    /// Flush any in-flight streaming text to content_lines.
+    /// Called before injecting activity markers so they appear in the right order.
+    fn commit_streaming(&mut self) {
+        if !self.streaming_text.is_empty() {
+            let new_lines: Vec<String> = self
+                .streaming_text
+                .lines()
+                .map(|line| line.to_string())
+                .collect();
+            self.total_content_produced += new_lines.len() as u64;
+            self.content_lines.extend(new_lines);
+            self.streaming_text.clear();
+        }
+    }
+
+    /// Force the draw layer to re-parse content_lines on the next frame.
+    fn invalidate_content_cache(&mut self) {
+        self.cached_lines_count = 0;
+        self.cached_parsed_lines.clear();
+    }
+
     /// Evict oldest content/activity lines when buffers exceed caps.
     /// Batch eviction amortizes the cost over many pushes.
     fn evict_if_needed(&mut self) {
@@ -402,12 +454,24 @@ impl TuiState {
         self.activity_lines.push(ActivityLine {
             icon: icon.to_string(),
             color,
-            text,
+            text: text.clone(),
         });
         if self.activity_lines.len() > MAX_ACTIVITY_LINES {
             self.activity_lines.drain(..ACTIVITY_EVICT_BATCH);
         }
         self.auto_scroll_timeline();
+
+        // Also inject into content stream so activity appears inline in the
+        // unified task view (merged activity + response).  Prefix with a
+        // special marker that draw_content_pane recognizes for styling.
+        self.commit_streaming();
+        let marker = if icon.is_empty() {
+            format!("◈activity◈   {}", text)
+        } else {
+            format!("◈activity◈ {} {}", icon, text)
+        };
+        self.content_lines.push(marker);
+        self.invalidate_content_cache();
     }
 
     pub fn push_content(&mut self, text: &str) {
@@ -522,6 +586,90 @@ impl TuiState {
     pub fn jump_content_to_oldest(&mut self) {
         self.content_scroll_offset =
             (self.content_lines.len() + self.streaming_text.lines().count()) as u16;
+    }
+
+    pub fn scroll_side_tab_by(&mut self, delta: i16) {
+        if delta >= 0 {
+            self.side_tab_scroll_offset = self.side_tab_scroll_offset.saturating_add(delta as u16);
+        } else {
+            self.side_tab_scroll_offset = self
+                .side_tab_scroll_offset
+                .saturating_sub(delta.unsigned_abs());
+        }
+    }
+
+    pub fn jump_side_tab_to_oldest(&mut self) {
+        self.side_tab_scroll_offset = u16::MAX;
+    }
+
+    pub fn note_subagent_started(&mut self, call_id: String, task: String, tools: Vec<String>) {
+        if let Some(existing) = self
+            .subagent_runs
+            .iter_mut()
+            .find(|run| run.call_id == call_id)
+        {
+            existing.task = task;
+            existing.tools = tools;
+            existing.started_at = std::time::Instant::now();
+            existing.finished_at = None;
+            existing.status = SubagentStatus::Running;
+            existing.summary = None;
+            return;
+        }
+
+        self.subagent_runs.push(SubagentRun {
+            call_id,
+            task,
+            tools,
+            started_at: std::time::Instant::now(),
+            finished_at: None,
+            status: SubagentStatus::Running,
+            summary: None,
+        });
+    }
+
+    pub fn note_subagent_finished(
+        &mut self,
+        call_id: &str,
+        status: SubagentStatus,
+        summary: Option<String>,
+    ) {
+        if let Some(existing) = self
+            .subagent_runs
+            .iter_mut()
+            .find(|run| run.call_id == call_id)
+        {
+            existing.status = status;
+            existing.finished_at = Some(std::time::Instant::now());
+            existing.summary = summary;
+        }
+
+        const MAX_TRACKED_SUBAGENTS: usize = 12;
+        if self.subagent_runs.len() > MAX_TRACKED_SUBAGENTS {
+            let overflow = self.subagent_runs.len() - MAX_TRACKED_SUBAGENTS;
+            self.subagent_runs.drain(..overflow);
+        }
+    }
+
+    pub fn active_subagent_count(&self) -> usize {
+        self.subagent_runs
+            .iter()
+            .filter(|run| run.status == SubagentStatus::Running)
+            .count()
+    }
+
+    pub fn request_kill_active_subagents(&mut self) -> bool {
+        if self.active_subagent_count() == 0 {
+            return false;
+        }
+        self.kill_active_subagents_requested = true;
+        true
+    }
+
+    pub fn take_kill_active_subagents_requested(&mut self) -> bool {
+        let requested = self.kill_active_subagents_requested;
+        self.kill_active_subagents_requested = false;
+        requested
     }
 
     pub fn begin_search(&mut self, target: PaneFocus) {
@@ -905,8 +1053,25 @@ fn draw_tab_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
 //  Agents tab — registered agents, subagent status, delegation
 // ═══════════════════════════════════════════════════════════════════════════
 
+fn clamp_scroll_offset(offset: u16, line_count: usize, viewport_height: u16) -> u16 {
+    let max = line_count.saturating_sub(viewport_height as usize) as u16;
+    offset.min(max)
+}
+
 fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     let mut lines: Vec<Line> = Vec::new();
+    let running: Vec<&SubagentRun> = state
+        .subagent_runs
+        .iter()
+        .filter(|run| run.status == SubagentStatus::Running)
+        .collect();
+    let recent: Vec<&SubagentRun> = state
+        .subagent_runs
+        .iter()
+        .rev()
+        .filter(|run| run.status != SubagentStatus::Running)
+        .take(6)
+        .collect();
 
     lines.push(Line::from(vec![Span::styled(
         "  Agents & Subagents",
@@ -949,33 +1114,110 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     lines.push(Line::from(""));
 
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            format!(
+                "{} running  {} tracked",
+                running.len(),
+                state.subagent_runs.len()
+            ),
+            Style::default().fg(Color::Gray),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            "Press `x` to kill active subagents and stop the current run.",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
     // Active subagents (if any)
     lines.push(Line::from(vec![Span::styled(
-        "  Subagent Status",
+        "  Running Subagents",
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
 
-    if state.is_working
-        && state
-            .active_tool
-            .as_ref()
-            .map(|t| t.tool_name == "subagent")
-            .unwrap_or(false)
-    {
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled("● ", Style::default().fg(Color::Green)),
-            Span::styled("Active subagent running", Style::default().fg(Color::White)),
-        ]));
-    } else {
+    if running.is_empty() {
         lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled("○ ", Style::default().fg(Color::DarkGray)),
             Span::styled("No active subagents", Style::default().fg(Color::DarkGray)),
         ]));
+    } else {
+        for run in &running {
+            let task = truncate_str(run.task.trim(), 68);
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled("● ", Style::default().fg(Color::Green)),
+                Span::styled(task, Style::default().fg(Color::White)),
+            ]));
+            if !run.tools.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        format!("tools: {}", run.tools.join(", ")),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![Span::styled(
+        "  Recent Subagents",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(""));
+
+    if recent.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "No completed subagents yet",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    } else {
+        for run in recent {
+            let (icon, color, status) = match run.status {
+                SubagentStatus::Completed => ("✓ ", Color::Green, "completed"),
+                SubagentStatus::Failed => ("✗ ", Color::Red, "failed"),
+                SubagentStatus::Cancelled => ("⏹ ", Color::Yellow, "cancelled"),
+                SubagentStatus::Running => ("● ", Color::Green, "running"),
+            };
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(icon, Style::default().fg(color)),
+                Span::styled(
+                    truncate_str(run.task.trim(), 58),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    format!("  [{}]", status),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+            if let Some(summary) = run.summary.as_deref() {
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        truncate_str(summary.trim(), 72),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+        }
     }
 
     lines.push(Line::from(""));
@@ -1005,7 +1247,10 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
         ),
     ]));
 
-    let paragraph = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
+    let scroll = clamp_scroll_offset(state.side_tab_scroll_offset, lines.len(), area.height);
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::NONE))
+        .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 }
 
@@ -1013,8 +1258,35 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 //  Context tab — token budget, files in context, memory
 // ═══════════════════════════════════════════════════════════════════════════
 
+fn load_session_todos(project_root: &std::path::Path) -> Vec<(String, String)> {
+    let path = project_root.join(".pipit").join("todo.json");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let text = item.get("text")?.as_str()?.trim().to_string();
+            let status = item
+                .get("status")
+                .and_then(|status| status.as_str())
+                .unwrap_or("pending")
+                .to_string();
+            Some((text, status))
+        })
+        .collect()
+}
+
 fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     let mut lines: Vec<Line> = Vec::new();
+    let todos = load_session_todos(&state.project_root);
 
     lines.push(Line::from(vec![Span::styled(
         "  Context & Memory",
@@ -1113,6 +1385,40 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     lines.push(Line::from(""));
 
+    // Session todos
+    lines.push(Line::from(vec![Span::styled(
+        "  Session Todos",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(""));
+
+    if todos.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "No tracked todos yet.",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    } else {
+        for (text, status) in &todos {
+            let (marker, color) = match status.as_str() {
+                "done" => ("[x]", Color::Green),
+                "in_progress" => ("[~]", Color::Yellow),
+                _ => ("[ ]", Color::DarkGray),
+            };
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(format!("{} ", marker), Style::default().fg(color)),
+                Span::styled(truncate_str(text, 64), Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+
     // Memory status
     lines.push(Line::from(vec![Span::styled(
         "  Memory",
@@ -1141,7 +1447,10 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
         ),
     ]));
 
-    let paragraph = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
+    let scroll = clamp_scroll_offset(state.side_tab_scroll_offset, lines.len(), area.height);
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::NONE))
+        .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 }
 
@@ -1315,12 +1624,7 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     // Make scrollable
-    let scroll = if state.content_scroll_offset > 0 && state.active_tab == TabView::Help {
-        state.content_scroll_offset
-    } else {
-        0
-    };
-
+    let scroll = clamp_scroll_offset(state.side_tab_scroll_offset, lines.len(), area.height);
     let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::NONE))
         .scroll((scroll, 0));
@@ -1344,9 +1648,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
             }
             UiMode::Task => " ? help · tab focus · j/k scroll · g shell · esc stop · ctrl+c quit",
         },
-        TabView::Agents => " agents view — ctrl+1 to return to coding",
-        TabView::Context => " context view — ctrl+1 to return to coding",
-        TabView::Help => " j/k scroll — ctrl+1 to return to coding",
+        TabView::Agents => " j/k scroll · x kill active subagents · ctrl+1 to return to coding",
+        TabView::Context => " j/k scroll · ctrl+1 to return to coding",
+        TabView::Help => " j/k scroll · ctrl+1 to return to coding",
     };
 
     let hints = format!("{}{}", tab_hint, mode_hint);
@@ -1686,7 +1990,6 @@ fn draw_shell_hints(frame: &mut Frame, area: Rect, state: &TuiState) {
 
 fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClass) {
     let composer_h = composer::composer_height(&state.composer);
-    let activity_h = if wc == WidthClass::Compact { 5 } else { 7 };
     let banner_h: u16 = if state.completion_status.is_some() {
         1
     } else {
@@ -1698,8 +2001,7 @@ fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClas
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),          // task title (single row)
-            Constraint::Length(activity_h), // activity feed
-            Constraint::Min(4),             // response stream
+            Constraint::Min(4),             // unified stream (activity + response merged)
             Constraint::Length(banner_h),   // completion banner
             Constraint::Length(status_h),   // status bar (above input)
             Constraint::Length(composer_h), // composer
@@ -1707,8 +2009,7 @@ fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClas
         .split(area);
 
     draw_task_header(frame, body[0], state);
-    draw_task_activity(frame, body[1], state);
-    draw_content_pane(frame, body[2], state);
+    draw_content_pane(frame, body[1], state);
 
     // Completion banner
     if let Some(banner) = &state.completion_status {
@@ -1727,13 +2028,13 @@ fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClas
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line), body[3]);
+        frame.render_widget(Paragraph::new(line), body[2]);
     }
 
     // Status bar — dedicated row above the composer
-    draw_status_bar(frame, body[4], state);
+    draw_status_bar(frame, body[3], state);
 
-    composer::draw_composer(frame, body[5], &state.composer, state.is_working);
+    composer::draw_composer(frame, body[4], &state.composer, state.is_working);
 }
 
 fn draw_task_header(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -2021,6 +2322,21 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         let trimmed = raw.trim();
         let raw_is_match = content_matches.contains(&raw_line_index);
         let raw_is_current = content_active_match == Some(raw_line_index);
+
+        // ── Inline activity entries (merged from push_activity) ──
+        if let Some(activity_text) = trimmed.strip_prefix("◈activity◈") {
+            let activity_text = activity_text.trim();
+            emit!(
+                Line::from(Span::styled(
+                    format!(" {}", activity_text),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                raw_is_match,
+                raw_is_current
+            );
+            prev_was_empty = false;
+            continue;
+        }
 
         // ── Code fence ──
         if trimmed.starts_with("```") {
@@ -2851,6 +3167,44 @@ mod tests {
         assert!(consumed);
         assert_eq!(state.search_match_index, 1);
     }
+
+    #[test]
+    fn help_tab_scrolls_with_jk() {
+        let status = StatusBarState::new(
+            "repo".to_string(),
+            "model".to_string(),
+            ApprovalMode::Suggest,
+        );
+        let mut state = TuiState::new(status, PathBuf::from("."));
+        state.active_tab = TabView::Help;
+        state.side_tab_scroll_offset = 5;
+
+        let consumed = handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        assert!(consumed);
+        assert_eq!(state.side_tab_scroll_offset, 4);
+    }
+
+    #[test]
+    fn agents_tab_can_request_subagent_kill() {
+        let status = StatusBarState::new(
+            "repo".to_string(),
+            "model".to_string(),
+            ApprovalMode::Suggest,
+        );
+        let mut state = TuiState::new(status, PathBuf::from("."));
+        state.active_tab = TabView::Agents;
+        state.note_subagent_started("call-1".to_string(), "Review auth flow".to_string(), vec![]);
+
+        let consumed = handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert!(consumed);
+        assert!(state.take_kill_active_subagents_requested());
+    }
 }
 
 /// Handle a key event, updating state. Returns true if the event was consumed.
@@ -2966,6 +3320,39 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
             state.overlay = Overlay::None;
         }
         return true;
+    }
+
+    if state.active_tab != TabView::Coding {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.scroll_side_tab_by(1);
+                return true;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.scroll_side_tab_by(-1);
+                return true;
+            }
+            KeyCode::PageUp => {
+                state.scroll_side_tab_by(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                state.scroll_side_tab_by(-10);
+                return true;
+            }
+            KeyCode::Home => {
+                state.jump_side_tab_to_oldest();
+                return true;
+            }
+            KeyCode::End => {
+                state.side_tab_scroll_offset = 0;
+                return true;
+            }
+            KeyCode::Char('x') if state.active_tab == TabView::Agents => {
+                return state.request_kill_active_subagents();
+            }
+            _ => {}
+        }
     }
 
     let task_mode = state.ui_mode == UiMode::Task && state.composer.is_empty();
@@ -3151,6 +3538,15 @@ pub fn handle_mouse(
             false
         }
         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            if state.active_tab != TabView::Coding {
+                if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                    state.scroll_side_tab_by(3);
+                } else {
+                    state.scroll_side_tab_by(-3);
+                }
+                return true;
+            }
+
             let target = scroll_target_for_mouse(state, mouse.row, terminal_width, terminal_height);
             state.focused_pane = target;
             match target {

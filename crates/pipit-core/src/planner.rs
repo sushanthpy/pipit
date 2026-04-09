@@ -615,9 +615,49 @@ pub fn is_question_task(prompt: &str) -> bool {
         return false;
     }
 
-    // Ends with a question mark — strong signal
+    // Unified list of verbs that indicate a task, not a question
+    const TASK_VERBS: &[&str] = &[
+        "fix",
+        "add",
+        "create",
+        "write",
+        "edit",
+        "change",
+        "update",
+        "refactor",
+        "implement",
+        "build",
+        "delete",
+        "remove",
+        "modify",
+        "replace",
+        "move",
+        "rename",
+        "install",
+        "deploy",
+        "configure",
+        "set up",
+        "profile",
+        "run",
+        "execute",
+        "test",
+        "benchmark",
+        "measure",
+        "optimize",
+        "migrate",
+        "convert",
+        "debug",
+        "rewrite",
+        "scaffold",
+        "generate",
+        "wire",
+    ];
+
+    let has_task_verb = TASK_VERBS.iter().any(|v| trimmed.contains(v));
+
+    // Ends with a question mark — strong signal, but task verbs override
     if trimmed.ends_with('?') {
-        return true;
+        return !has_task_verb;
     }
 
     // Starts with a question word
@@ -654,32 +694,15 @@ pub fn is_question_task(prompt: &str) -> bool {
     ];
 
     if QUESTION_STARTERS.iter().any(|q| trimmed.starts_with(q)) {
-        // Check for action verbs that override the question form
+        // Task verbs override the question form
         // e.g., "can you fix the bug" is a task, not a question
-        const TASK_VERBS_IN_QUESTIONS: &[&str] = &[
-            "fix",
-            "add",
-            "create",
-            "write",
-            "edit",
-            "change",
-            "update",
-            "refactor",
-            "implement",
-            "build",
-            "delete",
-            "remove",
-            "modify",
-            "replace",
-            "move",
-            "rename",
-            "install",
-            "deploy",
-            "configure",
-            "set up",
-        ];
+        if has_task_verb {
+            return false;
+        }
 
-        if TASK_VERBS_IN_QUESTIONS.iter().any(|v| trimmed.contains(v)) {
+        // "show me" + action context = task (e.g., "show me the failing test output" is ambiguous,
+        // but "show me how to fix" is a task)
+        if trimmed.starts_with("show me") && has_task_verb {
             return false;
         }
 
@@ -689,38 +712,7 @@ pub fn is_question_task(prompt: &str) -> bool {
     // Short prompts (≤8 words) without action verbs are likely Q&A
     let word_count = trimmed.split_whitespace().count();
     if word_count <= 8 {
-        const ACTION_WORDS: &[&str] = &[
-            "fix",
-            "add",
-            "create",
-            "write",
-            "edit",
-            "change",
-            "update",
-            "refactor",
-            "implement",
-            "build",
-            "delete",
-            "remove",
-            "modify",
-            "replace",
-            "move",
-            "rename",
-            "install",
-            "deploy",
-            "run",
-            "execute",
-            "test",
-            "debug",
-            "optimize",
-            "migrate",
-            "convert",
-        ];
-
-        if !ACTION_WORDS
-            .iter()
-            .any(|w| trimmed.split_whitespace().any(|token| token == *w))
-        {
+        if !has_task_verb {
             return true;
         }
     }
@@ -736,6 +728,12 @@ mod question_task_tests {
     fn question_mark_is_question() {
         assert!(is_question_task("what files are in this project?"));
         assert!(is_question_task("how does the auth system work?"));
+    }
+
+    #[test]
+    fn question_mark_with_task_verb_is_task() {
+        assert!(!is_question_task("can you fix the bug in main.rs?"));
+        assert!(!is_question_task("how should I implement the cache?"));
     }
 
     #[test]
@@ -761,6 +759,15 @@ mod question_task_tests {
         assert!(!is_question_task("can you fix the bug in main.rs"));
         assert!(!is_question_task("how should I implement the cache"));
         assert!(!is_question_task("explain and then fix the failing test"));
+    }
+
+    #[test]
+    fn profile_run_test_are_tasks() {
+        assert!(!is_question_task("profile the server"));
+        assert!(!is_question_task("run the benchmarks"));
+        assert!(!is_question_task("test the auth module"));
+        assert!(!is_question_task("execute the migration"));
+        assert!(!is_question_task("benchmark the parser"));
     }
 
     #[test]

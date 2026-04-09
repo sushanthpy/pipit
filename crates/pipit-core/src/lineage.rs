@@ -25,7 +25,7 @@ pub struct ExecutionBranch {
     /// Depth in the delegation tree (0 = root).
     pub depth: u32,
     /// Inherited capability set (lattice meet of parent grant ∩ request).
-    pub capabilities: u32, // stored as CapabilitySet bits
+    pub capabilities: CapabilitySet,
     /// Token budget for this branch.
     pub token_budget: TokenBudget,
     /// Wall-clock budget.
@@ -114,7 +114,8 @@ pub struct MergeContract {
     /// Semantic intent of the changes.
     pub intent: String,
     /// Verification obligations that must be met before merge.
-    pub verification_obligations: Vec<String>,
+    /// Each obligation is a typed predicate, not a free-form string.
+    pub verification_obligations: Vec<VerificationObligation>,
     /// Rollback point (git ref or checkpoint ID).
     pub rollback_point: String,
     /// Whether the branch self-reports as complete.
@@ -125,6 +126,71 @@ pub struct MergeContract {
     pub diff_summary: String,
     /// Worktree or branch name for isolated branches.
     pub branch_name: Option<String>,
+}
+
+/// A typed verification obligation — machine-checkable predicate.
+/// Satisfaction requires presenting matching `ObligationEvidence`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VerificationObligation {
+    /// A command must exit zero (tests, lint, build).
+    CommandMustPass {
+        /// The command to run (e.g. "cargo test").
+        command: String,
+        /// Human-readable label (e.g. "unit tests").
+        label: String,
+    },
+    /// A specific file must not have been modified.
+    FileUnmodified { path: String },
+    /// Manual review required.
+    ManualReview { description: String },
+    /// Custom predicate with an ID for matching.
+    Custom { id: String, description: String },
+}
+
+/// Evidence that satisfies a verification obligation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ObligationEvidence {
+    /// A command was run and exited with the given code.
+    CommandResult {
+        command: String,
+        exit_code: i32,
+        stdout_hash: Option<String>,
+    },
+    /// A file's content hash at verification time.
+    FileHash { path: String, hash: String },
+    /// Manual approval recorded.
+    ManualApproval { reviewer: String, timestamp: u64 },
+    /// Custom evidence.
+    CustomEvidence { id: String, data: String },
+}
+
+impl VerificationObligation {
+    /// Check if a piece of evidence satisfies this obligation.
+    pub fn satisfied_by(&self, evidence: &ObligationEvidence) -> bool {
+        match (self, evidence) {
+            (
+                VerificationObligation::CommandMustPass { command, .. },
+                ObligationEvidence::CommandResult {
+                    command: ev_cmd,
+                    exit_code,
+                    ..
+                },
+            ) => command == ev_cmd && *exit_code == 0,
+            (
+                VerificationObligation::FileUnmodified { path },
+                ObligationEvidence::FileHash { path: ev_path, .. },
+            ) => path == ev_path,
+            (
+                VerificationObligation::ManualReview { .. },
+                ObligationEvidence::ManualApproval { .. },
+            ) => true,
+            (
+                VerificationObligation::Custom { id, .. },
+                ObligationEvidence::CustomEvidence { id: ev_id, .. },
+            ) => id == ev_id,
+            _ => false,
+        }
+    }
 }
 
 /// A file changed by the subagent branch.
@@ -171,7 +237,7 @@ impl LineageDAG {
             task_id: task_id.clone(),
             parent_id: None,
             depth: 0,
-            capabilities: CapabilitySet::ALL.bits(),
+            capabilities: CapabilitySet::ALL,
             token_budget: TokenBudget::new(u64::MAX, u64::MAX),
             wall_clock_budget: Duration::from_secs(3600),
             task: task.to_string(),
@@ -205,7 +271,7 @@ impl LineageDAG {
             .get(parent_id)
             .ok_or_else(|| format!("Parent task {} not found", parent_id))?;
 
-        let parent_caps = CapabilitySet::from_bits(parent.capabilities);
+        let parent_caps = parent.capabilities;
         let child_caps = parent_caps.meet(capabilities);
 
         let depth = parent.depth + 1;
@@ -217,7 +283,7 @@ impl LineageDAG {
             task_id: child_id.clone(),
             parent_id: Some(parent_id.to_string()),
             depth,
-            capabilities: child_caps.bits(),
+            capabilities: child_caps,
             token_budget,
             wall_clock_budget,
             task: task.to_string(),
@@ -319,6 +385,23 @@ impl LineageDAG {
             .unwrap_or_default()
     }
 
+    /// Satisfy a verification obligation by presenting evidence.
+    /// Removes the obligation from the contract if the evidence matches.
+    /// Returns the number of obligations satisfied.
+    pub fn satisfy_obligation(
+        &mut self,
+        task_id: &str,
+        evidence: &ObligationEvidence,
+    ) -> Result<usize, String> {
+        let branch = self.branches.get_mut(task_id).ok_or("Branch not found")?;
+        let contract = branch.merge_contract.as_mut().ok_or("No merge contract")?;
+        let before = contract.verification_obligations.len();
+        contract
+            .verification_obligations
+            .retain(|o| !o.satisfied_by(evidence));
+        Ok(before - contract.verification_obligations.len())
+    }
+
     /// Hard gate: determine if a branch may merge.
     /// merge_allowed = complete(contract) ∧ obligations_passed ∧ budget_ok ∧ lineage_consistent
     /// This is a predicate over contract completeness, not a UI hint.
@@ -353,13 +436,26 @@ impl LineageDAG {
             });
         }
 
-        // 4. Verification obligations must be satisfied (non-empty = pending)
+        // 4. Verification obligations must be satisfied
+        //    With typed obligations, an empty list means no obligations.
+        //    Non-empty obligations are pending until evidence is presented.
         if !contract.verification_obligations.is_empty() {
+            let pending: Vec<String> = contract
+                .verification_obligations
+                .iter()
+                .map(|o| match o {
+                    VerificationObligation::CommandMustPass { label, .. } => label.clone(),
+                    VerificationObligation::FileUnmodified { path } => {
+                        format!("file unchanged: {}", path)
+                    }
+                    VerificationObligation::ManualReview { description } => {
+                        format!("review: {}", description)
+                    }
+                    VerificationObligation::Custom { description, .. } => description.clone(),
+                })
+                .collect();
             return Ok(MergeDecision::Denied {
-                reason: format!(
-                    "Verification obligations not met: {}",
-                    contract.verification_obligations.join(", ")
-                ),
+                reason: format!("Verification obligations not met: {}", pending.join(", ")),
             });
         }
 
@@ -413,7 +509,7 @@ use std::collections::HashSet;
 pub struct MergeValidation {
     pub can_merge: bool,
     pub conflicting_files: Vec<String>,
-    pub verification_pending: Vec<String>,
+    pub verification_pending: Vec<VerificationObligation>,
 }
 
 /// Hard gate decision for merge.
@@ -467,7 +563,7 @@ mod tests {
         dag.set_root("root".to_string(), "main");
 
         // Root has EDIT capabilities
-        dag.branches.get_mut("root").unwrap().capabilities = CapabilitySet::EDIT.bits();
+        dag.branches.get_mut("root").unwrap().capabilities = CapabilitySet::EDIT;
 
         // Child requests FULL_AUTO — gets meet (intersection)
         dag.spawn(
@@ -483,7 +579,7 @@ mod tests {
         .unwrap();
 
         let child = dag.get("child").unwrap();
-        let child_caps = CapabilitySet::from_bits(child.capabilities);
+        let child_caps = child.capabilities;
         // Should have FsRead and FsWrite (from EDIT) but not ProcessExecMutating (not in EDIT)
         assert!(child_caps.has(crate::capability::Capability::FsRead));
         assert!(child_caps.has(crate::capability::Capability::FsWrite));

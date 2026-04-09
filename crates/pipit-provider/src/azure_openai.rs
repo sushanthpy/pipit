@@ -79,12 +79,8 @@ impl AzureOpenAiProvider {
         // the correct path + query string (no /v1/ prefix for Azure).
         let chat_path = format!("/chat/completions?api-version={}", api_version);
 
-        let mut inner = OpenAiProvider::with_id(
-            "azure_openai".to_string(),
-            model,
-            api_key,
-            Some(azure_base),
-        )?;
+        let mut inner =
+            OpenAiProvider::with_id("azure_openai".to_string(), model, api_key, Some(azure_base))?;
         inner.set_chat_path(chat_path);
 
         Ok(Self { inner })

@@ -28,6 +28,7 @@ use pipit_tools::ToolRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 use workflow::WorkflowAssets;
 
@@ -336,24 +337,61 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
             // Suppress the subagent's own MCP init to avoid port conflicts
             .env("PIPIT_SUBAGENT", "1");
 
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn subagent: {}", e))?;
 
+        let mut stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Failed to capture subagent stdout".to_string())?;
+        let mut stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Failed to capture subagent stderr".to_string())?;
+
+        let stdout_handle = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            stdout_pipe
+                .read_to_end(&mut buf)
+                .await
+                .map(|_| buf)
+                .map_err(|e| format!("Failed to read subagent stdout: {}", e))
+        });
+        let stderr_handle = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            stderr_pipe
+                .read_to_end(&mut buf)
+                .await
+                .map(|_| buf)
+                .map_err(|e| format!("Failed to read subagent stderr: {}", e))
+        });
+
         // Wait for completion or cancellation
-        let output = tokio::select! {
-            result = child.wait_with_output() => {
+        let status = tokio::select! {
+            result = child.wait() => {
                 result.map_err(|e| format!("Subagent process error: {}", e))?
             }
             _ = cancel.cancelled() => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                let _ = stdout_handle.await;
+                let _ = stderr_handle.await;
                 return Err("Subagent cancelled".to_string());
             }
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = stdout_handle
+            .await
+            .map_err(|e| format!("Subagent stdout task failed: {}", e))??;
+        let stderr = stderr_handle
+            .await
+            .map_err(|e| format!("Subagent stderr task failed: {}", e))??;
 
-        if output.status.success() || !stdout.is_empty() {
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
+
+        if status.success() || !stdout.is_empty() {
             // Extract the agent's final response (content between last "pipit›" markers)
             let response = stdout
                 .lines()
@@ -367,7 +405,7 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
             if response.trim().is_empty() {
                 Ok(format!(
                     "Subagent completed (exit {}). Output:\n{}",
-                    output.status, stdout
+                    status, stdout
                 ))
             } else {
                 Ok(response)
@@ -375,7 +413,7 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
         } else {
             Err(format!(
                 "Subagent failed (exit {}). stderr:\n{}",
-                output.status, stderr
+                status, stderr
             ))
         }
     }
@@ -489,7 +527,7 @@ async fn main() -> Result<()> {
 
     dbg_log(&format!("[2/12] project_root={}", project_root.display()));
 
-    let config = pipit_config::resolve_config(Some(&project_root), overrides)
+    let mut config = pipit_config::resolve_config(Some(&project_root), overrides)
         .context("Config resolution failed")?;
 
     let provider_kind = config.provider.default;
@@ -591,9 +629,20 @@ async fn main() -> Result<()> {
         }
     };
 
+    // ── Upgrade max_output_tokens from provider capabilities ──
+    // The config default (8192) is too low for modern models that support
+    // 16K-128K output tokens.  When the user hasn't explicitly configured
+    // max_output_tokens, adopt the provider's advertised capability.
+    // This is the single biggest factor in output quality — a model capped
+    // at 8K tokens cannot write a 500-line file in one tool call.
+    let provider_max_output = provider.capabilities().max_output_tokens;
+    if provider_max_output > config.model.max_output_tokens {
+        config.model.max_output_tokens = provider_max_output;
+    }
+
     dbg_log(&format!(
-        "[5/12] provider created: {} / {}",
-        provider_kind, model
+        "[5/12] provider created: {} / {} (max_output_tokens: {})",
+        provider_kind, model, config.model.max_output_tokens
     ));
 
     // Build model router based on agent mode
@@ -754,7 +803,8 @@ async fn main() -> Result<()> {
     ));
 
     // Build system prompt (with skill index injected as Tier 1)
-    let system_prompt = prompt_builder::build_system_prompt(
+    // Boot listing is returned separately for turn-1 injection (keeps system prompt cache-stable).
+    let (system_prompt, boot_listing) = prompt_builder::build_system_prompt(
         &project_root,
         &tools,
         config.approval,
@@ -794,16 +844,38 @@ async fn main() -> Result<()> {
             "[8.5] building repomap for {}",
             project_root.display()
         ));
-        let intelligence_config = pipit_intelligence::IntelligenceConfig::default();
-        let repo_map = RepoMap::build(&project_root, intelligence_config);
-        if repo_map.file_count() > 0 {
-            let map = repo_map.render(&[], 4096);
-            tracing::info!("RepoMap: {} files indexed", repo_map.file_count());
+        // Dynamic RepoMap budget: allocate 10% of context window, clamped to [1024, 8192].
+        let repo_map_budget = ((config.model.context_window as u64) / 10).clamp(1024, 8192);
+        let root = project_root.clone();
+        // RepoMap build is CPU-intensive (file scanning, tree-sitter parsing).
+        // Run on the blocking threadpool to avoid starving the async runtime.
+        let map_result = tokio::task::spawn_blocking(move || {
+            let intelligence_config = pipit_intelligence::IntelligenceConfig::default();
+            let repo_map = RepoMap::build(&root, intelligence_config);
+            if repo_map.file_count() > 0 {
+                let map = repo_map.render(&[], repo_map_budget as usize);
+                let file_count = repo_map.file_count();
+                Some((map, file_count))
+            } else {
+                None
+            }
+        })
+        .await
+        .unwrap_or(None);
+
+        if let Some((map, file_count)) = map_result {
+            let map_tokens = pipit_context::estimate_text_tokens(&map);
+            tracing::info!(
+                "RepoMap: {} files indexed, {} tokens (budget: {})",
+                file_count,
+                map_tokens,
+                repo_map_budget
+            );
             dbg_log(&format!(
-                "[8.5] repomap: {} files indexed",
-                repo_map.file_count()
+                "[8.5] repomap: {} files indexed, {} tokens",
+                file_count, map_tokens
             ));
-            context.update_repo_map_tokens((map.len() as u64) / 4);
+            context.update_repo_map_tokens(map_tokens);
             Some(map)
         } else {
             None
@@ -838,6 +910,14 @@ async fn main() -> Result<()> {
         lint_command: config.project.lint_command.clone(),
         pev: pev_config,
         dry_run: cli.dry_run,
+        boot_context: if boot_listing.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "## Initial project structure\n{}",
+                boot_listing
+            ))
+        },
         ..Default::default()
     };
 
@@ -1367,7 +1447,10 @@ async fn main() -> Result<()> {
                                             failed += 1;
                                         }
                                     }
-                                    eprintln!("\x1b[2m({} restored, {} failed)\x1b[0m", success, failed);
+                                    eprintln!(
+                                        "\x1b[2m({} restored, {} failed)\x1b[0m",
+                                        success, failed
+                                    );
                                 }
                                 Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                             }
@@ -1877,9 +1960,7 @@ async fn main() -> Result<()> {
                     }
                     SlashCommand::Commit(ref msg) => {
                         // Route through VCS gateway for all git operations
-                        let has_staged = vcs_gateway
-                            .has_staged_changes()
-                            .unwrap_or(false);
+                        let has_staged = vcs_gateway.has_staged_changes().unwrap_or(false);
                         if !has_staged {
                             // Auto-stage all changes (via gateway commit with auto_stage=true)
                         }
@@ -1897,26 +1978,20 @@ async fn main() -> Result<()> {
                             }
                         } else {
                             // Generate commit message via LLM
-                            let diff_text = vcs_gateway
-                                .staged_diff()
-                                .unwrap_or_default();
+                            let diff_text = vcs_gateway.staged_diff().unwrap_or_default();
                             if diff_text.trim().is_empty() {
                                 // Stage first if nothing staged
                                 let _ = std::process::Command::new("git")
                                     .args(["add", "-A"])
                                     .current_dir(&project_root)
                                     .output();
-                                let diff_text = vcs_gateway
-                                    .staged_diff()
-                                    .unwrap_or_default();
+                                let diff_text = vcs_gateway.staged_diff().unwrap_or_default();
                                 if diff_text.trim().is_empty() {
                                     eprintln!("\x1b[33mNo changes to commit\x1b[0m");
                                     continue;
                                 }
                             }
-                            let diff_text = vcs_gateway
-                                .staged_diff()
-                                .unwrap_or_default();
+                            let diff_text = vcs_gateway.staged_diff().unwrap_or_default();
                             let prompt = format!(
                                 "Generate a conventional commit message for this diff. \
                                  Use the format: type(scope): description\n\
@@ -1955,9 +2030,7 @@ async fn main() -> Result<()> {
                                 if generated_msg.is_empty() {
                                     eprintln!("\x1b[31mNo commit message generated\x1b[0m");
                                 } else {
-                                    eprintln!(
-                                        "\n\x1b[33mCommit with this message? [y/N]\x1b[0m"
-                                    );
+                                    eprintln!("\n\x1b[33mCommit with this message? [y/N]\x1b[0m");
                                     if let Some(answer) = read_input() {
                                         if answer.trim().eq_ignore_ascii_case("y")
                                             || answer.trim().eq_ignore_ascii_case("yes")
@@ -1970,12 +2043,8 @@ async fn main() -> Result<()> {
                                                     );
                                                 }
                                                 Ok(o) => {
-                                                    let err =
-                                                        String::from_utf8_lossy(&o.stderr);
-                                                    eprintln!(
-                                                        "\x1b[31m{}\x1b[0m",
-                                                        err.trim()
-                                                    );
+                                                    let err = String::from_utf8_lossy(&o.stderr);
+                                                    eprintln!("\x1b[31m{}\x1b[0m", err.trim());
                                                 }
                                                 Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                                             }
@@ -2194,7 +2263,8 @@ async fn main() -> Result<()> {
                                         "-H",
                                         "Content-Type: application/json",
                                         "-d",
-                                        &serde_json::json!({"project": bg_project, "prompt": task}).to_string(),
+                                        &serde_json::json!({"project": bg_project, "prompt": task})
+                                            .to_string(),
                                     ])
                                     .output();
                                 match submit {
@@ -2455,52 +2525,91 @@ async fn main() -> Result<()> {
                                 match output {
                                     Ok(o) if o.status.success() => {
                                         let body = String::from_utf8_lossy(&o.stdout);
-                                        if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                                        if let Ok(entries) =
+                                            serde_json::from_str::<Vec<serde_json::Value>>(&body)
+                                        {
                                             eprintln!("\n\x1b[1;33mPlugin Registry\x1b[0m\n");
                                             if entries.is_empty() {
-                                                eprintln!("  \x1b[2mNo plugins published yet.\x1b[0m");
+                                                eprintln!(
+                                                    "  \x1b[2mNo plugins published yet.\x1b[0m"
+                                                );
                                             } else {
                                                 for entry in &entries {
-                                                    let name = entry["name"].as_str().unwrap_or("?");
-                                                    let version = entry["version"].as_str().unwrap_or("?");
-                                                    let desc = entry["description"].as_str().unwrap_or("");
-                                                    eprintln!("  \x1b[36m{}\x1b[0m v{} — {}", name, version, desc);
+                                                    let name =
+                                                        entry["name"].as_str().unwrap_or("?");
+                                                    let version =
+                                                        entry["version"].as_str().unwrap_or("?");
+                                                    let desc =
+                                                        entry["description"].as_str().unwrap_or("");
+                                                    eprintln!(
+                                                        "  \x1b[36m{}\x1b[0m v{} — {}",
+                                                        name, version, desc
+                                                    );
                                                 }
                                             }
-                                            eprintln!("\n  \x1b[2mInstall: /registry install <name>\x1b[0m");
-                                            eprintln!("  \x1b[2mSearch:  /registry search <query>\x1b[0m\n");
+                                            eprintln!(
+                                                "\n  \x1b[2mInstall: /registry install <name>\x1b[0m"
+                                            );
+                                            eprintln!(
+                                                "  \x1b[2mSearch:  /registry search <query>\x1b[0m\n"
+                                            );
                                         } else {
-                                            eprintln!("\x1b[31mFailed to parse registry index\x1b[0m");
+                                            eprintln!(
+                                                "\x1b[31mFailed to parse registry index\x1b[0m"
+                                            );
                                         }
                                     }
                                     _ => {
-                                        eprintln!("\x1b[31mFailed to fetch registry. Check network.\x1b[0m");
+                                        eprintln!(
+                                            "\x1b[31mFailed to fetch registry. Check network.\x1b[0m"
+                                        );
                                     }
                                 }
                             }
                             Some(sub) if sub.starts_with("search ") => {
                                 let search_query = &sub[7..];
-                                eprintln!("\x1b[36mSearching registry for '{}'...\x1b[0m", search_query);
+                                eprintln!(
+                                    "\x1b[36mSearching registry for '{}'...\x1b[0m",
+                                    search_query
+                                );
                                 let output = std::process::Command::new("curl")
                                     .args(["-s", "https://raw.githubusercontent.com/pipit-project/registry/main/index.json"])
                                     .output();
                                 match output {
                                     Ok(o) if o.status.success() => {
                                         let body = String::from_utf8_lossy(&o.stdout);
-                                        if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
-                                            let matches: Vec<&serde_json::Value> = entries.iter().filter(|e| {
-                                                let name = e["name"].as_str().unwrap_or("");
-                                                let desc = e["description"].as_str().unwrap_or("");
-                                                name.contains(search_query) || desc.to_lowercase().contains(&search_query.to_lowercase())
-                                            }).collect();
+                                        if let Ok(entries) =
+                                            serde_json::from_str::<Vec<serde_json::Value>>(&body)
+                                        {
+                                            let matches: Vec<&serde_json::Value> = entries
+                                                .iter()
+                                                .filter(|e| {
+                                                    let name = e["name"].as_str().unwrap_or("");
+                                                    let desc =
+                                                        e["description"].as_str().unwrap_or("");
+                                                    name.contains(search_query)
+                                                        || desc
+                                                            .to_lowercase()
+                                                            .contains(&search_query.to_lowercase())
+                                                })
+                                                .collect();
                                             if matches.is_empty() {
-                                                eprintln!("\x1b[33mNo plugins matching '{}'\x1b[0m", search_query);
+                                                eprintln!(
+                                                    "\x1b[33mNo plugins matching '{}'\x1b[0m",
+                                                    search_query
+                                                );
                                             } else {
                                                 for entry in &matches {
-                                                    let name = entry["name"].as_str().unwrap_or("?");
-                                                    let version = entry["version"].as_str().unwrap_or("?");
-                                                    let desc = entry["description"].as_str().unwrap_or("");
-                                                    eprintln!("  \x1b[36m{}\x1b[0m v{} — {}", name, version, desc);
+                                                    let name =
+                                                        entry["name"].as_str().unwrap_or("?");
+                                                    let version =
+                                                        entry["version"].as_str().unwrap_or("?");
+                                                    let desc =
+                                                        entry["description"].as_str().unwrap_or("");
+                                                    eprintln!(
+                                                        "  \x1b[36m{}\x1b[0m v{} — {}",
+                                                        name, version, desc
+                                                    );
                                                 }
                                             }
                                         }
@@ -2513,10 +2622,15 @@ async fn main() -> Result<()> {
                             Some(sub) if sub.starts_with("install ") => {
                                 let plugin_name = &sub[8..];
                                 eprintln!("\x1b[36mInstalling plugin '{}'...\x1b[0m", plugin_name);
-                                eprintln!("\x1b[2mUse: pipit plugin install {}\x1b[0m", plugin_name);
+                                eprintln!(
+                                    "\x1b[2mUse: pipit plugin install {}\x1b[0m",
+                                    plugin_name
+                                );
                             }
                             Some(_) => {
-                                eprintln!("\x1b[33mUsage: /registry [list|search <query>|install <name>]\x1b[0m");
+                                eprintln!(
+                                    "\x1b[33mUsage: /registry [list|search <query>|install <name>]\x1b[0m"
+                                );
                             }
                         }
                         continue;

@@ -103,15 +103,39 @@ impl GitFirewall {
 
         // Protected paths — git internals
         let git_paths = [
-            (".git/hooks/", ThreatClass::HookPlanting, "git hook directory"),
-            (".git/config", ThreatClass::GitInternalsMutation, "git config"),
-            (".git/objects/", ThreatClass::GitInternalsMutation, "git objects"),
+            (
+                ".git/hooks/",
+                ThreatClass::HookPlanting,
+                "git hook directory",
+            ),
+            (
+                ".git/config",
+                ThreatClass::GitInternalsMutation,
+                "git config",
+            ),
+            (
+                ".git/objects/",
+                ThreatClass::GitInternalsMutation,
+                "git objects",
+            ),
             (".git/refs/", ThreatClass::GitInternalsMutation, "git refs"),
             (".git/HEAD", ThreatClass::GitInternalsMutation, "git HEAD"),
             (".git/index", ThreatClass::GitInternalsMutation, "git index"),
-            (".git/packed-refs", ThreatClass::GitInternalsMutation, "packed refs"),
-            (".gitmodules", ThreatClass::SubmoduleInjection, "submodule config"),
-            (".gitattributes", ThreatClass::ConfigInjection, "git attributes"),
+            (
+                ".git/packed-refs",
+                ThreatClass::GitInternalsMutation,
+                "packed refs",
+            ),
+            (
+                ".gitmodules",
+                ThreatClass::SubmoduleInjection,
+                "submodule config",
+            ),
+            (
+                ".gitattributes",
+                ThreatClass::ConfigInjection,
+                "git attributes",
+            ),
         ];
         for (pattern, threat, desc) in git_paths {
             self.protected_paths.push(ProtectedPathRule {
@@ -198,7 +222,11 @@ impl GitFirewall {
             }
             if *token == "-c" {
                 // Check if next token is a dangerous key
-                if let Some(next) = tokens.iter().position(|t| *t == "-c").and_then(|i| tokens.get(i + 1)) {
+                if let Some(next) = tokens
+                    .iter()
+                    .position(|t| *t == "-c")
+                    .and_then(|i| tokens.get(i + 1))
+                {
                     let key = next.split('=').next().unwrap_or("");
                     if self.dangerous_config_keys.contains(key) {
                         threats.push(ThreatClass::ConfigInjection);
@@ -210,7 +238,10 @@ impl GitFirewall {
 
         // Check for submodule URL injection
         if tokens.get(1) == Some(&"submodule") {
-            if tokens.iter().any(|t| t.contains("://") || t.starts_with("git@")) {
+            if tokens
+                .iter()
+                .any(|t| t.contains("://") || t.starts_with("git@"))
+            {
                 threats.push(ThreatClass::SubmoduleInjection);
             }
         }
@@ -218,7 +249,10 @@ impl GitFirewall {
         // Check for push to protected branches
         if tokens.get(1) == Some(&"push") {
             for branch in &self.protected_branches {
-                if tokens.iter().any(|t| t == branch || t.ends_with(&format!(":{}", branch))) {
+                if tokens
+                    .iter()
+                    .any(|t| t == branch || t.ends_with(&format!(":{}", branch)))
+                {
                     threats.push(ThreatClass::BranchProtectionViolation);
                     break;
                 }
@@ -243,9 +277,7 @@ impl GitFirewall {
     /// Returns the threat class if the path is protected.
     pub fn check_path(&self, path: &str) -> Option<ThreatClass> {
         for rule in &self.protected_paths {
-            if path.starts_with(&rule.pattern)
-                || path == rule.pattern.trim_end_matches('/')
-            {
+            if path.starts_with(&rule.pattern) || path == rule.pattern.trim_end_matches('/') {
                 return Some(rule.threat.clone());
             }
         }
@@ -304,7 +336,12 @@ impl GitFirewall {
     }
 
     /// Add a custom protected path rule.
-    pub fn protect_path(&mut self, pattern: impl Into<String>, threat: ThreatClass, description: impl Into<String>) {
+    pub fn protect_path(
+        &mut self,
+        pattern: impl Into<String>,
+        threat: ThreatClass,
+        description: impl Into<String>,
+    ) {
         self.protected_paths.push(ProtectedPathRule {
             pattern: pattern.into(),
             threat,

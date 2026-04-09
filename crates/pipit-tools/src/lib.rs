@@ -95,6 +95,10 @@ pub struct ToolContext {
     pub cwd: Arc<Mutex<PathBuf>>,
     pub project_root: PathBuf,
     pub approval_mode: ApprovalMode,
+    /// Session ID for lineage tracking.
+    pub session_id: Option<String>,
+    /// Lineage branch ID from the core lineage DAG.
+    pub lineage_branch_id: Option<String>,
 }
 
 impl ToolContext {
@@ -109,6 +113,8 @@ impl ToolContext {
             cwd: Arc::new(Mutex::new(canonical_root.clone())),
             project_root: canonical_root,
             approval_mode,
+            session_id: None,
+            lineage_branch_id: None,
         }
     }
 
@@ -144,6 +150,10 @@ pub struct ToolResult {
     pub display: Option<ToolDisplay>,
     pub mutated: bool,
     pub content_bytes: usize,
+    /// Evidence artifacts from typed tools (empty for legacy tools).
+    pub artifacts: Vec<crate::typed_tool::ArtifactKind>,
+    /// Realized file edits from typed tools (empty for legacy tools).
+    pub edits: Vec<crate::typed_tool::RealizedEdit>,
 }
 
 impl ToolResult {
@@ -155,6 +165,8 @@ impl ToolResult {
             display: None,
             mutated: false,
             content_bytes: bytes,
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         }
     }
 
@@ -166,6 +178,8 @@ impl ToolResult {
             display: None,
             mutated: true,
             content_bytes: bytes,
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         }
     }
 
@@ -177,6 +191,8 @@ impl ToolResult {
             display: None,
             mutated: false,
             content_bytes: bytes,
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         }
     }
 }

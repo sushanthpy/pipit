@@ -306,6 +306,18 @@ pub async fn run(
                         break; // Exit poll loop — Phase 3 handles quit
                     }
 
+                    if state.take_kill_active_subagents_requested() {
+                        let mut token = cancel_token.lock().unwrap();
+                        token.cancel();
+                        *token = CancellationToken::new();
+                        state.push_activity(
+                            "⏹",
+                            Color::Yellow,
+                            "Kill requested for active subagents".to_string(),
+                        );
+                        state.begin_working("Stopping subagents…");
+                    }
+
                     // Escape cancels the current agent run
                     if key.code == crossterm::event::KeyCode::Esc && state.is_working {
                         let mut token = cancel_token.lock().unwrap();
@@ -352,91 +364,9 @@ pub async fn run(
                                     pipit_io::input::SlashCommand::Help => {
                                         let mut s = tui_state.lock().unwrap();
                                         s.push_activity("?", Color::Cyan, "/help".to_string());
-                                        s.content_lines.clear();
-                                        s.content_scroll_offset = 0;
-                                        let help = vec![
-                                            "## Commands",
-                                            "",
-                                            "### Navigation",
-                                            "",
-                                            "- `/help` — Show this help",
-                                            "- `/status` — Show repo, model, tokens, cost",
-                                            "- `/cost` — Show token cost summary",
-                                            "- `/clear` — Reset context and chat history",
-                                            "- `/quit` `/q` — Exit pipit",
-                                            "",
-                                            "### Configuration",
-                                            "",
-                                            "- `/config` — Show current configuration",
-                                            "- `/setup` — Setup wizard instructions",
-                                            "- `/model <name>` — Switch model",
-                                            "- `/permissions <mode>` — suggest / auto_edit / full_auto",
-                                            "",
-                                            "### Context",
-                                            "",
-                                            "- `/context` `/ctx` — Show files in working set",
-                                            "- `/tokens` `/tok` — Token usage breakdown",
-                                            "- `/compact` — Compress context to free tokens",
-                                            "- `/add <file>` — Add file to working set",
-                                            "- `/drop <file>` — Remove file from working set",
-                                            "",
-                                            "### Git & Version Control",
-                                            "",
-                                            "- `/diff` — Show uncommitted changes",
-                                            "- `/commit [msg]` — Commit with AI-generated message",
-                                            "- `/undo` — Undo last agent edits",
-                                            "- `/branch [name]` — Create branch or show current",
-                                            "- `/branches` — List all branches",
-                                            "- `/switch <branch>` — Switch branch",
-                                            "",
-                                            "### Workflows",
-                                            "",
-                                            "- `/plan [goal]` — Enter plan-first mode",
-                                            "- `/verify [scope]` — Run build/lint/test checks",
-                                            "- `/aside <question>` — Quick side question",
-                                            "- `/spec [file]` — Spec-driven development",
-                                            "- `/tdd [topic]` — Test-driven workflow",
-                                            "- `/review` — Code review uncommitted changes",
-                                            "- `/fix` — Auto-fix build errors",
-                                            "- `/search <query>` — Search codebase",
-                                            "- `/loop [N] <prompt>` — Repeat every N seconds",
-                                            "- `/bg <prompt>` — Background task via daemon",
-                                            "",
-                                            "### Session & Memory",
-                                            "",
-                                            "- `/save [name]` — Save current session",
-                                            "- `/resume [name]` — Resume saved session",
-                                            "- `/memory [add|list|clear]` — Persistent knowledge",
-                                            "",
-                                            "### System",
-                                            "",
-                                            "- `/doctor` — System health check",
-                                            "- `/skills` — List available skills",
-                                            "- `/hooks` — List active hooks",
-                                            "- `/mcp` — MCP server status",
-                                            "- `/deps` — Dependency health scan",
-                                            "",
-                                            "### Advanced",
-                                            "",
-                                            "- `/bench [run|list|history]` — Benchmark runner",
-                                            "- `/browse <url>` — Headless browser testing",
-                                            "- `/mesh [status|nodes|join]` — Distributed mesh",
-                                            "- `/watch [start|deps|tests]` — Ambient monitor",
-                                            "",
-                                            "### Grammar",
-                                            "",
-                                            "- `@file.rs` — Attach file as context",
-                                            "- `!ls -la` — Run shell command directly",
-                                            "- `Ctrl-J` — Insert newline (multiline)",
-                                            "- `Tab` — Tab-complete commands and files",
-                                            "- `↑ ↓` — History recall",
-                                            "- `Alt-↑/↓` — Scroll content pane",
-                                        ];
-                                        for line in help {
-                                            s.content_lines.push(line.to_string());
-                                        }
+                                        s.active_tab = pipit_io::app::TabView::Help;
+                                        s.side_tab_scroll_offset = 0;
                                         s.has_received_input = true;
-                                        s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Clear => {
                                         let _ = prompt_tx.send("/clear".to_string()).await;
@@ -545,7 +475,11 @@ pub async fn run(
                                     pipit_io::input::SlashCommand::Setup => {
                                         {
                                             let mut s = tui_state.lock().unwrap();
-                                            s.push_activity("⚙", Color::Yellow, "/setup".to_string());
+                                            s.push_activity(
+                                                "⚙",
+                                                Color::Yellow,
+                                                "/setup".to_string(),
+                                            );
                                         }
 
                                         // Temporarily leave the TUI to run the interactive setup wizard
@@ -569,9 +503,8 @@ pub async fn run(
                                                     Color::Green,
                                                     "Setup complete — restart pipit to apply changes".to_string(),
                                                 );
-                                                s.content_lines.push(
-                                                    "## Setup Complete".to_string(),
-                                                );
+                                                s.content_lines
+                                                    .push("## Setup Complete".to_string());
                                                 s.content_lines.push(String::new());
                                                 s.content_lines.push(
                                                     "Configuration saved. **Restart pipit** to apply the new settings.".to_string(),
@@ -587,13 +520,9 @@ pub async fn run(
                                                     Color::Red,
                                                     format!("Setup failed: {}", e),
                                                 );
-                                                s.content_lines.push(
-                                                    "## Setup Failed".to_string(),
-                                                );
+                                                s.content_lines.push("## Setup Failed".to_string());
                                                 s.content_lines.push(String::new());
-                                                s.content_lines.push(
-                                                    format!("Error: {}", e),
-                                                );
+                                                s.content_lines.push(format!("Error: {}", e));
                                             }
                                         }
 
@@ -1395,6 +1324,32 @@ fn normalize_response_markdown(text: &str) -> String {
     collapse_blank_lines(&cleaned)
 }
 
+/// Lightweight normalization applied to the streaming buffer on each delta.
+/// Fixes structural formatting (inline headings, lists, tables) so the TUI
+/// renders clean markdown while tokens are still arriving. Skips expensive
+/// worklog stripping (that only works reliably on the full completed text).
+fn normalize_streaming_display(text: &str) -> String {
+    let mut cleaned = text.replace("\r\n", "\n").replace('\r', "\n");
+    cleaned = inline_heading_re()
+        .replace_all(&cleaned, "$1\n\n$2")
+        .into_owned();
+    cleaned = inline_numbered_list_re()
+        .replace_all(&cleaned, "$1\n$2")
+        .into_owned();
+    cleaned = inline_field_list_re()
+        .replace_all(&cleaned, "\n- $1")
+        .into_owned();
+    cleaned = markdown_table_break_re()
+        .replace_all(&cleaned, "$1\n\n$2")
+        .into_owned();
+    cleaned = cleaned
+        .lines()
+        .map(normalize_dense_table_runs)
+        .collect::<Vec<_>>()
+        .join("\n");
+    collapse_blank_lines(&cleaned)
+}
+
 fn parse_applied_edit_content(content: &str) -> Option<(&str, &str)> {
     let rest = content.strip_prefix("Applied edit to ")?;
     rest.split_once(":\n")
@@ -1434,6 +1389,7 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                 c
             };
             let mut remaining = combined.as_str();
+            let mut pushed = false;
             while !remaining.is_empty() {
                 if state.is_thinking {
                     if let Some(end) = remaining.find("</think>") {
@@ -1454,6 +1410,7 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                     let before = remaining[..start].replace("</think>", "");
                     if !before.trim().is_empty() {
                         state.push_content(&before);
+                        pushed = true;
                     }
                     remaining = &remaining[start + 7..];
                     state.is_thinking = true;
@@ -1467,12 +1424,23 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                         let safe = &cleaned[..cleaned.len().saturating_sub(suffix.len())];
                         if !safe.trim().is_empty() {
                             state.push_content(safe);
+                            pushed = true;
                         }
                         state.tag_buffer = suffix.to_string();
                     } else if !cleaned.trim().is_empty() {
                         state.push_content(&cleaned);
+                        pushed = true;
                     }
                     break;
+                }
+            }
+            // Normalize the streaming buffer so markdown renders cleanly
+            // while tokens are still arriving (fixes inline headings, lists, tables).
+            if pushed && !state.streaming_text.is_empty() {
+                let normalized = normalize_streaming_display(&state.streaming_text);
+                if normalized != state.streaming_text {
+                    state.streaming_text.clear();
+                    state.streaming_text.push_str(&normalized);
                 }
             }
         }
@@ -1482,11 +1450,28 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             state.replace_current_turn_content(&cleaned);
             state.finish_working();
         }
-        AgentEvent::ToolCallStart { name, args, .. } => {
+        AgentEvent::ToolCallStart {
+            call_id,
+            name,
+            args,
+        } => {
             state.finish_working();
             if !state.current_turn_had_tool_calls {
                 state.current_turn_had_tool_calls = true;
                 state.discard_current_turn_content();
+            }
+            if name == "subagent" {
+                let task = args["task"].as_str().unwrap_or("Subagent task").to_string();
+                let tools = args["tools"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                state.note_subagent_started(call_id.clone(), task, tools);
             }
             let summary = match name.as_str() {
                 "read_file" => {
@@ -1544,17 +1529,28 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                     let file_count = args["files"].as_array().map(|a| a.len()).unwrap_or(0);
                     format!("Scaffold {} ({} files)", shorten_path(root), file_count)
                 }
+                "subagent" => format!(
+                    "Subagent {}",
+                    args["task"]
+                        .as_str()
+                        .unwrap_or("task")
+                        .chars()
+                        .take(60)
+                        .collect::<String>()
+                ),
                 _ => format!("{} …", name),
             };
             let icon = match name.as_str() {
                 "read_file" | "grep" | "glob" | "list_directory" => "○",
                 "edit_file" | "write_file" => "●",
                 "bash" => "▸",
+                "subagent" => "⇢",
                 _ => "·",
             };
             let color = match name.as_str() {
                 "edit_file" | "write_file" => Color::Green,
                 "bash" => Color::Cyan,
+                "subagent" => Color::Magenta,
                 _ => Color::DarkGray,
             };
             state.push_activity(icon, color, summary.clone());
@@ -1565,7 +1561,11 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             });
             state.begin_working(&format!("Running {}…", name));
         }
-        AgentEvent::ToolCallEnd { name, result, .. } => {
+        AgentEvent::ToolCallEnd {
+            call_id,
+            name,
+            result,
+        } => {
             state.finish_working();
             let tool_name = name.clone();
             state.active_tool = None;
@@ -1606,7 +1606,24 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                         &format!("  {} {}", icon, content),
                     );
                 }
-                pipit_core::ToolCallOutcome::Success { mutated: false, .. } => {
+                pipit_core::ToolCallOutcome::Success {
+                    content,
+                    mutated: false,
+                    ..
+                } => {
+                    if tool_name == "subagent" {
+                        let summary = first_line(content).chars().take(96).collect::<String>();
+                        state.note_subagent_finished(
+                            call_id,
+                            pipit_io::app::SubagentStatus::Completed,
+                            Some(summary.clone()),
+                        );
+                        state.push_activity(
+                            "✓",
+                            Color::Magenta,
+                            format!("Subagent completed: {}", summary),
+                        );
+                    }
                     // Keep tool chatter in the activity stream so the response pane
                     // can stay focused on the assistant's markdown answer.
                 }
@@ -1616,6 +1633,14 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                     } else {
                         message.clone()
                     };
+                    if tool_name == "subagent" {
+                        let status = if message.to_lowercase().contains("cancel") {
+                            pipit_io::app::SubagentStatus::Cancelled
+                        } else {
+                            pipit_io::app::SubagentStatus::Failed
+                        };
+                        state.note_subagent_finished(call_id, status, Some(msg.clone()));
+                    }
                     state.push_activity("✗", Color::Red, format!("{}: {}", tool_name, msg));
                     state.ensure_turn_separator();
                     push_content_block(
@@ -1629,6 +1654,13 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                     } else {
                         message.clone()
                     };
+                    if tool_name == "subagent" {
+                        state.note_subagent_finished(
+                            call_id,
+                            pipit_io::app::SubagentStatus::Failed,
+                            Some(msg.clone()),
+                        );
+                    }
                     state.push_activity(
                         "⚠",
                         Color::Yellow,
@@ -1793,7 +1825,8 @@ mod tests {
         );
 
         assert!(state.streaming_text.is_empty());
-        assert!(state.content_lines.is_empty());
+        // After merge, activity markers appear inline in content_lines
+        assert!(state.content_lines.iter().all(|l| l.starts_with("◈activity◈")));
 
         apply_agent_event(
             &mut state,
@@ -1803,6 +1836,8 @@ mod tests {
                 result: ToolCallOutcome::Success {
                     content: "{\n  \"scripts\": { \"dev\": \"vite\" }\n}".to_string(),
                     mutated: false,
+                    artifacts: Vec::new(),
+                    edits: Vec::new(),
                 },
             },
         );
@@ -1828,9 +1863,16 @@ mod tests {
             },
         );
 
+        // Turn 1 activity marker is preserved; turn 2 content follows separator
+        let response_lines: Vec<&str> = state
+            .content_lines
+            .iter()
+            .filter(|l| !l.starts_with("◈activity◈"))
+            .map(|l| l.as_str())
+            .collect();
         assert_eq!(
-            state.content_lines,
-            vec!["Use `npm run dev` from `frontend`."]
+            response_lines,
+            vec!["", "---", "", "Use `npm run dev` from `frontend`."]
         );
     }
 
@@ -1882,6 +1924,8 @@ mod tests {
                 result: ToolCallOutcome::Success {
                     content: "{}".to_string(),
                     mutated: false,
+                    artifacts: Vec::new(),
+                    edits: Vec::new(),
                 },
             },
         );
@@ -1907,15 +1951,16 @@ mod tests {
             },
         );
 
+        // Activity markers from tool turn appear inline between answers
+        let response_lines: Vec<&str> = state
+            .content_lines
+            .iter()
+            .filter(|l| !l.starts_with("◈activity◈"))
+            .map(|l| l.as_str())
+            .collect();
         assert_eq!(
-            state.content_lines,
-            vec![
-                "First answer".to_string(),
-                "".to_string(),
-                "---".to_string(),
-                "".to_string(),
-                "Second answer".to_string(),
-            ]
+            response_lines,
+            vec!["First answer", "", "---", "", "Second answer"]
         );
     }
 
@@ -1961,6 +2006,47 @@ mod tests {
                 "- id: string".to_string(),
                 "- email: string".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn subagent_events_update_tracked_runs() {
+        let mut state = test_state();
+
+        apply_agent_event(
+            &mut state,
+            &AgentEvent::ToolCallStart {
+                call_id: "sub-1".to_string(),
+                name: "subagent".to_string(),
+                args: json!({
+                    "task": "Review auth middleware",
+                    "tools": ["read_file", "grep"]
+                }),
+            },
+        );
+
+        assert_eq!(state.active_subagent_count(), 1);
+        assert_eq!(state.subagent_runs.len(), 1);
+        assert_eq!(state.subagent_runs[0].task, "Review auth middleware");
+
+        apply_agent_event(
+            &mut state,
+            &AgentEvent::ToolCallEnd {
+                call_id: "sub-1".to_string(),
+                name: "subagent".to_string(),
+                result: ToolCallOutcome::Success {
+                    content: "Found the root cause in auth.rs".to_string(),
+                    mutated: false,
+                    artifacts: Vec::new(),
+                    edits: Vec::new(),
+                },
+            },
+        );
+
+        assert_eq!(state.active_subagent_count(), 0);
+        assert_eq!(
+            state.subagent_runs[0].status,
+            pipit_io::app::SubagentStatus::Completed
         );
     }
 }

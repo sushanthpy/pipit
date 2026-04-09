@@ -562,7 +562,9 @@ impl PipitUi {
                 self.in_tool = false;
 
                 match result {
-                    pipit_core::ToolCallOutcome::Success { content, mutated } => {
+                    pipit_core::ToolCallOutcome::Success {
+                        content, mutated, ..
+                    } => {
                         if *mutated {
                             // Distinguish Created (new file) vs Updated (existing file)
                             let (icon, color) = if content.starts_with("Created") {

@@ -388,6 +388,7 @@ impl AgentPool {
             pev: None,
             max_budget_usd: None,
             dry_run: false,
+            boot_context: None,
         };
 
         // 9. Construct AgentLoop with policy-bounded approval handler.

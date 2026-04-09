@@ -73,9 +73,7 @@ pub enum WorkflowOp {
     /// Record a snapshot of current state.
     Snapshot { message: String },
     /// Begin verification pipeline.
-    Verify {
-        checks: Vec<String>,
-    },
+    Verify { checks: Vec<String> },
     /// Record verification result.
     RecordVerification {
         check: String,
@@ -83,9 +81,7 @@ pub enum WorkflowOp {
         evidence: String,
     },
     /// Propose promotion to target branch.
-    ProposePromotion {
-        target: String,
-    },
+    ProposePromotion { target: String },
     /// Execute promotion (merge).
     Promote {
         target: String,
@@ -161,6 +157,8 @@ pub struct VcsKernel {
     pub ledger: RepositoryLedger,
     /// Active workspace states keyed by workspace ID.
     workspaces: std::collections::HashMap<String, WorkflowPhase>,
+    /// Contract registry — persistent promotion constraints.
+    pub contracts: crate::contract::ContractRegistry,
 }
 
 impl VcsKernel {
@@ -168,11 +166,13 @@ impl VcsKernel {
     pub fn new(project_root: PathBuf) -> Self {
         let ledger_path = project_root.join(".pipit").join("ledger.jsonl");
         let snapshot_path = project_root.join(".pipit").join("snapshots");
+        let contracts_dir = project_root.join(".pipit").join("contracts");
         Self {
             firewall: GitFirewall::new(),
             snapshots: SnapshotGraph::new(snapshot_path),
             ledger: RepositoryLedger::new(ledger_path),
             workspaces: std::collections::HashMap::new(),
+            contracts: crate::contract::ContractRegistry::with_persistence(contracts_dir),
             project_root,
         }
     }
@@ -180,7 +180,9 @@ impl VcsKernel {
     /// Load kernel state from disk (replay ledger).
     pub fn load(project_root: PathBuf) -> Result<Self, WorkflowError> {
         let mut kernel = Self::new(project_root);
-        kernel.ledger.replay(&mut kernel.workspaces, &mut kernel.snapshots)
+        kernel
+            .ledger
+            .replay(&mut kernel.workspaces, &mut kernel.snapshots)
             .map_err(|e| WorkflowError::IoError(e.to_string()))?;
         Ok(kernel)
     }
@@ -197,6 +199,30 @@ impl VcsKernel {
             .get(workspace_id)
             .cloned()
             .unwrap_or(WorkflowPhase::Idle);
+
+        // ── Contract gate enforcement ──
+        // ProposePromotion requires all contract gates to pass.
+        if let WorkflowOp::ProposePromotion { .. } = &op {
+            if let Some(contract) = self.contracts.get(workspace_id) {
+                let mut contract = contract.clone();
+                let gate_result = contract.evaluate_gates();
+                if !gate_result.all_passed {
+                    let failed: Vec<String> = gate_result
+                        .results
+                        .iter()
+                        .filter(|(_, passed, _)| !passed)
+                        .map(|(name, _, reason)| format!("{}: {}", name, reason))
+                        .collect();
+                    return Err(WorkflowError::ContractFailed(format!(
+                        "Promotion blocked — failed gates: {}",
+                        failed.join("; ")
+                    )));
+                }
+                // Gates passed — update the contract and persist
+                contract.evaluate_state();
+                self.contracts.update(contract);
+            }
+        }
 
         // 1. Validate transition is legal
         let next = self.validate_transition(&current, &op)?;

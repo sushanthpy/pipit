@@ -51,9 +51,18 @@ impl AnthropicProvider {
     }
 
     fn capabilities_for_model(model: &str) -> ModelCapabilities {
+        let max_output_tokens = if model.contains("opus") {
+            32_000
+        } else if model.contains("sonnet") {
+            // Claude Sonnet 4/4.5 supports up to 64K output tokens
+            16_384
+        } else {
+            // Haiku and unknown models
+            8192
+        };
         ModelCapabilities {
             context_window: 200_000,
-            max_output_tokens: if model.contains("opus") { 32_000 } else { 8192 },
+            max_output_tokens,
             supports_tool_use: true,
             supports_streaming: true,
             supports_thinking: model.contains("opus") || model.contains("sonnet"),

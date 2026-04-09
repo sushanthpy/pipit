@@ -84,6 +84,8 @@ impl Tool for PowerShellTool {
             }),
             mutated: true,
             content_bytes: stdout.len() + stderr.len(),
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         })
     }
 }

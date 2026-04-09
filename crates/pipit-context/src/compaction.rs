@@ -33,6 +33,10 @@ pub trait CompactionPass: Send + Sync {
         budget_tokens: u64,
         cancel: CancellationToken,
     ) -> Result<PassResult, ContextError>;
+
+    /// Inject staged collapses into this pass. Only meaningful for
+    /// ContextCollapsePass; other passes ignore this.
+    fn inject_collapses(&mut self, _collapses: Vec<StagedCollapse>) {}
 }
 
 /// Result of a single compaction pass.
@@ -162,22 +166,16 @@ impl CompactionPipeline {
     ) -> PipelineResult {
         let mut result = PipelineResult::default();
 
-        // Drain pending collapses into the ContextCollapsePass
+        // Drain pending collapses into the ContextCollapsePass via trait method.
+        // This mutates the existing pass rather than replacing it, keeping
+        // the circuit breaker synchronized with the correct instance.
         let pending = std::mem::take(&mut self.pending_collapses);
         if !pending.is_empty() {
             for pass in &mut self.passes {
                 if pass.name() == "context_collapse" {
-                    // Safe: we know the concrete type by name
-                    // Thread collapses through the pass interface
+                    pass.inject_collapses(pending);
                     break;
                 }
-            }
-            // Directly inject into the collapse pass (index 3)
-            if self.passes.len() > 3 && self.passes[3].name() == "context_collapse" {
-                // Re-create collapse pass with staged data
-                self.passes[3] = Box::new(ContextCollapsePass {
-                    staged_collapses: pending,
-                });
             }
         }
 
@@ -577,13 +575,19 @@ pub struct StagedCollapse {
 /// Read-time projection system that commits staged collapses.
 /// Collapses live in a separate store, enabling rollback.
 pub struct ContextCollapsePass {
-    staged_collapses: Vec<StagedCollapse>,
+    pub(crate) staged_collapses: Vec<StagedCollapse>,
 }
+
+/// Downcast helper removed — use `inject_collapses()` trait method instead.
 
 #[async_trait::async_trait]
 impl CompactionPass for ContextCollapsePass {
     fn name(&self) -> &str {
         "context_collapse"
+    }
+
+    fn inject_collapses(&mut self, collapses: Vec<StagedCollapse>) {
+        self.staged_collapses.extend(collapses);
     }
 
     async fn compact(

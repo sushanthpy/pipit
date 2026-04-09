@@ -133,18 +133,29 @@ impl LoopDetector {
         }
     }
 
-    /// Check if any tool+args combo has been called >= threshold times with failures.
-    /// Only failed calls count — successful calls are normal agent behavior.
+    /// Check if any tool+args combo has been called >= threshold times.
+    ///
+    /// Detection runs in three phases, tightest first:
+    ///
+    /// 1. **Exact duplicates (all calls):** Same tool name + identical args hash.
+    ///    History is `reset()` on every forward-progress mutation, so everything
+    ///    remaining is from stagnant turns.  Repeating the same read-only command
+    ///    (e.g. `grep` on the same file 5×) is a loop even when calls succeed.
+    ///
+    /// 2. **Fuzzy duplicates (failed calls):** Same tool name, ≥82% Jaccard
+    ///    similarity on arg tokens, but only counting calls that returned an
+    ///    error or were policy-blocked.
+    ///
+    /// 3. **Fuzzy duplicates (all calls, higher bar):** Same as phase 2 but
+    ///    on all calls including successes, with threshold + 2 (min 5).
     pub fn is_looping(&self) -> Option<(String, u32)> {
-        // Only consider failed calls for loop detection
-        let failed_calls: Vec<_> = self.history.iter().filter(|fp| fp.failed).collect();
-
-        let mut counts: HashMap<(&str, u64), u32> = HashMap::new();
-        for fp in &failed_calls {
-            *counts.entry((&fp.tool_name, fp.args_hash)).or_default() += 1;
+        // ── Phase 1: exact duplicates on ALL calls ──
+        let mut exact_counts: HashMap<(&str, u64), u32> = HashMap::new();
+        for fp in &self.history {
+            *exact_counts.entry((&fp.tool_name, fp.args_hash)).or_default() += 1;
         }
 
-        if let Some(exact) = counts
+        if let Some(exact) = exact_counts
             .iter()
             .find(|(_, count)| **count >= self.threshold as u32)
             .map(|((name, _), count)| (name.to_string(), *count))
@@ -152,8 +163,10 @@ impl LoopDetector {
             return Some(exact);
         }
 
-        // Fuzzy matching on failed calls only
+        // ── Phase 2: fuzzy duplicates on FAILED calls ──
+        let failed_calls: Vec<_> = self.history.iter().filter(|fp| fp.failed).collect();
         let mut best_match: Option<(String, u32)> = None;
+
         for current in &failed_calls {
             let similar = failed_calls
                 .iter()
@@ -164,6 +177,30 @@ impl LoopDetector {
                 .count() as u32;
 
             if similar >= self.threshold as u32 {
+                match &best_match {
+                    Some((_, best_count)) if *best_count >= similar => {}
+                    _ => best_match = Some((current.tool_name.clone(), similar)),
+                }
+            }
+        }
+        if best_match.is_some() {
+            return best_match;
+        }
+
+        // ── Phase 3: fuzzy duplicates on ALL calls (higher bar) ──
+        // Catches models that slightly vary args on read-only calls
+        // (e.g. grep -n "export" vs grep -n 'export').
+        let fuzzy_all_threshold = (self.threshold as u32 + 2).max(5);
+        for current in self.history.iter() {
+            let similar = self.history
+                .iter()
+                .filter(|candidate| {
+                    candidate.tool_name == current.tool_name
+                        && jaccard_similarity(&candidate.token_set, &current.token_set) >= 0.82
+                })
+                .count() as u32;
+
+            if similar >= fuzzy_all_threshold {
                 match &best_match {
                     Some((_, best_count)) if *best_count >= similar => {}
                     _ => best_match = Some((current.tool_name.clone(), similar)),
@@ -269,4 +306,82 @@ fn normalized_levenshtein(a: &str, b: &str) -> f64 {
     let dist = prev[n] as f64;
     let max_len = m.max(n) as f64;
     1.0 - (dist / max_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Successful identical calls must be detected as a loop.
+    /// This is the grep-on-same-file-100-times scenario.
+    #[test]
+    fn detects_successful_identical_calls() {
+        let mut ld = LoopDetector::new(10, 3);
+        let args = json!({"command": "grep -n \"export default\" /tmp/foo.txt"});
+
+        // Call the same command 3 times successfully (never marked failed)
+        ld.record("Bash", &args);
+        ld.record("Bash", &args);
+        assert!(ld.is_looping().is_none(), "2 calls should be below threshold");
+        ld.record("Bash", &args);
+        let result = ld.is_looping();
+        assert!(result.is_some(), "3 identical successful calls should be detected");
+        let (name, count) = result.unwrap();
+        assert_eq!(name, "Bash");
+        assert_eq!(count, 3);
+    }
+
+    /// Mutation resets history, so post-mutation reads should not count
+    /// against pre-mutation reads.
+    #[test]
+    fn reset_clears_successful_call_history() {
+        let mut ld = LoopDetector::new(10, 3);
+        let args = json!({"command": "grep foo bar.txt"});
+
+        ld.record("Bash", &args);
+        ld.record("Bash", &args);
+        ld.reset(); // mutation happened
+        ld.record("Bash", &args);
+        assert!(ld.is_looping().is_none(), "should not loop after reset");
+    }
+
+    /// Failed calls still detected at normal threshold (existing behavior).
+    #[test]
+    fn detects_failed_call_loop() {
+        let mut ld = LoopDetector::new(10, 3);
+        let args = json!({"path": "/tmp/nonexistent"});
+
+        for _ in 0..3 {
+            ld.record("ReadFile", &args);
+            ld.mark_last_failed("ReadFile");
+        }
+        let result = ld.is_looping();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "ReadFile");
+    }
+
+    /// Different args should not trigger exact-match detection.
+    #[test]
+    fn different_args_no_exact_loop() {
+        let mut ld = LoopDetector::new(10, 3);
+
+        ld.record("Bash", &json!({"command": "grep foo a.txt"}));
+        ld.record("Bash", &json!({"command": "grep foo b.txt"}));
+        ld.record("Bash", &json!({"command": "grep foo c.txt"}));
+        assert!(ld.is_looping().is_none(), "different args should not exact-match");
+    }
+
+    /// Semantic loop detection on thinking text.
+    #[test]
+    fn detects_semantic_loop() {
+        let mut ld = LoopDetector::new(10, 3);
+        let text = "Now I have enough information to create a comprehensive markdown file";
+
+        ld.record_thinking(text);
+        ld.record_thinking(text);
+        ld.record_thinking(text);
+        ld.record_thinking(text);
+        assert!(ld.check_semantic_loop().is_some());
+    }
 }

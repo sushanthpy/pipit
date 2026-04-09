@@ -19,7 +19,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// Estimate tokens from raw text using content-aware heuristics.
 /// Uses provider-calibrated ratios and content-type detection for
 /// accuracy within ~5% of actual tokenizer output.
-pub(crate) fn estimate_text_tokens(text: &str) -> u64 {
+pub fn estimate_text_tokens(text: &str) -> u64 {
     estimate_text_tokens_for_provider(text, "anthropic")
 }
 
@@ -119,6 +119,9 @@ pub struct ContextManager {
     session_dir: Option<PathBuf>,
     /// Optional WAL for pre-API-call transcript persistence.
     transcript_wal: Option<crate::transcript::TranscriptWal>,
+    /// Actual input token count from the last API response.
+    /// More accurate than char-based estimates; drives usage-based compaction trigger.
+    last_api_input_tokens: Option<u64>,
 }
 
 /// Reserve tokens for model output generation.
@@ -150,7 +153,7 @@ impl Default for ContextSettings {
             tool_result_reserve: DEFAULT_TOOL_RESULT_RESERVE,
             compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
             preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES,
-            max_output_tokens: 8192,
+            max_output_tokens: 16_384,
             tool_result_max_chars: 32_000,
         }
     }
@@ -180,11 +183,18 @@ impl ContextManager {
         settings: ContextSettings,
     ) -> Self {
         let system_tokens = estimate_text_tokens(&system_prompt);
+        // output_reserve must match max_output_tokens so the compression
+        // trigger correctly accounts for the full output budget.
+        // Previously output_reserve was a separate smaller value (4096)
+        // which meant compression didn't trigger early enough when
+        // max_output_tokens was raised to 16K-32K.
+        let effective_output_reserve = (settings.max_output_tokens as u64)
+            .max(settings.output_reserve);
         let budget = TokenBudget::compute(
             model_limit,
             system_tokens,
             0,
-            settings.output_reserve,
+            effective_output_reserve,
             settings.tool_result_reserve,
         );
 
@@ -196,6 +206,7 @@ impl ContextManager {
             total_cost: 0.0,
             session_dir: None,
             transcript_wal: None,
+            last_api_input_tokens: None,
         }
     }
 
@@ -225,28 +236,54 @@ impl ContextManager {
 
     pub fn push_message(&mut self, message: Message) {
         // Flush to WAL BEFORE adding to context — ensures recovery on crash.
-        if let Some(ref mut wal) = self.transcript_wal {
-            if let Err(e) = wal.append_message(&message) {
-                tracing::warn!("WAL append failed (continuing): {}", e);
+        // Skip WAL for ephemeral control-plane messages (they're transient).
+        if !message.metadata.ephemeral {
+            if let Some(ref mut wal) = self.transcript_wal {
+                if let Err(e) = wal.append_message(&message) {
+                    tracing::warn!("WAL append failed (continuing): {}", e);
+                }
             }
         }
         self.messages.push(message);
     }
 
-    /// Push a tool result message with proactive micro-compaction.
+    /// Push an ephemeral control-plane message. Included in the next API
+    /// request but automatically drained afterward so it does not
+    /// contaminate future requests. Use for loop-recovery nudges, budget
+    /// warnings, verification feedback, and auto-continue prompts.
+    pub fn push_control_plane(&mut self, text: &str) {
+        self.messages.push(Message::control_plane(text));
+    }
+
+    /// Remove all ephemeral control-plane messages from the context.
+    /// Called after each API response so runtime self-talk does not
+    /// accumulate in the conversational history.
+    pub fn drain_ephemeral(&mut self) {
+        self.messages.retain(|m| !m.metadata.ephemeral);
+    }
+
+    /// Push a tool result message with noise reduction and micro-compaction.
     ///
-    /// For results >2KB: keeps first/last 50 lines with a summary separator.
-    /// This runs WITHIN the turn (not between turns) to prevent context
-    /// exhaustion at turn 22-25 in long sessions.
+    /// Pipeline (runs in order):
+    ///   1. strip_ansi — remove terminal escape codes
+    ///   2. strip_noise_lines — remove progress bars, download logs, etc.
+    ///   3. collapse_blanks — normalize whitespace runs
+    ///   4. head_tail_split — smart truncation with error rescue
+    ///   5. micro_compact — final head/tail split if still over threshold
     pub fn push_tool_result(&mut self, call_id: &str, content: &str, is_error: bool) {
+        const HEAD_TAIL_MAX_LINES: usize = 200;
         const MICRO_COMPACT_THRESHOLD: usize = 2048; // 2KB
         const KEEP_HEAD_LINES: usize = 50;
         const KEEP_TAIL_LINES: usize = 50;
 
         let max_chars = self.settings.tool_result_max_chars;
 
-        let truncated = if content.len() > MICRO_COMPACT_THRESHOLD {
-            let lines: Vec<&str> = content.lines().collect();
+        // ── Noise reduction pipeline (stages 1-4) ──
+        let cleaned = crate::tool_noise::clean_tool_output(content, HEAD_TAIL_MAX_LINES, is_error);
+
+        // ── Stage 5: micro-compaction for very large results ──
+        let truncated = if cleaned.len() > MICRO_COMPACT_THRESHOLD {
+            let lines: Vec<&str> = cleaned.lines().collect();
             let total = lines.len();
             let head = KEEP_HEAD_LINES.min(total);
             let tail = KEEP_TAIL_LINES.min(total.saturating_sub(head));
@@ -259,12 +296,12 @@ impl ContextManager {
                     lines[total - tail..].join("\n"),
                 )
             } else {
-                content.to_string()
+                cleaned
             }
-        } else if max_chars > 0 && content.len() > max_chars {
-            content[..max_chars].to_string()
+        } else if max_chars > 0 && cleaned.len() > max_chars {
+            cleaned[..max_chars].to_string()
         } else {
-            content.to_string()
+            cleaned
         };
         self.messages
             .push(Message::tool_result(call_id, &truncated, is_error));
@@ -297,10 +334,36 @@ impl ContextManager {
     }
 
     /// Check if compression is needed.
+    ///
+    /// Two triggers:
+    /// 1. Estimation-based: history tokens / available budget > compression_threshold
+    /// 2. Usage-based: if the last API response reported actual input_tokens close
+    ///    to the context window, compress even if the estimate disagrees.
+    ///    This catches estimation drift (our char-based heuristic can be 10-20% off).
     pub fn needs_compression(&self) -> bool {
         let usage = self.estimate_token_usage();
         let ratio = usage as f64 / self.budget.available_for_history as f64;
-        ratio > self.settings.compression_threshold
+        if ratio > self.settings.compression_threshold {
+            return true;
+        }
+        // Usage-based trigger: if we have actual API token counts, check them.
+        if let Some(actual) = self.last_api_input_tokens {
+            let reserve = self.settings.max_output_tokens as u64;
+            let remaining = self.budget.model_limit.saturating_sub(actual);
+            // If actual remaining is less than the output reserve, we must compact.
+            if remaining < reserve {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Record the actual input token count from the latest API response.
+    /// Called after every successful LLM completion.  This drives the
+    /// usage-based compaction trigger which is more accurate than the
+    /// char-based estimate.
+    pub fn record_api_usage(&mut self, input_tokens: u64) {
+        self.last_api_input_tokens = Some(input_tokens);
     }
 
     /// Pre-flight check: estimate total request size and return how much over budget we are.
@@ -565,22 +628,26 @@ impl ContextManager {
             system.push_str(map);
         }
 
-        // Calculate max_tokens: min(configured_max_output, remaining_budget)
-        let input_estimate = self.budget.system_prompt
-            + self.budget.repo_map
-            + self.estimate_token_usage()
-            + (tools.len() as u64) * 50; // ~50 tokens per tool schema
-        let remaining = self.budget.model_limit.saturating_sub(input_estimate);
-        let max_output = (self.settings.max_output_tokens as u64)
-            .min(remaining)
-            .max(256);
+        // Send a FIXED max_tokens independent of context size.
+        //
+        // Previously this did: min(configured_max, context_window - input_estimate)
+        // which shrank the output budget as conversation grew. By turn 100+, the
+        // model might only get 2-4K output tokens — making it impossible to write
+        // large files via write_file.
+        //
+        // Fixed-output approach: send the configured max_output_tokens every time.
+        // Rely on compaction (triggered by needs_compression()) to keep context
+        // within the window, not by squeezing the output budget.  The LLM API
+        // will itself return a context-overflow error if we truly exceed the
+        // window, which the resilience layer handles.
+        let max_output = self.settings.max_output_tokens;
 
         CompletionRequest {
             system,
             messages: self.messages.clone(),
             tools: tools.to_vec(),
             temperature: Some(0.0),
-            max_tokens: Some(max_output as u32),
+            max_tokens: Some(max_output),
             stop_sequences: vec![],
         }
     }

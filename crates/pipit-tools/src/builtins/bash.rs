@@ -233,22 +233,46 @@ impl Tool for BashTool {
             super::sandbox::sandboxed_command(command, &effective_cwd, &sandbox_config);
         child_cmd
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            // Close stdin so interactive commands (pagers, REPLs) don't hang
+            .stdin(std::process::Stdio::null());
 
-        let child = child_cmd
+        // Create a new process group so we can kill the entire tree on
+        // timeout/cancel. Without this, child subprocesses (npm, cargo,
+        // make) survive as orphans after the parent shell is killed.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                child_cmd.pre_exec(|| {
+                    // setsid() creates a new session + process group.
+                    // All child processes inherit this group ID.
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = child_cmd
             .spawn()
             .map_err(|e| ToolError::ExecutionFailed(format!("Failed to spawn: {}", e)))?;
 
         let timeout = Duration::from_secs(timeout_secs);
+
+        // Get the PID for process group kill on timeout/cancel
+        let child_id = child.id();
 
         let result = tokio::select! {
             output = child.wait_with_output() => {
                 output.map_err(|e| ToolError::ExecutionFailed(format!("Process error: {}", e)))?
             }
             _ = tokio::time::sleep(timeout) => {
+                // Kill the entire process group, not just the shell
+                kill_process_group(child_id);
                 return Err(ToolError::Timeout(timeout_secs));
             }
             _ = cancel.cancelled() => {
+                kill_process_group(child_id);
                 return Err(ToolError::ExecutionFailed("Cancelled".to_string()));
             }
         };
@@ -354,6 +378,23 @@ impl Tool for BashTool {
         });
 
         Ok(result)
+    }
+}
+
+/// Kill an entire process group by PID.
+/// Uses SIGKILL on the process group (negative PID) to ensure all child
+/// processes are terminated — not just the top-level shell.
+fn kill_process_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        // kill(-pid, SIGKILL) sends to the entire process group
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
     }
 }
 

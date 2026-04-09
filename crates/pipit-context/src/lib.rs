@@ -12,10 +12,11 @@ pub mod prompt_ir;
 pub mod session;
 pub mod session_memory_compact;
 pub mod speculative_compact;
+pub mod tool_noise;
 pub mod transcript;
 pub mod utility;
 
-pub use budget::ContextManager;
+pub use budget::{ContextManager, estimate_text_tokens};
 pub use cache::{CacheBreakpointPlanner, CacheMetrics};
 pub use cache_microcompact::{
     CacheMicrocompactResult, cache_aware_microcompact, find_stale_tool_results,

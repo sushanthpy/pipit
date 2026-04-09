@@ -1,5 +1,6 @@
 use crate::capability::{
-    CapabilityRequest, CapabilitySet, ExecutionLineage, PolicyDecision, PolicyKernel, ResourceScope,
+    CapabilityRequest, CapabilitySet, ExecutionContext, ExecutionLineage, PolicyDecision,
+    PolicyKernel, ResourceScope,
 };
 use crate::events::{
     AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler, ToolCallOutcome, TurnEndReason,
@@ -57,6 +58,10 @@ pub struct AgentLoopConfig {
     /// Dry-run mode: read-only tools execute normally, mutating tools
     /// return a preview instead of executing.
     pub dry_run: bool,
+    /// Boot context injected into the first user message preamble.
+    /// Contains the initial project structure listing for orientation.
+    /// Kept out of the system prompt for cache stability.
+    pub boot_context: Option<String>,
 }
 
 impl Default for AgentLoopConfig {
@@ -75,6 +80,7 @@ impl Default for AgentLoopConfig {
             pev: None,
             max_budget_usd: None,
             dry_run: false,
+            boot_context: None,
         }
     }
 }
@@ -200,6 +206,8 @@ pub struct AgentLoop {
     session_id: String,
     /// Optional session memory store — sinks compaction summaries for recall.
     memory_store: Option<Box<dyn pipit_context::MemoryStore>>,
+    /// Derived session state for projection injection.
+    session_state: Option<crate::ledger::SessionState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +251,11 @@ impl AgentLoop {
         let policy_kernel = PolicyKernel::from_approval_mode(config.approval_mode, project_root);
 
         let session_id = uuid::Uuid::new_v4().to_string();
+
+        // Populate session lineage on the tool context so subagent
+        // transcripts can trace back to the originating session.
+        let mut tool_context = tool_context;
+        tool_context.session_id = Some(session_id.clone());
         let model_name = models
             .for_role(crate::pev::ModelRole::Executor)
             .model_id
@@ -284,6 +297,7 @@ impl AgentLoop {
             command_registry,
             session_id,
             memory_store: None,
+            session_state: None,
         };
 
         (agent, event_rx, steering_tx)
@@ -318,6 +332,15 @@ impl AgentLoop {
                     }
                     SessionEvent::AssistantResponseStarted { turn } => {
                         let _ = kernel.begin_response(*turn);
+                    }
+                    SessionEvent::AssistantResponseCompleted {
+                        text,
+                        thinking,
+                        tokens_used,
+                    } => {
+                        // Build a message for the WAL so crash recovery can reconstruct
+                        let msg = Message::assistant(text);
+                        let _ = kernel.complete_response(text, thinking, *tokens_used, &msg);
                     }
                     SessionEvent::ToolCallProposed {
                         call_id,
@@ -570,8 +593,19 @@ impl AgentLoop {
             });
         }
 
-        // Add user message to context
-        self.context.push_message(Message::user(&processed));
+        // Add user message to context.
+        // On the first turn, prepend boot context (project structure) to the user
+        // message so the model gets orientation without polluting the system prompt.
+        let message_with_context = if self.context.messages().is_empty() {
+            if let Some(ref boot) = self.config.boot_context {
+                format!("{}\n\n{}", boot, processed)
+            } else {
+                processed.clone()
+            }
+        } else {
+            processed.clone()
+        };
+        self.context.push_message(Message::user(&message_with_context));
         // ── Canonical FSM: Idle → Accepted ──
         let outputs = self
             .turn_kernel
@@ -681,11 +715,11 @@ impl AgentLoop {
                     // Under budget — proceed normally
                 }
                 crate::adaptive_budget::TurnBudgetDecision::WindDown { turns_remaining } => {
-                    self.context.push_message(Message::user(
+                    self.context.push_control_plane(
                         &crate::adaptive_budget::AdaptiveTurnBudget::wind_down_message(
                             turns_remaining,
                         ),
-                    ));
+                    );
                     self.emit(AgentEvent::Waiting {
                         label: format!("{} turns remaining", turns_remaining),
                     });
@@ -706,7 +740,7 @@ impl AgentLoop {
                             reason,
                         )
                     };
-                    self.context.push_message(Message::user(&msg));
+                    self.context.push_control_plane(&msg);
                     self.emit(AgentEvent::Waiting {
                         label: format!("Budget extended +{} turns ({})", extra_turns, reason),
                     });
@@ -804,6 +838,19 @@ impl AgentLoop {
                 .for_role(crate::pev::ModelRole::Executor)
                 .model_id
                 .clone();
+
+            // Update session state projection before each LLM call
+            {
+                let usage = self.context.token_usage();
+                let state = self
+                    .session_state
+                    .get_or_insert_with(crate::ledger::SessionState::new);
+                state.current_turn = turn;
+                state.total_tokens = usage.total;
+                state.total_cost = usage.cost;
+                state.model = Some(model_id.clone());
+            }
+
             self.emit(AgentEvent::Waiting {
                 label: format!("Sending to model ({})\u{2026}", model_id),
             });
@@ -859,6 +906,12 @@ impl AgentLoop {
                 self.telemetry
                     .session_counters
                     .add_tokens(response.usage.input_tokens, response.usage.output_tokens);
+
+                // Feed actual API token usage into the context manager for
+                // usage-based compaction trigger.  More accurate than char-based
+                // estimates — catches estimation drift before context overflow.
+                self.context
+                    .record_api_usage(response.usage.input_tokens);
             }
             self.telemetry.session_counters.increment_turns();
 
@@ -915,8 +968,22 @@ impl AgentLoop {
             };
             self.loop_detector.record_thinking(thinking_for_loop);
 
+            // Drain ephemeral control-plane messages BEFORE adding the new
+            // assistant response. These messages were included in the request
+            // that just completed; keeping them would contaminate future
+            // requests with stale runtime self-talk.
+            self.context.drain_ephemeral();
+
             // Add assistant response to context
             self.context.push_message(response.to_message());
+
+            // Record response completion in the session kernel (closes the
+            // begin_response → complete_response lifecycle boundary).
+            self.record(SessionEvent::AssistantResponseCompleted {
+                text: response.text.clone(),
+                thinking: response.thinking.clone(),
+                tokens_used: response.usage.output_tokens,
+            });
 
             // Handle stop reason
             match response.stop_reason.unwrap_or(StopReason::EndTurn) {
@@ -947,11 +1014,35 @@ impl AgentLoop {
                     // prompt and keep the loop running.  A counter caps re-prompts
                     // so we don't loop forever on a model that simply refuses to
                     // call tools.
-                    let had_recent_activity = adaptive_budget.had_recent_tool_activity(3);
-                    let should_auto_continue =
-                        !model_says_done && had_recent_activity && end_turn_continuations < 3;
 
-                    if should_auto_continue {
+                    // ── Stall-loop detection for EndTurn responses ──
+                    // If the model keeps emitting near-identical text-only responses
+                    // (e.g. "Now I have enough information, let me write it" × 5)
+                    // while interleaving read-only tool calls, the semantic loop
+                    // detector catches it here and prevents auto-continue.
+                    let is_semantic_stall = self.loop_detector.check_semantic_loop().is_some();
+                    if is_semantic_stall {
+                        tracing::warn!(
+                            turn,
+                            end_turn_continuations,
+                            "Repetitive EndTurn text detected — breaking stall loop",
+                        );
+                    }
+
+                    let had_recent_activity = adaptive_budget.had_recent_tool_activity(3);
+                    let should_auto_continue = !model_says_done
+                        && !is_semantic_stall
+                        && had_recent_activity
+                        && end_turn_continuations < 3;
+
+                    // On the first turn of a non-QA task, always give the model
+                    // one retry if it returned text without tools.  Weaker models
+                    // often plan/explain first, then start calling tools on the
+                    // next prompt.  Without this, pipit marks it "Completed"
+                    // after a single planning response.
+                    let is_first_turn_coding = turn <= 1 && !is_qa && end_turn_continuations == 0;
+
+                    if should_auto_continue || is_first_turn_coding {
                         end_turn_continuations += 1;
                         tracing::info!(
                             turn,
@@ -972,7 +1063,7 @@ impl AgentLoop {
                         let tk_outputs = self.turn_kernel.transition(TurnInput::Reset);
                         self.process_turn_outputs(&tk_outputs);
 
-                        self.context.push_message(Message::user(
+                        self.context.push_control_plane(
                             "[SYSTEM] Your response ended without calling any tools. \
                              The task may not be fully complete. Review your progress:\n\
                              - Are all requested changes implemented?\n\
@@ -980,7 +1071,7 @@ impl AgentLoop {
                              - Is there anything remaining to finish the task?\n\n\
                              If more work is needed, continue using tools. \
                              If the task is truly complete, provide your final summary.",
-                        ));
+                        );
                         continue;
                     }
 
@@ -1041,10 +1132,14 @@ impl AgentLoop {
                     };
                 }
                 StopReason::ToolUse => {
-                    // Reset error/continuation counters on successful tool use
+                    // Reset error/continuation counters on successful tool use.
+                    // NOTE: end_turn_continuations is NOT reset here — it is
+                    // only reset below after we confirm a mutation happened.
+                    // Read-only tool calls (file reads, searches) must not
+                    // clear the stall counter, otherwise the model can loop
+                    // forever alternating reads and text-only EndTurns.
                     consecutive_error_retries = 0;
                     max_tokens_continuations = 0;
-                    end_turn_continuations = 0;
                     // ── Canonical FSM: ResponseStarted → ToolProposed ──
                     let tool_calls = response.tool_calls.clone();
                     let tk_outputs = self.turn_kernel.transition(TurnInput::ToolCallsReceived {
@@ -1061,6 +1156,7 @@ impl AgentLoop {
                         cancel.clone(),
                         &governor,
                         &claim.confidence,
+                        turn,
                     );
                     let (results, modified_files, artifacts, edits, tool_risk) = tokio::select! {
                         result = tool_future => result,
@@ -1143,12 +1239,19 @@ impl AgentLoop {
                     if had_mutation_success {
                         self.loop_detector.reset();
                         self.consecutive_loop_hits = 0;
+                        end_turn_continuations = 0;
                         last_mutation_turn = turn;
                     }
 
                     // ── Record turn signals for adaptive budget ──
                     for f in &modified_files {
                         unique_files.insert(f.clone());
+                        // Update session state projection with modified files
+                        if let Some(ref mut state) = self.session_state {
+                            if !state.modified_files.contains(f) {
+                                state.modified_files.push(f.clone());
+                            }
+                        }
                     }
                     adaptive_budget.record_turn(crate::adaptive_budget::TurnSignals {
                         files_mutated: modified_files.len() as u32,
@@ -1191,12 +1294,12 @@ impl AgentLoop {
                         }
 
                         self.context
-                            .push_message(Message::user(&build_loop_recovery_message(
+                            .push_control_plane(&build_loop_recovery_message(
                                 &name,
                                 count,
                                 &evidence,
                                 self.consecutive_loop_hits,
-                            )));
+                            ));
                     } else {
                         // Reset counter when no loop is detected
                         self.consecutive_loop_hits = 0;
@@ -1225,7 +1328,7 @@ impl AgentLoop {
                             );
                         }
 
-                        self.context.push_message(Message::user(
+                        self.context.push_control_plane(
                             "[SYSTEM] Your reasoning is very similar to your previous turns. \
                              You appear to be stuck in a loop. STOP repeating the same approach. \
                              Try a fundamentally different strategy:\n\
@@ -1233,7 +1336,7 @@ impl AgentLoop {
                              - Read the file first to understand the current state\n\
                              - Ask the user for clarification\n\
                              - If the task cannot be completed, explain why and stop",
-                        ));
+                        );
                     }
 
                     // Push tool results to context in the ORIGINAL call order.
@@ -1334,11 +1437,11 @@ impl AgentLoop {
                         // so the agent sees it and can fix the issue
                         for (cmd, output, success) in &verification_results {
                             if !success {
-                                self.context.push_message(Message::user(&format!(
+                                self.context.push_control_plane(&format!(
                                     "[Auto-verification failed]\n$ {}\n{}",
                                     cmd,
                                     truncate(output, 1000)
-                                )));
+                                ));
                             }
                         }
                     }
@@ -1395,9 +1498,9 @@ impl AgentLoop {
                     if self.provider().capabilities().supports_prefill && !response.text.is_empty()
                     {
                         // Append partial text as assistant prefill and loop again
-                        self.context.push_message(Message::user(
+                        self.context.push_control_plane(
                             "Continue from where you left off. Your previous response was truncated."
-                        ));
+                        );
                         // Continue the loop to get more output
                     } else {
                         // No prefill support: compact context to free space, then retry.
@@ -1422,11 +1525,11 @@ impl AgentLoop {
                             });
                         }
                         // Inject a nudge so the model knows to be more concise
-                        self.context.push_message(Message::user(
+                        self.context.push_control_plane(
                             "[SYSTEM] Your previous response was truncated due to output length. \
                              Please be more concise. Focus on the most important action and \
                              use tool calls instead of explaining what you would do.",
-                        ));
+                        );
                         continue;
                     }
                 }
@@ -1791,6 +1894,29 @@ impl AgentLoop {
             ));
         }
 
+        // Inject session projection for multi-turn awareness.
+        // Only inject when there's meaningful state to show (modified files).
+        // Skip on early turns with no mutations — the empty projection adds
+        // noise that can confuse smaller models into producing text instead
+        // of tool calls.
+        if let Some(ref state) = self.session_state {
+            if !state.modified_files.is_empty() {
+                let proj = crate::projections::project_workspace(state);
+                let mut ctx_note = String::from("\n## Session State\n");
+                ctx_note.push_str(&format!(
+                    "Files modified this session: {}\n",
+                    proj.modified_files.join(", ")
+                ));
+                if proj.compressions > 0 {
+                    ctx_note.push_str(&format!(
+                        "Tokens used: {} | Compressions: {}\n",
+                        proj.total_tokens, proj.compressions
+                    ));
+                }
+                request.system.push_str(&ctx_note);
+            }
+        }
+
         if let Ok(Some(modified_system)) = self.extensions.on_before_request(&request.system).await
         {
             request.system = modified_system;
@@ -1838,6 +1964,7 @@ impl AgentLoop {
         cancel: CancellationToken,
         governor: &Governor,
         confidence: &ConfidenceReport,
+        turn: u32,
     ) -> (
         Vec<(String, ToolCallOutcome)>,
         Vec<String>,
@@ -1862,7 +1989,14 @@ impl AgentLoop {
             }
         }
 
-        let lineage = ExecutionLineage::default();
+        // Build real execution lineage from session state so PolicyKernel
+        // can make provenance-aware authorization decisions.
+        let lineage = ExecutionLineage {
+            task_chain: vec![self.session_id.clone(), format!("turn-{}", turn)],
+            depth: 0, // root agent; subagents would increment
+            parent_id: Some(self.session_id.clone()),
+            context: ExecutionContext::Interactive,
+        };
 
         for call in calls {
             let Some(tool) = self.tools.get(&call.tool_name) else {
@@ -2083,6 +2217,30 @@ impl AgentLoop {
                             realized_edits.push(RealizedEdit {
                                 path: path.to_string(),
                                 summary: summarize_tool_outcome(&call.tool_name, &outcome),
+                            });
+                        }
+                    }
+                    // Propagate typed tool artifacts/edits into evidence
+                    if let ToolCallOutcome::Success {
+                        ref artifacts,
+                        ref edits,
+                        ..
+                    } = outcome
+                    {
+                        for artifact in artifacts {
+                            evidence.push(crate::proof::EvidenceArtifact::ToolExecution {
+                                tool_name: call.tool_name.clone(),
+                                summary: format!("{:?}", artifact),
+                                success: true,
+                            });
+                        }
+                        for edit in edits {
+                            if !modified_files.contains(&edit.path.to_string_lossy().to_string()) {
+                                modified_files.push(edit.path.to_string_lossy().to_string());
+                            }
+                            realized_edits.push(RealizedEdit {
+                                path: edit.path.to_string_lossy().to_string(),
+                                summary: format!("{} hunks", edit.hunks),
                             });
                         }
                     }
@@ -2614,7 +2772,15 @@ fn truncate(input: &str, max_len: usize) -> String {
     if input.len() <= max_len {
         input.to_string()
     } else {
-        format!("{}...", &input[..max_len])
+        // Find the last char boundary at or before max_len to avoid
+        // panicking on multi-byte UTF-8 characters (e.g. em dash '—').
+        let end = input
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max_len)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &input[..end])
     }
 }
 
@@ -2740,20 +2906,30 @@ pub(crate) async fn apply_after_tool_hook(
     outcome: ToolCallOutcome,
 ) -> ToolCallOutcome {
     match outcome {
-        ToolCallOutcome::Success { content, mutated } => {
-            match extensions.on_after_tool(tool_name, &content).await {
-                Ok(Some(note)) => ToolCallOutcome::Success {
-                    content: format!("{}\n\n[Hook]\n{}", content, note),
-                    mutated,
-                },
-                Ok(None) => ToolCallOutcome::Success { content, mutated },
-                Err(err) => ToolCallOutcome::PolicyBlocked {
-                    message: err.to_string(),
-                    stage: PolicyStage::PostToolUse,
-                    mutated,
-                },
-            }
-        }
+        ToolCallOutcome::Success {
+            content,
+            mutated,
+            artifacts,
+            edits,
+        } => match extensions.on_after_tool(tool_name, &content).await {
+            Ok(Some(note)) => ToolCallOutcome::Success {
+                content: format!("{}\n\n[Hook]\n{}", content, note),
+                mutated,
+                artifacts,
+                edits,
+            },
+            Ok(None) => ToolCallOutcome::Success {
+                content,
+                mutated,
+                artifacts,
+                edits,
+            },
+            Err(err) => ToolCallOutcome::PolicyBlocked {
+                message: err.to_string(),
+                stage: PolicyStage::PostToolUse,
+                mutated,
+            },
+        },
         other => other,
     }
 }
@@ -3075,6 +3251,8 @@ pub(crate) async fn execute_single_tool(
                     call.tool_name, args_preview
                 ),
                 mutated: false,
+                artifacts: Vec::new(),
+                edits: Vec::new(),
             };
         }
     }
@@ -3092,6 +3270,8 @@ pub(crate) async fn execute_single_tool(
         Ok(Ok(result)) => ToolCallOutcome::Success {
             content: result.content,
             mutated: result.mutated,
+            artifacts: result.artifacts,
+            edits: result.edits,
         },
         Ok(Err(e)) => {
             let raw = e.to_string();

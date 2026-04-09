@@ -407,6 +407,8 @@ impl Tool for BrowserScreenshotTool {
             display: None,
             mutated: false,
             content_bytes: data_b64.len(),
+            artifacts: Vec::new(),
+            edits: Vec::new(),
         })
     }
 }
