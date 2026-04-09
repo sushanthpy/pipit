@@ -6,6 +6,60 @@ BINARY="pipit"
 CACHE_DIR="${HOME}/.pipit"
 CACHE_FILE="${CACHE_DIR}/version-check"
 
+# --- Uninstall -----------------------------------------------------------
+uninstall() {
+    existing="$(command -v "${BINARY}" 2>/dev/null || true)"
+    if [ -z "${existing}" ]; then
+        info "pipit is not installed (not found in PATH)"
+        exit 0
+    fi
+
+    install_dir="$(dirname "${existing}")"
+
+    info "Found pipit at ${existing}"
+
+    if [ -w "${existing}" ]; then
+        rm -f "${existing}"
+    else
+        info "Elevated permissions required to remove ${existing}"
+        sudo rm -f "${existing}"
+    fi
+
+    info "Removed ${existing}"
+
+    if [ -d "${CACHE_DIR}" ]; then
+        rm -rf "${CACHE_DIR}"
+        info "Removed cache directory ${CACHE_DIR}"
+    fi
+
+    config_dir="${HOME}/.config/pipit"
+    if [ -d "${config_dir}" ]; then
+        printf '\033[0;33mKeep config at %s? [Y/n] \033[0m' "${config_dir}"
+        read -r keep_config </dev/tty 2>/dev/null || keep_config="y"
+        case "${keep_config}" in
+            [nN]*)
+                rm -rf "${config_dir}"
+                info "Removed ${config_dir}"
+                ;;
+            *)
+                info "Kept ${config_dir}"
+                ;;
+        esac
+    fi
+
+    info "pipit has been uninstalled"
+    exit 0
+}
+
+# Check for --uninstall / uninstall argument
+for arg in "$@"; do
+    case "${arg}" in
+        --uninstall|uninstall)
+            uninstall
+            ;;
+    esac
+done
+
 main() {
     platform="$(uname -s)"
     arch="$(uname -m)"
