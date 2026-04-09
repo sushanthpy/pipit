@@ -38,49 +38,54 @@ impl AzureOpenAiProvider {
         api_key: String,
         base_url: Option<String>,
     ) -> Result<Self, ProviderError> {
-        let endpoint = base_url.ok_or_else(|| {
-            ProviderError::Other(
-                "--base-url required for azure_openai \
-                 (e.g., https://my-resource.openai.azure.com)"
-                    .into(),
-            )
-        })?;
+        // Resolve endpoint: explicit base_url > AZURE_OPENAI_ENDPOINT env var
+        let endpoint = base_url
+            .or_else(|| std::env::var("AZURE_OPENAI_ENDPOINT").ok())
+            .ok_or_else(|| {
+                ProviderError::Other(
+                    "--base-url or AZURE_OPENAI_ENDPOINT required for azure_openai \
+                     (e.g., https://my-resource.openai.azure.com)"
+                        .into(),
+                )
+            })?;
 
-        let api_version =
-            std::env::var("AZURE_API_VERSION").unwrap_or_else(|_| "2024-12-01-preview".to_string());
+        let api_version = std::env::var("AZURE_OPENAI_API_VERSION")
+            .or_else(|_| std::env::var("AZURE_API_VERSION"))
+            .unwrap_or_else(|_| "2024-12-01-preview".to_string());
+
+        // Resolve deployment name: model param > AZURE_OPENAI_DEPLOYMENT env var
+        let deployment = if model.is_empty() {
+            std::env::var("AZURE_OPENAI_DEPLOYMENT").unwrap_or(model.clone())
+        } else {
+            model.clone()
+        };
 
         // If the user already provided a full deployment URL, use it directly.
-        // Otherwise, construct it from endpoint + model (deployment name).
+        // Otherwise, construct it from endpoint + deployment name.
         let azure_base = if endpoint.contains("/openai/deployments/") {
             // Full URL provided — strip trailing slashes
             endpoint.trim_end_matches('/').to_string()
         } else {
-            // Construct: {endpoint}/openai/deployments/{model}
+            // Construct: {endpoint}/openai/deployments/{deployment}
             format!(
                 "{}/openai/deployments/{}",
                 endpoint.trim_end_matches('/'),
-                model
+                deployment
             )
         };
 
-        // The OpenAI provider calls: POST {base_url}/v1/chat/completions
         // Azure expects: POST {base}/chat/completions?api-version=X
-        //
-        // We construct a base_url such that appending /v1/chat/completions
-        // maps to Azure's expected path. Azure also accepts /v1/ in the path
-        // for compatibility when using recent API versions, so:
-        //   base = {resource}/openai/deployments/{deploy}?api-version={ver}
-        // Final URL = {base}/v1/chat/completions
-        //
-        // Many Azure users already set up their endpoint to accept /v1/...
-        // For those who don't, we document using the full URL.
+        // We set base_url to the deployment URL and chat_path to include
+        // the correct path + query string (no /v1/ prefix for Azure).
+        let chat_path = format!("/chat/completions?api-version={}", api_version);
 
-        let inner = OpenAiProvider::with_id(
+        let mut inner = OpenAiProvider::with_id(
             "azure_openai".to_string(),
             model,
             api_key,
-            Some(format!("{}?api-version={}", azure_base, api_version)),
+            Some(azure_base),
         )?;
+        inner.set_chat_path(chat_path);
 
         Ok(Self { inner })
     }

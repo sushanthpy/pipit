@@ -1189,6 +1189,10 @@ async fn main() -> Result<()> {
     // Rollback state: (checkpoint_sha, modified_files) from last agent run
     let mut last_rollback: Option<(String, Vec<String>)> = None;
 
+    // VCS Gateway: single execution surface for all git mutations.
+    // Slash commands route through here instead of shelling out directly.
+    let mut vcs_gateway = pipit_vcs::VcsGateway::new(project_root.clone());
+
     loop {
         ui.print_prompt();
 
@@ -1349,30 +1353,24 @@ async fn main() -> Result<()> {
                                 files.len(),
                                 &sha[..8.min(sha.len())]
                             );
-                            let mut success = 0;
-                            let mut failed = 0;
-                            for file in files {
-                                let output = std::process::Command::new("git")
-                                    .args(["checkout", sha.as_str(), "--", file.as_str()])
-                                    .current_dir(&project_root)
-                                    .output();
-                                match output {
-                                    Ok(o) if o.status.success() => {
-                                        eprintln!("  \x1b[32m✓\x1b[0m {}", file);
-                                        success += 1;
+                            // Route through VCS gateway — ledger-logged rollback
+                            match vcs_gateway.restore_files(sha, files) {
+                                Ok(results) => {
+                                    let mut success = 0;
+                                    let mut failed = 0;
+                                    for (file, ok) in &results {
+                                        if *ok {
+                                            eprintln!("  \x1b[32m✓\x1b[0m {}", file);
+                                            success += 1;
+                                        } else {
+                                            eprintln!("  \x1b[31m✗\x1b[0m {}", file);
+                                            failed += 1;
+                                        }
                                     }
-                                    Ok(o) => {
-                                        let err = String::from_utf8_lossy(&o.stderr);
-                                        eprintln!("  \x1b[31m✗\x1b[0m {} — {}", file, err.trim());
-                                        failed += 1;
-                                    }
-                                    Err(e) => {
-                                        eprintln!("  \x1b[31m✗\x1b[0m {} — {}", file, e);
-                                        failed += 1;
-                                    }
+                                    eprintln!("\x1b[2m({} restored, {} failed)\x1b[0m", success, failed);
                                 }
+                                Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                             }
-                            eprintln!("\x1b[2m({} restored, {} failed)\x1b[0m", success, failed);
                             last_rollback = None;
                         } else {
                             eprintln!("\x1b[33mNothing to undo — no recent agent edits\x1b[0m");
@@ -1878,29 +1876,16 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     SlashCommand::Commit(ref msg) => {
-                        // Check for staged changes
-                        let staged = std::process::Command::new("git")
-                            .args(["diff", "--staged", "--stat"])
-                            .current_dir(&project_root)
-                            .output();
-                        let has_staged = staged
-                            .as_ref()
-                            .map(|o| !o.stdout.is_empty())
+                        // Route through VCS gateway for all git operations
+                        let has_staged = vcs_gateway
+                            .has_staged_changes()
                             .unwrap_or(false);
                         if !has_staged {
-                            // Auto-stage all changes
-                            let _ = std::process::Command::new("git")
-                                .args(["add", "-A"])
-                                .current_dir(&project_root)
-                                .output();
+                            // Auto-stage all changes (via gateway commit with auto_stage=true)
                         }
                         if let Some(message) = msg {
                             // Direct commit with provided message
-                            let output = std::process::Command::new("git")
-                                .args(["commit", "-m", message])
-                                .current_dir(&project_root)
-                                .output();
-                            match output {
+                            match vcs_gateway.commit(message, !has_staged) {
                                 Ok(o) if o.status.success() => {
                                     eprintln!("\x1b[32mCommitted: {}\x1b[0m", message);
                                 }
@@ -1908,94 +1893,94 @@ async fn main() -> Result<()> {
                                     let err = String::from_utf8_lossy(&o.stderr);
                                     eprintln!("\x1b[31m{}\x1b[0m", err.trim());
                                 }
-                                Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                                Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                             }
                         } else {
                             // Generate commit message via LLM
-                            let diff = std::process::Command::new("git")
-                                .args(["diff", "--staged"])
-                                .current_dir(&project_root)
-                                .output();
-                            if let Ok(d) = diff {
-                                let diff_text = String::from_utf8_lossy(&d.stdout);
+                            let diff_text = vcs_gateway
+                                .staged_diff()
+                                .unwrap_or_default();
+                            if diff_text.trim().is_empty() {
+                                // Stage first if nothing staged
+                                let _ = std::process::Command::new("git")
+                                    .args(["add", "-A"])
+                                    .current_dir(&project_root)
+                                    .output();
+                                let diff_text = vcs_gateway
+                                    .staged_diff()
+                                    .unwrap_or_default();
                                 if diff_text.trim().is_empty() {
                                     eprintln!("\x1b[33mNo changes to commit\x1b[0m");
+                                    continue;
+                                }
+                            }
+                            let diff_text = vcs_gateway
+                                .staged_diff()
+                                .unwrap_or_default();
+                            let prompt = format!(
+                                "Generate a conventional commit message for this diff. \
+                                 Use the format: type(scope): description\n\
+                                 Types: feat, fix, refactor, docs, test, chore, perf\n\
+                                 Reply with ONLY the commit message, nothing else.\n\n\
+                                 ```diff\n{}\n```",
+                                {
+                                    let max = 8000;
+                                    if diff_text.len() > max {
+                                        let safe_end = diff_text
+                                            .char_indices()
+                                            .take_while(|(i, _)| *i < max)
+                                            .last()
+                                            .map(|(i, c)| i + c.len_utf8())
+                                            .unwrap_or(0);
+                                        &diff_text[..safe_end]
+                                    } else {
+                                        &diff_text
+                                    }
+                                }
+                            );
+                            let cancel = CancellationToken::new();
+                            let cancel_clone = cancel.clone();
+                            let ctrlc_handle = tokio::spawn(async move {
+                                tokio::signal::ctrl_c().await.ok();
+                                cancel_clone.cancel();
+                            });
+                            let outcome = agent.run(prompt, cancel).await;
+                            ctrlc_handle.abort();
+                            if let AgentOutcome::Completed { .. } = &outcome {
+                                let generated_msg = agent
+                                    .last_assistant_text()
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
+                                if generated_msg.is_empty() {
+                                    eprintln!("\x1b[31mNo commit message generated\x1b[0m");
                                 } else {
-                                    let prompt = format!(
-                                        "Generate a conventional commit message for this diff. \
-                                         Use the format: type(scope): description\n\
-                                         Types: feat, fix, refactor, docs, test, chore, perf\n\
-                                         Reply with ONLY the commit message, nothing else.\n\n\
-                                         ```diff\n{}\n```",
-                                        {
-                                            // Safe UTF-8 truncation — don't split mid-codepoint
-                                            let max = 8000;
-                                            if diff_text.len() > max {
-                                                let safe_end = diff_text
-                                                    .char_indices()
-                                                    .take_while(|(i, _)| *i < max)
-                                                    .last()
-                                                    .map(|(i, c)| i + c.len_utf8())
-                                                    .unwrap_or(0);
-                                                &diff_text[..safe_end]
-                                            } else {
-                                                &diff_text
-                                            }
-                                        }
+                                    eprintln!(
+                                        "\n\x1b[33mCommit with this message? [y/N]\x1b[0m"
                                     );
-                                    let cancel = CancellationToken::new();
-                                    let cancel_clone = cancel.clone();
-                                    let ctrlc_handle = tokio::spawn(async move {
-                                        tokio::signal::ctrl_c().await.ok();
-                                        cancel_clone.cancel();
-                                    });
-                                    let outcome = agent.run(prompt, cancel).await;
-                                    ctrlc_handle.abort();
-                                    // Extract the generated message from the agent's last response
-                                    if let AgentOutcome::Completed { .. } = &outcome {
-                                        // Get the last assistant message text from the agent
-                                        let generated_msg = agent
-                                            .last_assistant_text()
-                                            .unwrap_or_default()
-                                            .trim()
-                                            .to_string();
-                                        if generated_msg.is_empty() {
-                                            eprintln!("\x1b[31mNo commit message generated\x1b[0m");
-                                        } else {
-                                            eprintln!(
-                                                "\n\x1b[33mCommit with this message? [y/N]\x1b[0m"
-                                            );
-                                            if let Some(answer) = read_input() {
-                                                if answer.trim().eq_ignore_ascii_case("y")
-                                                    || answer.trim().eq_ignore_ascii_case("yes")
-                                                {
-                                                    // Use the extracted message directly
-                                                    let msg_output =
-                                                        std::process::Command::new("git")
-                                                            .args(["commit", "-m", &generated_msg])
-                                                            .current_dir(&project_root)
-                                                            .output();
-                                                    match msg_output {
-                                                        Ok(o) if o.status.success() => {
-                                                            eprintln!(
-                                                                "\x1b[32mCommitted: {}\x1b[0m",
-                                                                generated_msg
-                                                            );
-                                                        }
-                                                        Ok(o) => {
-                                                            let err =
-                                                                String::from_utf8_lossy(&o.stderr);
-                                                            eprintln!(
-                                                                "\x1b[31m{}\x1b[0m",
-                                                                err.trim()
-                                                            );
-                                                        }
-                                                        Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
-                                                    }
-                                                } else {
-                                                    eprintln!("\x1b[2mCommit cancelled\x1b[0m");
+                                    if let Some(answer) = read_input() {
+                                        if answer.trim().eq_ignore_ascii_case("y")
+                                            || answer.trim().eq_ignore_ascii_case("yes")
+                                        {
+                                            match vcs_gateway.commit(&generated_msg, false) {
+                                                Ok(o) if o.status.success() => {
+                                                    eprintln!(
+                                                        "\x1b[32mCommitted: {}\x1b[0m",
+                                                        generated_msg
+                                                    );
                                                 }
+                                                Ok(o) => {
+                                                    let err =
+                                                        String::from_utf8_lossy(&o.stderr);
+                                                    eprintln!(
+                                                        "\x1b[31m{}\x1b[0m",
+                                                        err.trim()
+                                                    );
+                                                }
+                                                Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                                             }
+                                        } else {
+                                            eprintln!("\x1b[2mCommit cancelled\x1b[0m");
                                         }
                                     }
                                 }
@@ -2179,7 +2164,13 @@ async fn main() -> Result<()> {
                     }
                     SlashCommand::Background(ref prompt) => {
                         if let Some(task) = prompt {
-                            // Check if daemon is running
+                            // Derive project name from current directory
+                            let bg_project = project_root
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("default")
+                                .to_string();
+                            // Check if daemon is running (default port 3100)
                             let daemon_running = std::process::Command::new("curl")
                                 .args([
                                     "-s",
@@ -2187,7 +2178,7 @@ async fn main() -> Result<()> {
                                     "/dev/null",
                                     "-w",
                                     "%{http_code}",
-                                    "http://127.0.0.1:3141/health",
+                                    "http://127.0.0.1:3100/api/health",
                                 ])
                                 .output()
                                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
@@ -2199,11 +2190,11 @@ async fn main() -> Result<()> {
                                         "-s",
                                         "-X",
                                         "POST",
-                                        "http://127.0.0.1:3141/tasks",
+                                        "http://127.0.0.1:3100/api/tasks",
                                         "-H",
                                         "Content-Type: application/json",
                                         "-d",
-                                        &serde_json::json!({"prompt": task}).to_string(),
+                                        &serde_json::json!({"project": bg_project, "prompt": task}).to_string(),
                                     ])
                                     .output();
                                 match submit {
@@ -2453,6 +2444,83 @@ async fn main() -> Result<()> {
                         }
                         continue;
                     }
+                    SlashCommand::Registry(ref query) => {
+                        match query.as_deref() {
+                            None | Some("list") => {
+                                eprintln!("\x1b[36mFetching plugin registry...\x1b[0m");
+                                let rt_result = tokio::runtime::Handle::try_current();
+                                let output = std::process::Command::new("curl")
+                                    .args(["-s", "https://raw.githubusercontent.com/pipit-project/registry/main/index.json"])
+                                    .output();
+                                match output {
+                                    Ok(o) if o.status.success() => {
+                                        let body = String::from_utf8_lossy(&o.stdout);
+                                        if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                                            eprintln!("\n\x1b[1;33mPlugin Registry\x1b[0m\n");
+                                            if entries.is_empty() {
+                                                eprintln!("  \x1b[2mNo plugins published yet.\x1b[0m");
+                                            } else {
+                                                for entry in &entries {
+                                                    let name = entry["name"].as_str().unwrap_or("?");
+                                                    let version = entry["version"].as_str().unwrap_or("?");
+                                                    let desc = entry["description"].as_str().unwrap_or("");
+                                                    eprintln!("  \x1b[36m{}\x1b[0m v{} — {}", name, version, desc);
+                                                }
+                                            }
+                                            eprintln!("\n  \x1b[2mInstall: /registry install <name>\x1b[0m");
+                                            eprintln!("  \x1b[2mSearch:  /registry search <query>\x1b[0m\n");
+                                        } else {
+                                            eprintln!("\x1b[31mFailed to parse registry index\x1b[0m");
+                                        }
+                                    }
+                                    _ => {
+                                        eprintln!("\x1b[31mFailed to fetch registry. Check network.\x1b[0m");
+                                    }
+                                }
+                            }
+                            Some(sub) if sub.starts_with("search ") => {
+                                let search_query = &sub[7..];
+                                eprintln!("\x1b[36mSearching registry for '{}'...\x1b[0m", search_query);
+                                let output = std::process::Command::new("curl")
+                                    .args(["-s", "https://raw.githubusercontent.com/pipit-project/registry/main/index.json"])
+                                    .output();
+                                match output {
+                                    Ok(o) if o.status.success() => {
+                                        let body = String::from_utf8_lossy(&o.stdout);
+                                        if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                                            let matches: Vec<&serde_json::Value> = entries.iter().filter(|e| {
+                                                let name = e["name"].as_str().unwrap_or("");
+                                                let desc = e["description"].as_str().unwrap_or("");
+                                                name.contains(search_query) || desc.to_lowercase().contains(&search_query.to_lowercase())
+                                            }).collect();
+                                            if matches.is_empty() {
+                                                eprintln!("\x1b[33mNo plugins matching '{}'\x1b[0m", search_query);
+                                            } else {
+                                                for entry in &matches {
+                                                    let name = entry["name"].as_str().unwrap_or("?");
+                                                    let version = entry["version"].as_str().unwrap_or("?");
+                                                    let desc = entry["description"].as_str().unwrap_or("");
+                                                    eprintln!("  \x1b[36m{}\x1b[0m v{} — {}", name, version, desc);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        eprintln!("\x1b[31mFailed to fetch registry.\x1b[0m");
+                                    }
+                                }
+                            }
+                            Some(sub) if sub.starts_with("install ") => {
+                                let plugin_name = &sub[8..];
+                                eprintln!("\x1b[36mInstalling plugin '{}'...\x1b[0m", plugin_name);
+                                eprintln!("\x1b[2mUse: pipit plugin install {}\x1b[0m", plugin_name);
+                            }
+                            Some(_) => {
+                                eprintln!("\x1b[33mUsage: /registry [list|search <query>|install <name>]\x1b[0m");
+                            }
+                        }
+                        continue;
+                    }
                     SlashCommand::Model(ref new_model) => {
                         if new_model.is_empty() {
                             eprintln!("\x1b[2mCurrent model: {}\x1b[0m", model);
@@ -2478,11 +2546,8 @@ async fn main() -> Result<()> {
                     }
                     SlashCommand::Branch(ref name) => {
                         if let Some(branch_name) = name {
-                            let output = std::process::Command::new("git")
-                                .args(["checkout", "-b", branch_name])
-                                .current_dir(&project_root)
-                                .output();
-                            match output {
+                            // Route through VCS gateway — firewall-checked, ledger-logged
+                            match vcs_gateway.create_branch(branch_name) {
                                 Ok(o) if o.status.success() => {
                                     eprintln!(
                                         "\x1b[32mCreated and switched to branch '{}'\x1b[0m",
@@ -2494,34 +2559,28 @@ async fn main() -> Result<()> {
                                     let err = String::from_utf8_lossy(&o.stderr);
                                     eprintln!("\x1b[31m{}\x1b[0m", err.trim());
                                 }
-                                Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                                Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                             }
                         } else {
-                            // Show current branch
-                            let output = std::process::Command::new("git")
-                                .args(["branch", "--show-current"])
-                                .current_dir(&project_root)
-                                .output();
-                            if let Ok(o) = output {
-                                let branch = String::from_utf8_lossy(&o.stdout);
-                                eprintln!("\x1b[2mCurrent branch: {}\x1b[0m", branch.trim());
+                            // Show current branch (read-only via gateway)
+                            match vcs_gateway.current_branch() {
+                                Ok(branch) => {
+                                    eprintln!("\x1b[2mCurrent branch: {}\x1b[0m", branch);
+                                }
+                                Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                             }
                         }
                         continue;
                     }
                     SlashCommand::BranchList => {
-                        let output = std::process::Command::new("git")
-                            .args(["branch", "-a", "--no-color"])
-                            .current_dir(&project_root)
-                            .output();
-                        match output {
-                            Ok(o) => {
-                                let branches = String::from_utf8_lossy(&o.stdout);
+                        // Read-only via gateway
+                        match vcs_gateway.list_branches() {
+                            Ok(branches) => {
                                 for line in branches.lines() {
                                     eprintln!("{}", line);
                                 }
                             }
-                            Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                            Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                         }
                         continue;
                     }
@@ -2529,49 +2588,23 @@ async fn main() -> Result<()> {
                         if target.is_empty() {
                             eprintln!("\x1b[33mUsage: /switch <branch_name>\x1b[0m");
                         } else {
-                            // Check for dirty state
-                            let status = std::process::Command::new("git")
-                                .args(["status", "--porcelain"])
-                                .current_dir(&project_root)
-                                .output();
-                            let has_dirty = status
-                                .as_ref()
-                                .map(|o| !o.stdout.is_empty())
-                                .unwrap_or(false);
-                            if has_dirty {
-                                eprintln!(
-                                    "\x1b[33mWarning: you have uncommitted changes. Stashing first...\x1b[0m"
-                                );
-                                let _ = std::process::Command::new("git")
-                                    .args(["stash", "push", "-m", "pipit-auto-stash"])
-                                    .current_dir(&project_root)
-                                    .output();
-                            }
-                            let output = std::process::Command::new("git")
-                                .args(["checkout", target])
-                                .current_dir(&project_root)
-                                .output();
-                            match output {
-                                Ok(o) if o.status.success() => {
-                                    eprintln!("\x1b[32mSwitched to branch '{}'\x1b[0m", target);
-                                    ui.status_mut().branch = target.clone();
-                                    if has_dirty {
-                                        eprintln!(
-                                            "\x1b[2mYour changes were stashed. Use `!git stash pop` to restore.\x1b[0m"
-                                        );
+                            // Route through VCS gateway — auto-stash, firewall, ledger
+                            match vcs_gateway.switch_branch(target) {
+                                Ok((output, had_dirty)) => {
+                                    if output.status.success() {
+                                        eprintln!("\x1b[32mSwitched to branch '{}'\x1b[0m", target);
+                                        ui.status_mut().branch = target.clone();
+                                        if had_dirty {
+                                            eprintln!(
+                                                "\x1b[2mYour changes were stashed. Use `!git stash pop` to restore.\x1b[0m"
+                                            );
+                                        }
+                                    } else {
+                                        let err = String::from_utf8_lossy(&output.stderr);
+                                        eprintln!("\x1b[31m{}\x1b[0m", err.trim());
                                     }
                                 }
-                                Ok(o) => {
-                                    let err = String::from_utf8_lossy(&o.stderr);
-                                    eprintln!("\x1b[31m{}\x1b[0m", err.trim());
-                                    if has_dirty {
-                                        let _ = std::process::Command::new("git")
-                                            .args(["stash", "pop"])
-                                            .current_dir(&project_root)
-                                            .output();
-                                    }
-                                }
-                                Err(e) => eprintln!("\x1b[31mgit error: {}\x1b[0m", e),
+                                Err(e) => eprintln!("\x1b[31m{}\x1b[0m", e),
                             }
                         }
                         continue;

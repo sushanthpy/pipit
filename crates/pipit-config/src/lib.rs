@@ -145,13 +145,32 @@ pub fn resolve_api_key(provider: ProviderKind) -> Option<String> {
         ProviderKind::OpenAi | ProviderKind::OpenAiCompatible | ProviderKind::OpenAiCodex => {
             "OPENAI_API_KEY"
         }
-        ProviderKind::AzureOpenAi => "AZURE_OPENAI_API_KEY",
+        ProviderKind::AzureOpenAi => {
+            // Check multiple common env var names for Azure
+            return std::env::var("AZURE_OPENAI_API_KEY")
+                .ok()
+                .or_else(|| std::env::var("AZURE_OPENAI_KEY").ok())
+                .or_else(|| credentials::CredentialStore::load().resolve_token(provider));
+        }
         ProviderKind::DeepSeek => "DEEPSEEK_API_KEY",
-        ProviderKind::Google => "GOOGLE_API_KEY",
+        ProviderKind::Google => {
+            // Check multiple common env var names for Google
+            return std::env::var("GOOGLE_API_KEY")
+                .ok()
+                .or_else(|| std::env::var("GOOGLE_KEY").ok())
+                .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+                .or_else(|| credentials::CredentialStore::load().resolve_token(provider));
+        }
         ProviderKind::GoogleGeminiCli => "GOOGLE_GEMINI_CLI_TOKEN",
         ProviderKind::GoogleAntigravity => "GOOGLE_ANTIGRAVITY_TOKEN",
         ProviderKind::Vertex => "VERTEX_API_KEY",
-        ProviderKind::OpenRouter => "OPENROUTER_API_KEY",
+        ProviderKind::OpenRouter => {
+            return std::env::var("OPENROUTER_API_KEY")
+                .ok()
+                .or_else(|| std::env::var("OPEN_ROUTER_KEY").ok())
+                .or_else(|| std::env::var("OPENROUTER_KEY").ok())
+                .or_else(|| credentials::CredentialStore::load().resolve_token(provider));
+        }
         ProviderKind::VercelAiGateway => "AI_GATEWAY_API_KEY",
         ProviderKind::GitHubCopilot => {
             return std::env::var("COPILOT_GITHUB_TOKEN")

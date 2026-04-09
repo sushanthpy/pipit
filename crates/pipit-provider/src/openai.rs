@@ -18,6 +18,9 @@ pub struct OpenAiProvider {
     model: String,
     api_key: String,
     base_url: String,
+    /// Path appended to base_url for chat completions.
+    /// Defaults to `/v1/chat/completions`. Azure overrides this.
+    chat_path: String,
     capabilities: ModelCapabilities,
 }
 
@@ -49,8 +52,14 @@ impl OpenAiProvider {
             model,
             api_key,
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
+            chat_path: "/v1/chat/completions".to_string(),
             capabilities,
         })
+    }
+
+    /// Set a custom chat completions path (used by Azure OpenAI).
+    pub fn set_chat_path(&mut self, path: String) {
+        self.chat_path = path;
     }
 
     fn capabilities_for_model(model: &str) -> ModelCapabilities {
@@ -78,6 +87,8 @@ impl OpenAiProvider {
                 .header("Editor-Version", "vscode/1.107.0")
                 .header("Editor-Plugin-Version", "copilot-chat/0.35.0")
                 .header("Copilot-Integration-Id", "vscode-chat"),
+            "azure_openai" => builder
+                .header("api-key", &self.api_key),
             _ => builder,
         }
     }
@@ -227,7 +238,20 @@ impl OpenAiProvider {
             body["temperature"] = serde_json::json!(temp);
         }
         if let Some(max) = request.max_tokens {
-            body["max_tokens"] = serde_json::json!(max);
+            // Newer models (GPT-4o+, GPT-5+, Azure) use max_completion_tokens.
+            // Older models use max_tokens. Use the newer field for Azure and
+            // models that indicate they're new enough.
+            if self.provider_id == "azure_openai"
+                || self.model.starts_with("gpt-5")
+                || self.model.starts_with("gpt-4o")
+                || self.model.starts_with("o1")
+                || self.model.starts_with("o3")
+                || self.model.starts_with("o4")
+            {
+                body["max_completion_tokens"] = serde_json::json!(max);
+            } else {
+                body["max_tokens"] = serde_json::json!(max);
+            }
         }
 
         if !request.tools.is_empty() {
@@ -270,7 +294,7 @@ impl LlmProvider for OpenAiProvider {
 
         let request_builder = self
             .client
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(format!("{}{}", self.base_url, self.chat_path))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body);

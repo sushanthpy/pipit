@@ -325,12 +325,111 @@ impl<T: TypedTool> TypedToolAdapter<T> {
 
     fn generate_schema() -> Value {
         let schema = schemars::schema_for!(T::Input);
-        serde_json::to_value(schema).unwrap_or_else(|_| {
+        let mut val = serde_json::to_value(schema).unwrap_or_else(|_| {
             serde_json::json!({
                 "type": "object",
                 "properties": {}
             })
-        })
+        });
+
+        // schemars wraps everything in a root object with optional $schema, title, etc.
+        // For tagged enums it generates `oneOf` without `type: "object"`.
+        // Many LLM APIs (OpenAI, Azure, Gemini) require `type: "object"` at the root.
+        // Normalize: if root has oneOf/anyOf but no type, wrap into an object with
+        // the discriminant property and flatten variants.
+        if let Some(obj) = val.as_object_mut() {
+            let has_type = obj.contains_key("type");
+            let has_one_of = obj.contains_key("oneOf") || obj.contains_key("anyOf");
+
+            if !has_type && has_one_of {
+                // Tagged enum — collect all properties from all variants into one object
+                let variants_key = if obj.contains_key("oneOf") { "oneOf" } else { "anyOf" };
+                if let Some(variants) = obj.get(variants_key).and_then(|v| v.as_array()).cloned() {
+                    let mut all_properties = serde_json::Map::new();
+                    let mut all_required: Vec<String> = Vec::new();
+
+                    for variant in &variants {
+                        if let Some(props) = variant.get("properties").and_then(|p| p.as_object()) {
+                            for (k, v) in props {
+                                all_properties.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+                        if let Some(req) = variant.get("required").and_then(|r| r.as_array()) {
+                            for r in req {
+                                if let Some(s) = r.as_str() {
+                                    if !all_required.contains(&s.to_string()) {
+                                        // Only require fields that appear in ALL variants
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Find the discriminant (field present in all variants, usually "action" or "type")
+                    let discriminant = variants.iter()
+                        .filter_map(|v| v.get("properties").and_then(|p| p.as_object()))
+                        .fold(None::<Vec<String>>, |acc, props| {
+                            let keys: Vec<String> = props.keys().cloned().collect();
+                            match acc {
+                                None => Some(keys),
+                                Some(prev) => Some(prev.into_iter().filter(|k| keys.contains(k)).collect()),
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    // Build a permissive enum for the discriminant field
+                    for disc_key in &discriminant {
+                        let values: Vec<String> = variants.iter()
+                            .filter_map(|v| {
+                                v.get("properties")
+                                    .and_then(|p| p.get(disc_key))
+                                    .and_then(|p| p.get("const").or_else(|| p.get("enum").and_then(|e| e.get(0))))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect();
+                        if !values.is_empty() {
+                            all_properties.insert(disc_key.clone(), serde_json::json!({
+                                "type": "string",
+                                "enum": values,
+                                "description": format!("Action to perform")
+                            }));
+                            all_required = vec![disc_key.clone()];
+                        }
+                    }
+
+                    // Mark optional properties (not in all variants) as nullable
+                    // by not including them in required
+
+                    obj.insert("type".to_string(), serde_json::json!("object"));
+                    obj.insert("properties".to_string(), serde_json::Value::Object(all_properties));
+                    if !all_required.is_empty() {
+                        obj.insert("required".to_string(), serde_json::json!(all_required));
+                    }
+                    obj.remove("oneOf");
+                    obj.remove("anyOf");
+                }
+            }
+
+            // Ensure type: "object" is always present
+            if !obj.contains_key("type") {
+                obj.insert("type".to_string(), serde_json::json!("object"));
+            }
+
+            // Ensure properties is always present for object types
+            // (OpenAI/Azure reject object schemas without properties)
+            if obj.get("type").and_then(|v| v.as_str()) == Some("object")
+                && !obj.contains_key("properties")
+            {
+                obj.insert("properties".to_string(), serde_json::json!({}));
+            }
+
+            // Strip fields that cause issues with some providers
+            obj.remove("$schema");
+            obj.remove("title");
+        }
+
+        val
     }
 }
 

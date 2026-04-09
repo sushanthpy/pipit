@@ -278,6 +278,8 @@ pub enum SlashCommand {
     Watch(Option<String>),
     /// Dependency health check.
     Deps(Option<String>),
+    /// Browse or search the plugin registry.
+    Registry(Option<String>),
 
     Unknown(String),
 }
@@ -368,6 +370,7 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
         "mesh" | "cluster" => SlashCommand::Mesh(arg),
         "watch" => SlashCommand::Watch(arg),
         "deps" | "dependencies" | "audit" => SlashCommand::Deps(arg),
+        "registry" | "plugins" => SlashCommand::Registry(arg),
 
         "doc" => SlashCommand::Unknown("doc".to_string()), // Reserved for future /doc [topic]
 
@@ -447,6 +450,42 @@ mod tests {
         assert!(matches!(
             classify_input("?"),
             UserInput::Command(SlashCommand::Help)
+        ));
+    }
+
+    #[test]
+    fn parse_bg_command() {
+        match parse_slash_command("/bg fix the tests") {
+            Some(SlashCommand::Background(Some(prompt))) => {
+                assert_eq!(prompt, "fix the tests");
+            }
+            other => panic!("expected Background(Some(...)), got {:?}", other),
+        }
+        assert!(matches!(
+            parse_slash_command("/bg"),
+            Some(SlashCommand::Background(None))
+        ));
+        assert!(matches!(
+            parse_slash_command("/background run lints"),
+            Some(SlashCommand::Background(Some(_)))
+        ));
+    }
+
+    #[test]
+    fn parse_registry_command() {
+        match parse_slash_command("/registry search foo") {
+            Some(SlashCommand::Registry(Some(query))) => {
+                assert_eq!(query, "search foo");
+            }
+            other => panic!("expected Registry(Some(...)), got {:?}", other),
+        }
+        assert!(matches!(
+            parse_slash_command("/registry"),
+            Some(SlashCommand::Registry(None))
+        ));
+        assert!(matches!(
+            parse_slash_command("/plugins"),
+            Some(SlashCommand::Registry(None))
         ));
     }
 }

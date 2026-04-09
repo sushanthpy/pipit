@@ -35,10 +35,11 @@ members = [
     "crates/pipit-permissions",
     "crates/pipit-memory",
     "crates/pipit-agents",
+    "crates/pipit-vcs",
 ]
 
 [workspace.package]
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 license = "MIT"
 rust-version = "1.94"

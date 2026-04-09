@@ -214,6 +214,18 @@ impl Tool for BashTool {
             )));
         }
 
+        // Layer 2b: VCS semantic firewall — gate git-mutating commands through
+        // the pipit-vcs firewall to prevent privilege escalation, force push,
+        // config injection, hook planting, and other semantic git attacks.
+        if pipit_vcs::VcsGateway::is_git_mutation(&cmd_normalized) {
+            let gateway = pipit_vcs::VcsGateway::new(ctx.project_root.clone());
+            if let Err(e) = gateway.check_command(&cmd_normalized) {
+                return Err(ToolError::PermissionDenied(format!(
+                    "VCS firewall blocked: {e}"
+                )));
+            }
+        }
+
         // Layer 3: Kernel isolation — sandbox via bwrap/seatbelt for syscall-level enforcement.
         //   The lexical filter is demoted to an early reject layer.
         //   Real control is sandbox + capability policy.

@@ -18,6 +18,7 @@ pipit-channel = { path = "../pipit-channel" }
 pipit-extensions = { path = "../pipit-extensions" }
 pipit-intelligence = { path = "../pipit-intelligence" }
 pipit-edit = { path = "../pipit-edit" }
+pipit-vcs = { path = "../pipit-vcs" }
 
 # Async runtime
 tokio = { workspace = true }

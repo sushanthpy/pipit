@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 pipit-config = { path = "../pipit-config" }
+pipit-vcs = { path = "../pipit-vcs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

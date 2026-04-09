@@ -21,6 +21,7 @@ mod server;
 mod store;
 mod teams_store;
 mod triggers;
+mod vcs_reconciler;
 mod worker;
 
 use anyhow::Result;

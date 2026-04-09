@@ -19,6 +19,7 @@ pipit-io = { path = "../pipit-io" }
 pipit-config = { path = "../pipit-config" }
 pipit-skills = { path = "../pipit-skills" }
 pipit-mcp = { path = "../pipit-mcp" }
+pipit-vcs = { path = "../pipit-vcs" }
 pipit-bench = { path = "../pipit-bench" }
 pipit-browser = { path = "../pipit-browser" }
 pipit-deps = { path = "../pipit-deps" }

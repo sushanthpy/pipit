@@ -2,15 +2,17 @@
 //!
 //! Before any mutating tool call, creates `pipit/{task_id_short}` branch.
 //! Protected path enforcement via compiled glob patterns.
+//!
+//! All git mutations now route through `pipit_vcs::VcsGateway` to ensure
+//! FSM validation, firewall checks, and ledger logging.
 
 use anyhow::{Result, anyhow};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::path::Path;
-use std::process::Command;
 use tracing;
 
 // ---------------------------------------------------------------------------
-// Git safety operations
+// Git safety operations — delegated through VCS Gateway
 // ---------------------------------------------------------------------------
 
 pub struct GitSafety;
@@ -18,25 +20,23 @@ pub struct GitSafety;
 impl GitSafety {
     /// Create a task-specific branch: `pipit/{task_id_short}`.
     /// Returns the branch name on success.
+    /// Routes through VCS Gateway for firewall + ledger.
     pub fn create_task_branch(
         project_root: &Path,
         branch_prefix: &str,
         task_id: &str,
     ) -> Result<String> {
-        // Verify git repo
         if !project_root.join(".git").exists() {
             return Err(anyhow!("not a git repository: {}", project_root.display()));
         }
 
-        // Use first 8 chars of task_id for branch name
         let short_id = &task_id[..task_id.len().min(8)];
         let branch_name = format!("{}{}", branch_prefix, short_id);
 
-        let output = Command::new("git")
-            .args(["checkout", "-b", &branch_name])
-            .current_dir(project_root)
-            .output()
-            .map_err(|e| anyhow!("git checkout -b failed: {}", e))?;
+        let mut gateway = pipit_vcs::VcsGateway::new(project_root.to_path_buf());
+        let output = gateway
+            .create_branch(&branch_name)
+            .map_err(|e| anyhow!("VCS gateway: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -50,90 +50,43 @@ impl GitSafety {
         tracing::info!(
             branch = %branch_name,
             root = %project_root.display(),
-            "created task branch"
+            "created task branch via VCS gateway"
         );
 
         Ok(branch_name)
     }
 
     /// Auto-commit all changes with a pipit-attributed commit message.
+    /// Routes through VCS Gateway for ledger logging.
     pub fn auto_commit(project_root: &Path, summary: &str) -> Result<()> {
-        // Stage all changes
-        let add_output = Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(project_root)
-            .output()
-            .map_err(|e| anyhow!("git add failed: {}", e))?;
-
-        if !add_output.status.success() {
-            return Err(anyhow!(
-                "git add failed: {}",
-                String::from_utf8_lossy(&add_output.stderr)
-            ));
-        }
-
-        // Check if there are staged changes
-        let diff_output = Command::new("git")
-            .args(["diff", "--cached", "--quiet"])
-            .current_dir(project_root)
-            .output()?;
-
-        if diff_output.status.success() {
-            // No changes to commit
-            tracing::info!("no changes to commit");
-            return Ok(());
-        }
-
-        // Commit with pipit attribution
-        let commit_msg = format!("[pipit] {}", summary);
-        let output = Command::new("git")
-            .args(["commit", "-m", &commit_msg])
-            .env("GIT_COMMITTER_NAME", "Pipit")
-            .env("GIT_COMMITTER_EMAIL", "noreply@pipit.dev")
-            .current_dir(project_root)
-            .output()
-            .map_err(|e| anyhow!("git commit failed: {}", e))?;
-
-        if !output.status.success() {
-            return Err(anyhow!(
-                "git commit failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        let mut gateway = pipit_vcs::VcsGateway::new(project_root.to_path_buf());
+        gateway
+            .auto_commit(summary)
+            .map_err(|e| anyhow!("VCS gateway: {}", e))?;
 
         tracing::info!(
             root = %project_root.display(),
-            "auto-committed changes"
+            "auto-committed changes via VCS gateway"
         );
 
         Ok(())
     }
 
-    /// Get current branch name.
+    /// Get current branch name (read-only, no gateway needed).
     pub fn current_branch(project_root: &Path) -> Result<String> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(project_root)
-            .output()
-            .map_err(|e| anyhow!("git rev-parse failed: {}", e))?;
-
-        if !output.status.success() {
-            return Err(anyhow!(
-                "git rev-parse failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        let gateway = pipit_vcs::VcsGateway::new(project_root.to_path_buf());
+        gateway
+            .current_branch()
+            .map_err(|e| anyhow!("VCS gateway: {}", e))
     }
 
     /// Switch back to the original branch after task completion.
+    /// Routes through VCS Gateway for auto-stash + ledger.
     pub fn checkout_branch(project_root: &Path, branch: &str) -> Result<()> {
-        let output = Command::new("git")
-            .args(["checkout", branch])
-            .current_dir(project_root)
-            .output()
-            .map_err(|e| anyhow!("git checkout failed: {}", e))?;
+        let mut gateway = pipit_vcs::VcsGateway::new(project_root.to_path_buf());
+        let (output, _stashed) = gateway
+            .switch_branch(branch)
+            .map_err(|e| anyhow!("VCS gateway: {}", e))?;
 
         if !output.status.success() {
             return Err(anyhow!(

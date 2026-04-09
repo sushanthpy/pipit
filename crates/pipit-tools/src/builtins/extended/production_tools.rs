@@ -248,33 +248,12 @@ impl Tool for EnterWorktreeTool {
             .join("worktrees")
             .join(&branch);
 
-        // Create worktree directory
-        tokio::fs::create_dir_all(worktree_path.parent().unwrap())
+        // Route through VCS gateway — validates via kernel FSM + firewall
+        let mut gateway = pipit_vcs::VcsGateway::new(ctx.project_root.clone());
+        gateway
+            .create_worktree_async(&branch, &branch, &worktree_path, "HEAD")
             .await
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("Failed to create worktree dir: {e}"))
-            })?;
-
-        // git worktree add
-        let output = tokio::process::Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                "-b",
-                &branch,
-                worktree_path.to_str().unwrap(),
-            ])
-            .current_dir(&ctx.project_root)
-            .output()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("git worktree add failed: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ToolError::ExecutionFailed(format!(
-                "git worktree add failed: {stderr}"
-            )));
-        }
+            .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
 
         // Switch cwd to worktree
         ctx.set_cwd(worktree_path.clone());
@@ -366,63 +345,39 @@ impl Tool for ExitWorktreeTool {
         // Restore cwd to project root
         ctx.set_cwd(ctx.project_root.clone());
 
+        // Route through VCS gateway
+        let mut gateway = pipit_vcs::VcsGateway::new(ctx.project_root.clone());
+        let workspace_id = branch.clone();
+
         match action {
             "discard" => {
-                // Remove worktree and delete branch
-                let _ = tokio::process::Command::new("git")
-                    .args(["worktree", "remove", "--force", cwd.to_str().unwrap()])
-                    .current_dir(&ctx.project_root)
-                    .output()
-                    .await;
-                if !branch.is_empty() {
-                    let _ = tokio::process::Command::new("git")
-                        .args(["branch", "-D", &branch])
-                        .current_dir(&ctx.project_root)
-                        .output()
-                        .await;
-                }
+                gateway
+                    .remove_worktree_async(&workspace_id, &cwd, &branch, true)
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
                 Ok(ToolResult::mutating(format!(
                     "Discarded worktree and branch '{branch}'. Returned to project root."
                 )))
             }
             "keep" => {
-                let _ = tokio::process::Command::new("git")
-                    .args(["worktree", "remove", cwd.to_str().unwrap()])
-                    .current_dir(&ctx.project_root)
-                    .output()
-                    .await;
+                gateway
+                    .remove_worktree_async(&workspace_id, &cwd, &branch, false)
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
                 Ok(ToolResult::mutating(format!(
                     "Removed worktree but kept branch '{branch}'. Returned to project root."
                 )))
             }
             "merge" => {
-                // Remove worktree first, then merge
-                let _ = tokio::process::Command::new("git")
-                    .args(["worktree", "remove", cwd.to_str().unwrap()])
-                    .current_dir(&ctx.project_root)
-                    .output()
-                    .await;
-                let merge = tokio::process::Command::new("git")
-                    .args(["merge", &branch])
-                    .current_dir(&ctx.project_root)
-                    .output()
+                // Detect current branch of project root for merge target
+                let target = gateway
+                    .current_branch()
+                    .unwrap_or_else(|_| "main".to_string());
+                let result = gateway
+                    .merge_worktree_async(&workspace_id, &cwd, &branch, &target)
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("git merge failed: {e}")))?;
-                if merge.status.success() {
-                    let _ = tokio::process::Command::new("git")
-                        .args(["branch", "-d", &branch])
-                        .current_dir(&ctx.project_root)
-                        .output()
-                        .await;
-                    Ok(ToolResult::mutating(format!(
-                        "Merged branch '{branch}' and cleaned up. Returned to project root."
-                    )))
-                } else {
-                    let stderr = String::from_utf8_lossy(&merge.stderr);
-                    Ok(ToolResult::mutating(format!(
-                        "Merge conflicts in branch '{branch}': {stderr}\nResolve manually."
-                    )))
-                }
+                    .map_err(|e| ToolError::ExecutionFailed(format!("VCS gateway: {e}")))?;
+                Ok(ToolResult::mutating(result))
             }
             _ => Err(ToolError::InvalidArgs(format!("Unknown action: {action}"))),
         }

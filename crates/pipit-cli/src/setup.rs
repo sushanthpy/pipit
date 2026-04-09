@@ -129,19 +129,6 @@ pub fn run() -> Result<()> {
         .map_err(|e: String| anyhow::anyhow!("{}", e))?;
     println!();
 
-    // Max turns
-    println!("  \x1b[1mMax Turns\x1b[0m");
-    println!("  \x1b[90mMax agent turns per prompt (0 = unlimited)\x1b[0m");
-    let turns_str = prompt_input("  Max turns [25]: ")?;
-    let max_turns: u32 = if turns_str.is_empty() {
-        25
-    } else {
-        turns_str
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid number: {}", turns_str))?
-    };
-    println!();
-
     // Build config layer
     let layer = pipit_config::PipitConfigLayer {
         provider: Some(pipit_config::ProviderConfigLayer {
@@ -154,10 +141,7 @@ pub fn run() -> Result<()> {
             max_output_tokens: None,
         }),
         approval: Some(approval),
-        context: Some(pipit_config::ContextConfigLayer {
-            max_turns: Some(max_turns),
-            ..Default::default()
-        }),
+        context: None,
         pricing: None,
     };
 
@@ -176,7 +160,6 @@ pub fn run() -> Result<()> {
         println!("  \x1b[90m  Base URL:  \x1b[0m {}", url);
     }
     println!("  \x1b[90m  Approval:  \x1b[0m {}", approval);
-    println!("  \x1b[90m  Max turns: \x1b[0m {}", max_turns);
     println!();
     println!("  Run \x1b[1mpipit\x1b[0m to start coding!");
     println!();
@@ -251,6 +234,7 @@ fn default_base_url(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Ollama => "http://localhost:11434",
         ProviderKind::AmazonBedrock => "https://bedrock-runtime.us-east-1.amazonaws.com",
+        ProviderKind::AzureOpenAi => "https://your-resource.openai.azure.com",
         ProviderKind::OpenAiCodex => "https://api.openai.com",
         ProviderKind::GoogleGeminiCli => "https://cloudcode-pa.googleapis.com",
         ProviderKind::GoogleAntigravity => "https://daily-cloudcode-pa.sandbox.googleapis.com",

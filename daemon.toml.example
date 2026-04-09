@@ -63,6 +63,14 @@ protected_paths = [".env", "*.pem", "secrets/**"]
 # allowed_guilds = []
 # default_project = "myapp"
 
+# [channels.slack]
+# type = "slack"
+# bot_token = "${SLACK_BOT_TOKEN}"
+# app_token = "${SLACK_APP_TOKEN}"    # xapp-... token for Socket Mode
+# allowed_users = []                  # empty = allow all
+# default_project = "myapp"
+# default_channel = "C01234ABCDE"     # channel for proactive notifications
+
 # ---------------------------------------------------------------------------
 # Schedules — cron-triggered tasks
 # ---------------------------------------------------------------------------

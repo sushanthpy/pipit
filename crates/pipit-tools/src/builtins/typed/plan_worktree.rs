@@ -178,55 +178,42 @@ impl TypedTool for WorktreeTool {
             WorktreeInput::Create { name, base_ref } => {
                 let base = base_ref.as_deref().unwrap_or("HEAD");
                 let wt_path = root.join(format!("../.pipit-worktrees/{}", name));
-                let output = tokio::process::Command::new("git")
-                    .args(["worktree", "add", "-b", &name])
-                    .arg(&wt_path)
-                    .arg(base)
-                    .current_dir(root)
-                    .output()
+
+                // Route through VCS gateway — validates via kernel FSM + firewall
+                let mut gateway = pipit_vcs::VcsGateway::new(root.clone());
+                gateway
+                    .create_worktree_async(&name, &name, &wt_path, base)
                     .await
                     .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("git worktree add failed: {e}"))
+                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
                     })?;
 
-                if output.status.success() {
-                    Ok(TypedToolResult::mutating(format!(
-                        "Created worktree '{}' at {} (based on {})",
-                        name,
-                        wt_path.display(),
-                        base
-                    )))
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(ToolError::ExecutionFailed(format!(
-                        "git worktree add failed: {stderr}"
-                    )))
-                }
+                Ok(TypedToolResult::mutating(format!(
+                    "Created worktree '{}' at {} (based on {})",
+                    name,
+                    wt_path.display(),
+                    base
+                )))
             }
 
             WorktreeInput::Switch { name } => {
-                // Verify the worktree exists in git's records, not just on filesystem
-                let check = tokio::process::Command::new("git")
-                    .args(["worktree", "list", "--porcelain"])
-                    .current_dir(root)
-                    .output()
-                    .await
+                // Verify the worktree exists via read-only gateway
+                let gateway = pipit_vcs::VcsGateway::new(root.clone());
+                let list_output = gateway
+                    .list_worktrees()
                     .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("git worktree list failed: {e}"))
+                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
                     })?;
 
-                let list_output = String::from_utf8_lossy(&check.stdout);
                 let wt_path = root.join(format!("../.pipit-worktrees/{}", name));
                 let wt_path_str = wt_path.to_string_lossy();
 
-                // Check both git's record and filesystem
                 let in_git = list_output
                     .lines()
                     .any(|l| l.starts_with("worktree ") && l.contains(&*wt_path_str));
                 let on_disk = wt_path.exists();
 
                 if in_git || on_disk {
-                    // Persist CWD change for session resume
                     let session_dir = root.join(".pipit").join("sessions").join("latest");
                     if session_dir.exists() {
                         let _ = std::fs::write(
@@ -249,40 +236,34 @@ impl TypedTool for WorktreeTool {
             }
 
             WorktreeInput::Remove { name } => {
-                let output = tokio::process::Command::new("git")
-                    .args(["worktree", "remove", &name])
-                    .current_dir(root)
-                    .output()
+                // Route through VCS gateway
+                let mut gateway = pipit_vcs::VcsGateway::new(root.clone());
+                let wt_path = root.join(format!("../.pipit-worktrees/{}", name));
+                gateway
+                    .remove_worktree_async(&name, &wt_path, &name, true)
                     .await
                     .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("git worktree remove failed: {e}"))
+                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
                     })?;
 
-                if output.status.success() {
-                    Ok(TypedToolResult::mutating(format!(
-                        "Removed worktree '{name}'"
-                    )))
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(ToolError::ExecutionFailed(format!("Failed: {stderr}")))
-                }
+                Ok(TypedToolResult::mutating(format!(
+                    "Removed worktree '{name}'"
+                )))
             }
 
             WorktreeInput::List => {
-                let output = tokio::process::Command::new("git")
-                    .args(["worktree", "list", "--porcelain"])
-                    .current_dir(root)
-                    .output()
-                    .await
+                // Read-only — use gateway's list
+                let gateway = pipit_vcs::VcsGateway::new(root.clone());
+                let stdout = gateway
+                    .list_worktrees()
                     .map_err(|e| {
-                        ToolError::ExecutionFailed(format!("git worktree list failed: {e}"))
+                        ToolError::ExecutionFailed(format!("VCS gateway: {e}"))
                     })?;
 
-                let stdout = String::from_utf8_lossy(&output.stdout);
                 Ok(TypedToolResult::text(if stdout.is_empty() {
                     "No worktrees found.".into()
                 } else {
-                    stdout.to_string()
+                    stdout
                 }))
             }
         }

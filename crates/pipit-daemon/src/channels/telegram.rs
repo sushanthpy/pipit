@@ -602,6 +602,19 @@ pub async fn register_channels(
                     .map_err(|e| anyhow!("failed to start webhook channel '{}': {}", name, e))?;
                 tracing::info!(channel = %name, "webhook channel registered");
             }
+            ChannelConfig::Slack(slack_config) => {
+                let channel = Arc::new(super::slack::SlackChannel::new(
+                    slack_config.clone(),
+                    project_names.clone(),
+                    cancel.clone(),
+                ));
+                registry.register(channel.clone());
+                channel
+                    .start(sink.clone())
+                    .await
+                    .map_err(|e| anyhow!("failed to start slack channel '{}': {}", name, e))?;
+                tracing::info!(channel = %name, "slack channel registered");
+            }
         }
     }
 

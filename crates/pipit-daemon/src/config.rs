@@ -87,6 +87,20 @@ impl DaemonConfig {
                         ));
                     }
                 }
+                ChannelConfig::Slack(sl) => {
+                    if sl.bot_token.is_empty() {
+                        errors.push(format!(
+                            "channel '{}': slack bot_token must not be empty",
+                            name
+                        ));
+                    }
+                    if sl.app_token.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+                        errors.push(format!(
+                            "channel '{}': slack app_token required for Socket Mode",
+                            name
+                        ));
+                    }
+                }
             }
         }
 
@@ -352,6 +366,7 @@ fn default_max_turns() -> u32 {
 pub enum ChannelConfig {
     Telegram(TelegramConfig),
     Discord(DiscordConfig),
+    Slack(SlackConfig),
     Webhook(WebhookConfig),
 }
 
@@ -387,6 +402,25 @@ pub struct WebhookConfig {
 
     #[serde(default)]
     pub default_project: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfig {
+    pub bot_token: String,
+
+    /// App-level token for Socket Mode (xapp-...).
+    #[serde(default)]
+    pub app_token: Option<String>,
+
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+
+    #[serde(default)]
+    pub default_project: Option<String>,
+
+    /// Default channel for proactive notifications.
+    #[serde(default)]
+    pub default_channel: Option<String>,
 }
 
 fn default_debounce_ms() -> u64 {

@@ -111,6 +111,8 @@ fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
         Watch(None) => "watch".to_string(),
         Deps(Some(s)) => format!("deps {}", s),
         Deps(None) => "deps".to_string(),
+        Registry(Some(s)) => format!("registry {}", s),
+        Registry(None) => "registry".to_string(),
         Unknown(s) => s.clone(),
     }
 }
@@ -541,48 +543,59 @@ pub async fn run(
                                         s.ui_mode = pipit_io::app::UiMode::Task;
                                     }
                                     pipit_io::input::SlashCommand::Setup => {
+                                        {
+                                            let mut s = tui_state.lock().unwrap();
+                                            s.push_activity("⚙", Color::Yellow, "/setup".to_string());
+                                        }
+
+                                        // Temporarily leave the TUI to run the interactive setup wizard
+                                        app::restore_terminal(&mut terminal)?;
+
+                                        let setup_result = crate::setup::run();
+
+                                        // Re-enter the TUI
+                                        terminal = app::init_terminal()
+                                            .context("Failed to re-init TUI after /setup")?;
+                                        needs_redraw = true;
+
                                         let mut s = tui_state.lock().unwrap();
-                                        s.push_activity("⚙", Color::Yellow, "/setup".to_string());
                                         s.content_lines.clear();
                                         s.content_scroll_offset = 0;
 
-                                        s.content_lines.push("## Setup Wizard".to_string());
-                                        s.content_lines.push(String::new());
-                                        s.content_lines.push(
-                                            "The interactive setup wizard runs outside the TUI."
-                                                .to_string(),
-                                        );
-                                        s.content_lines.push(String::new());
-                                        s.content_lines.push("### To reconfigure:".to_string());
-                                        s.content_lines.push(String::new());
-                                        s.content_lines
-                                            .push("1. Press `Ctrl-C` to exit".to_string());
-                                        s.content_lines.push("2. Run `pipit setup`".to_string());
-                                        s.content_lines.push(
-                                            "3. Run `pipit` to start with new config".to_string(),
-                                        );
-                                        s.content_lines.push(String::new());
-                                        s.content_lines.push(
-                                            "### Quick changes (no restart needed):".to_string(),
-                                        );
-                                        s.content_lines.push(String::new());
-                                        s.content_lines
-                                            .push("- `/model <name>` — Switch model".to_string());
-                                        s.content_lines.push("- `/permissions <mode>` — suggest / auto_edit / full_auto".to_string());
-                                        s.content_lines.push(String::new());
-                                        s.content_lines.push("### Config file:".to_string());
-                                        s.content_lines.push(String::new());
-                                        let cfg_path = pipit_config::user_config_path()
-                                            .map(|p| p.display().to_string())
-                                            .unwrap_or_else(|| {
-                                                "~/.config/pipit/config.toml".to_string()
-                                            });
-                                        s.content_lines.push(format!("  `{}`", cfg_path));
-                                        s.content_lines.push(String::new());
-                                        s.content_lines.push(
-                                            "Edit this file directly for advanced settings."
-                                                .to_string(),
-                                        );
+                                        match setup_result {
+                                            Ok(()) => {
+                                                s.push_activity(
+                                                    "✓",
+                                                    Color::Green,
+                                                    "Setup complete — restart pipit to apply changes".to_string(),
+                                                );
+                                                s.content_lines.push(
+                                                    "## Setup Complete".to_string(),
+                                                );
+                                                s.content_lines.push(String::new());
+                                                s.content_lines.push(
+                                                    "Configuration saved. **Restart pipit** to apply the new settings.".to_string(),
+                                                );
+                                                s.content_lines.push(String::new());
+                                                s.content_lines.push(
+                                                    "Press `Ctrl-C` or `/quit` to exit, then run `pipit` again.".to_string(),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                s.push_activity(
+                                                    "✗",
+                                                    Color::Red,
+                                                    format!("Setup failed: {}", e),
+                                                );
+                                                s.content_lines.push(
+                                                    "## Setup Failed".to_string(),
+                                                );
+                                                s.content_lines.push(String::new());
+                                                s.content_lines.push(
+                                                    format!("Error: {}", e),
+                                                );
+                                            }
+                                        }
 
                                         s.has_received_input = true;
                                         s.ui_mode = pipit_io::app::UiMode::Task;

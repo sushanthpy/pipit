@@ -126,10 +126,13 @@ impl GoogleProvider {
                 .tools
                 .iter()
                 .map(|t| {
+                    // Gemini rejects fields it doesn't recognize in the schema
+                    // (e.g. additionalProperties, $ref, definitions). Fully convert.
+                    let clean_params = Self::convert_schema_for_gemini(&t.input_schema);
                     serde_json::json!({
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.input_schema,
+                        "parameters": clean_params,
                     })
                 })
                 .collect();
@@ -137,6 +140,167 @@ impl GoogleProvider {
         }
 
         body
+    }
+
+    /// Convert a JSON Schema (possibly schemars-generated) into a Gemini-compatible
+    /// function declaration schema. Gemini only supports a subset of JSON Schema:
+    /// - No `$ref`, `definitions`, `$schema`, `title`, `default`, `examples`
+    /// - No `additionalProperties`
+    /// - No `oneOf`, `anyOf`, `allOf` (we pick the first variant or merge)
+    /// - `type` must be a single string, not an array
+    /// - Nullable is expressed via `"nullable": true`, not `"type": ["string", "null"]`
+    fn convert_schema_for_gemini(schema: &serde_json::Value) -> serde_json::Value {
+        // Extract top-level definitions for $ref resolution
+        let definitions = schema.get("definitions")
+            .or_else(|| schema.get("$defs"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        Self::resolve_schema_node(schema, &definitions)
+    }
+
+    fn resolve_schema_node(
+        node: &serde_json::Value,
+        definitions: &serde_json::Value,
+    ) -> serde_json::Value {
+        let obj = match node.as_object() {
+            Some(o) => o,
+            None => return node.clone(),
+        };
+
+        // Handle $ref — resolve and recurse
+        if let Some(ref_val) = obj.get("$ref").and_then(|v| v.as_str()) {
+            if let Some(resolved) = Self::resolve_ref(ref_val, definitions) {
+                return Self::resolve_schema_node(&resolved, definitions);
+            }
+            // Can't resolve — return a permissive schema
+            return serde_json::json!({"type": "string"});
+        }
+
+        // Handle allOf — merge all schemas
+        if let Some(all_of) = obj.get("allOf").and_then(|v| v.as_array()) {
+            let mut merged = serde_json::Map::new();
+            for sub in all_of {
+                let resolved = Self::resolve_schema_node(sub, definitions);
+                if let Some(sub_obj) = resolved.as_object() {
+                    for (k, v) in sub_obj {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            // Also merge any sibling keys (e.g. description alongside allOf)
+            for (k, v) in obj {
+                if k != "allOf" {
+                    merged.entry(k.clone()).or_insert_with(|| {
+                        Self::resolve_schema_node(v, definitions)
+                    });
+                }
+            }
+            return Self::clean_gemini_object(&merged, definitions);
+        }
+
+        // Handle oneOf / anyOf — pick the first non-null variant
+        for key in &["oneOf", "anyOf"] {
+            if let Some(variants) = obj.get(*key).and_then(|v| v.as_array()) {
+                let mut nullable = false;
+                let mut chosen: Option<serde_json::Value> = None;
+                for variant in variants {
+                    let resolved = Self::resolve_schema_node(variant, definitions);
+                    // Skip null-type variants (mark as nullable instead)
+                    if resolved.get("type").and_then(|t| t.as_str()) == Some("null") {
+                        nullable = true;
+                        continue;
+                    }
+                    if chosen.is_none() {
+                        chosen = Some(resolved);
+                    }
+                }
+                if let Some(mut schema) = chosen {
+                    if nullable {
+                        if let Some(obj) = schema.as_object_mut() {
+                            obj.insert("nullable".to_string(), serde_json::Value::Bool(true));
+                        }
+                    }
+                    return schema;
+                }
+                // All variants were null
+                return serde_json::json!({"type": "string", "nullable": true});
+            }
+        }
+
+        // Regular object — clean it
+        Self::clean_gemini_object(obj, definitions)
+    }
+
+    fn clean_gemini_object(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        definitions: &serde_json::Value,
+    ) -> serde_json::Value {
+        let mut cleaned = serde_json::Map::new();
+
+        for (key, value) in obj {
+            match key.as_str() {
+                // Strip unsupported fields
+                "additionalProperties" | "$schema" | "title" | "default"
+                | "examples" | "definitions" | "$defs" | "$ref" => continue,
+
+                // Handle type arrays: ["string", "null"] -> "string" + nullable
+                "type" => {
+                    if let Some(arr) = value.as_array() {
+                        let mut nullable = false;
+                        let mut real_type = "string";
+                        for item in arr {
+                            if let Some(t) = item.as_str() {
+                                if t == "null" {
+                                    nullable = true;
+                                } else {
+                                    real_type = t;
+                                }
+                            }
+                        }
+                        cleaned.insert("type".to_string(), serde_json::json!(real_type));
+                        if nullable {
+                            cleaned.insert("nullable".to_string(), serde_json::Value::Bool(true));
+                        }
+                    } else {
+                        cleaned.insert(key.clone(), value.clone());
+                    }
+                }
+
+                // Recurse into properties
+                "properties" => {
+                    if let Some(props) = value.as_object() {
+                        let mut clean_props = serde_json::Map::new();
+                        for (pname, pval) in props {
+                            clean_props.insert(
+                                pname.clone(),
+                                Self::resolve_schema_node(pval, definitions),
+                            );
+                        }
+                        cleaned.insert("properties".to_string(), serde_json::Value::Object(clean_props));
+                    }
+                }
+
+                // Recurse into items (array items schema)
+                "items" => {
+                    cleaned.insert("items".to_string(), Self::resolve_schema_node(value, definitions));
+                }
+
+                // Pass through everything else (type, description, enum, required, format, nullable, etc.)
+                _ => {
+                    cleaned.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        serde_json::Value::Object(cleaned)
+    }
+
+    fn resolve_ref(ref_path: &str, definitions: &serde_json::Value) -> Option<serde_json::Value> {
+        // Handle "#/definitions/Foo" or "#/$defs/Foo"
+        let name = ref_path
+            .strip_prefix("#/definitions/")
+            .or_else(|| ref_path.strip_prefix("#/$defs/"))?;
+        definitions.get(name).cloned()
     }
 
     fn convert_parts(&self, blocks: &[crate::ContentBlock]) -> Vec<serde_json::Value> {
