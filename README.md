@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="pipit.gif" alt="Pipit demo" width="700">
+</p>
+
+<p align="center">
   <img src="main-pipit.png" alt="Pipit — autonomous software engineering runtime" width="700">
 </p>
 
@@ -6,21 +10,27 @@
   <img src="full-img.png" alt="Pipit — autonomous software engineering runtime" width="700">
 </p>
 
-```
-        _._
-       (o >
-      / / \
-     (_|  /
-       " "
-```
+<h1 align="center">
+<pre>
+    _._
+   (o >
+  / / \
+ (_|  /
+   " "
+<b>Pipit</b>
+</pre>
+</h1>
 
-# Pipit
+<p align="center"><strong>Autonomous software engineering runtime.</strong></p>
 
-**Pipit is an autonomous software engineering runtime.**
+<p align="center">
+Build, test, monitor, secure, verify, benchmark, delegate, and evolve architecture — all from one agent workflow.<br>
+Run interactively, in the background, or across a mesh of specialist agents.
+</p>
 
-Build, test, monitor, secure, verify, benchmark, delegate, and evolve architecture — all from one agent workflow. Run interactively, in the background, or across a mesh of specialist agents.
-
+<p align="center">
 Most coding agents stop at code generation. Pipit keeps going into execution, monitoring, delegation, verification, browser testing, compliance automation, and cross-project learning.
+</p>
 
 ---
 
@@ -136,6 +146,10 @@ cd pipit
 cargo build --release
 cp target/release/pipit /usr/local/bin/
 ```
+
+<p align="center">
+  <img src="pipit.png" alt="Pipit setup" width="700">
+</p>
 
 ---
 
