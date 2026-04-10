@@ -67,11 +67,14 @@ pub struct AdaptiveTurnBudget {
     pub turn_history: Vec<TurnSignals>,
     /// Whether the wind-down warning has been sent.
     pub winddown_warned: bool,
+    /// Whether --max-turns was explicitly set by the user via CLI.
+    /// When true, the hard ceiling is much tighter (2x instead of 10x).
+    pub cli_explicit: bool,
 }
 
 impl AdaptiveTurnBudget {
     pub fn new(base_limit: u32) -> Self {
-        // Hard ceiling: 10x the base limit, capped at 500
+        // Default (non-explicit): 10x base, capped at 500
         let hard_ceiling = (base_limit * 10).min(500);
 
         Self {
@@ -82,6 +85,26 @@ impl AdaptiveTurnBudget {
             max_auto_extensions: 5,
             turn_history: Vec::new(),
             winddown_warned: false,
+            cli_explicit: false,
+        }
+    }
+
+    /// Create a budget where `--max-turns` was explicitly set by the user.
+    /// Hard ceiling is 2x base (not 10x), and extensions are capped tighter.
+    pub fn new_explicit(base_limit: u32) -> Self {
+        // Explicit CLI: hard ceiling 2x, capped at 500
+        let hard_ceiling = (base_limit * 2).min(500);
+
+        Self {
+            base_limit,
+            hard_ceiling,
+            approved_budget: base_limit,
+            extensions_granted: 0,
+            // Fewer auto-extensions when user set an explicit limit
+            max_auto_extensions: 3,
+            turn_history: Vec::new(),
+            winddown_warned: false,
+            cli_explicit: true,
         }
     }
 
@@ -138,20 +161,48 @@ impl AdaptiveTurnBudget {
             };
         }
 
-        // If the last turn had active tool calls, ALWAYS extend.
-        // Never cut off a model while it is actively working.
-        // Stopping mid-progress is the #1 cause of "half-baked" task outcomes.
+        // ── Diminishing returns detection ──
+        // If unique_files_modified hasn't grown in the last 15 turns despite
+        // active tool calls, the agent is stuck in a fix loop (e.g. repeatedly
+        // trying to fix the same test failure). Stop rather than waste turns.
+        if self.turn_history.len() >= 15 {
+            let lookback = 15;
+            let recent_start = self.turn_history.len().saturating_sub(lookback);
+            let unique_files_then = self.turn_history[recent_start].unique_files_modified;
+            let unique_files_now = signals.total_unique_files;
+            let had_tool_calls: bool = self.turn_history[recent_start..]
+                .iter()
+                .any(|s| s.tool_calls > 0);
+            if had_tool_calls && unique_files_now <= unique_files_then {
+                return TurnBudgetDecision::Stop {
+                    reason: format!(
+                        "Diminishing returns: no new files modified in {} turns \
+                         (stuck at {} unique files). Agent appears to be in a fix loop.",
+                        lookback, unique_files_now,
+                    ),
+                };
+            }
+        }
+
+        // If the last turn had active tool calls, extend — but respect limits.
+        // When --max-turns is explicit, grant smaller/fewer extensions.
         if signals.last_turn_tool_calls > 0 {
-            // Detect sustained creation pattern: high mutation rate with no errors.
-            // When the model is consistently creating files (greenfield), grant
-            // larger extensions and allow more of them. This closes the throughput
-            // gap with agents that have no turn limit.
             let is_creation_pattern = signals.mutation_velocity > 0.6 && signals.idle_streak == 0;
-            let extension = if is_creation_pattern { 15u32 } else { 10u32 };
-            let max_extensions = if is_creation_pattern {
-                self.max_auto_extensions + 8 // allow up to 13 extensions for greenfield
+
+            let (extension, max_extensions) = if self.cli_explicit {
+                // Explicit --max-turns: smaller extensions, fewer allowed
+                let ext = if is_creation_pattern { 10u32 } else { 5u32 };
+                let max_ext = self.max_auto_extensions; // already 3 for explicit
+                (ext, max_ext)
             } else {
-                self.max_auto_extensions + 3
+                // Default budget: larger extensions for greenfield
+                let ext = if is_creation_pattern { 15u32 } else { 10u32 };
+                let max_ext = if is_creation_pattern {
+                    self.max_auto_extensions + 8
+                } else {
+                    self.max_auto_extensions + 3
+                };
+                (ext, max_ext)
             };
 
             if self.extensions_granted < max_extensions {
@@ -169,8 +220,6 @@ impl AdaptiveTurnBudget {
         }
 
         // No progress in last 10 turns — stop (model is stuck)
-        // Only consider turns with zero tool calls as truly idle.
-        // Turns that invoke tools (reads, commands, analysis) are active.
         if signals.idle_streak >= 10 {
             return TurnBudgetDecision::Stop {
                 reason: format!(
@@ -577,5 +626,64 @@ mod tests {
             d4,
             TurnBudgetDecision::Extend { .. } | TurnBudgetDecision::Stop { .. }
         ));
+    }
+
+    #[test]
+    fn explicit_budget_has_tighter_ceiling() {
+        let budget = AdaptiveTurnBudget::new_explicit(50);
+        assert_eq!(budget.base_limit, 50);
+        assert_eq!(budget.hard_ceiling, 100); // 2x, not 10x
+        assert_eq!(budget.max_auto_extensions, 3); // tighter
+        assert!(budget.cli_explicit);
+    }
+
+    #[test]
+    fn explicit_budget_stops_at_double() {
+        let mut budget = AdaptiveTurnBudget::new_explicit(50);
+        // Record 100 turns of active tool work
+        for _ in 0..100 {
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,
+                tool_calls: 3,
+                unique_files_modified: 20,
+                ..Default::default()
+            });
+        }
+        let d = budget.evaluate(100);
+        assert!(
+            matches!(d, TurnBudgetDecision::Stop { .. }),
+            "Expected Stop at hard ceiling 100 for explicit --max-turns 50, got {:?}",
+            d
+        );
+    }
+
+    #[test]
+    fn diminishing_returns_stops_fix_loop() {
+        let mut budget = AdaptiveTurnBudget::new(50);
+        // First 10 turns: active file creation
+        for i in 0..10 {
+            budget.record_turn(TurnSignals {
+                files_mutated: 2,
+                tool_calls: 5,
+                unique_files_modified: (i + 1) * 2,
+                ..Default::default()
+            });
+        }
+        // Next 20 turns: active tool calls but no NEW files (fix loop)
+        for _ in 0..20 {
+            budget.record_turn(TurnSignals {
+                files_mutated: 1,     // editing existing files
+                tool_calls: 5,        // actively calling tools
+                unique_files_modified: 20, // same count — no new files
+                ..Default::default()
+            });
+        }
+        // At turn 50, the budget should detect diminishing returns
+        let d = budget.evaluate(50);
+        assert!(
+            matches!(&d, TurnBudgetDecision::Stop { reason } if reason.contains("Diminishing returns")),
+            "Expected diminishing returns Stop, got {:?}",
+            d
+        );
     }
 }

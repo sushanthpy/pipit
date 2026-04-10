@@ -25,7 +25,7 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 120)"
+                    "description": "Timeout in seconds (default: 300)"
                 },
                 "cwd": {
                     "type": "string",
@@ -50,7 +50,7 @@ impl Tool for BashTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing 'command'".to_string()))?;
 
-        let timeout_secs = args["timeout"].as_u64().unwrap_or(120);
+        let timeout_secs = args["timeout"].as_u64().unwrap_or(300);
 
         // Defense-in-depth — block dangerous patterns.
         // Normalize the command to defeat encoding tricks (hex escapes, variable

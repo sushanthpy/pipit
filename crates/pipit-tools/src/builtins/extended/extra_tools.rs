@@ -23,7 +23,7 @@ impl Tool for PowerShellTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "PowerShell command to execute"},
-                "timeout_secs": {"type": "integer", "description": "Timeout in seconds (default: 120)"}
+                "timeout_secs": {"type": "integer", "description": "Timeout in seconds (default: 300)"}
             },
             "required": ["command"]
         })
@@ -48,7 +48,7 @@ impl Tool for PowerShellTool {
         let timeout = args
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(120);
+            .unwrap_or(300);
 
         let shell = if cfg!(windows) { "powershell" } else { "pwsh" };
 

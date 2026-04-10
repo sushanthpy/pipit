@@ -248,18 +248,9 @@ Use markdown in your responses for readability:
         }
     }
 
-    // Tool declarations with approval annotations
-    prompt.push_str("\n## Available tools\n");
-    for (decl, needs_approval) in tools.declarations_annotated(approval_mode) {
-        if needs_approval {
-            prompt.push_str(&format!(
-                "- **{}** *(requires approval)*: {}\n",
-                decl.name, decl.description
-            ));
-        } else {
-            prompt.push_str(&format!("- **{}**: {}\n", decl.name, decl.description));
-        }
-    }
+    // Tool declarations — removed from system prompt.
+    // Tool names and descriptions are already in the `tools` array of the API request.
+    // Duplicating them here wastes tokens without adding signal.
 
     // Edit format
     prompt.push_str("\n## Edit format\n");
@@ -469,9 +460,11 @@ pub fn build_prompt_with_cache_sections(
     // Decompose into sections for cache analysis
     let mut sections = Vec::new();
 
-    // Section 1: System prompt (everything before tool declarations)
-    let tool_marker = "\n## Available tools\n";
-    let (system_part, rest) = match full_prompt.find(tool_marker) {
+    // Section 1: System prompt (everything before edit format)
+    // The tool declarations section has been removed from the system prompt
+    // (tools are in the API request body). Split on Edit format instead.
+    let tool_marker = "\n## Edit format\n";
+    let (system_part, remaining) = match full_prompt.find(tool_marker) {
         Some(pos) => (&full_prompt[..pos], &full_prompt[pos..]),
         None => (full_prompt.as_str(), ""),
     };
@@ -480,20 +473,7 @@ pub fn build_prompt_with_cache_sections(
         content: system_part.to_string(),
     });
 
-    // Section 2: Tool declarations (stable unless MCP tools change)
-    let next_marker = "\n## Edit format\n";
-    let (tools_part, remaining) = match rest.find(next_marker) {
-        Some(pos) => (&rest[..pos], &rest[pos..]),
-        None => (rest, ""),
-    };
-    if !tools_part.is_empty() {
-        sections.push(PromptSection {
-            content_type: CacheContentType::ToolDeclarations,
-            content: tools_part.to_string(),
-        });
-    }
-
-    // Section 3: Remaining sections (memory, knowledge, etc.)
+    // Section 2: Remaining sections (edit format, memory, knowledge, etc.)
     if !remaining.is_empty() {
         sections.push(PromptSection {
             content_type: CacheContentType::Memory,

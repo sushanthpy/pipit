@@ -44,3 +44,4 @@ pycache
 scripts/__pycache__/
 mm.md
 bench/tbench-e2e-run-output.log
+azure.md

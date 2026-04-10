@@ -302,20 +302,21 @@ proptest! {
         }
     }
 
-    /// **Invariant 8: Active tool turns never produce immediate Stop.**
-    /// If the last turn had tool_calls > 0, budget should extend (never Stop).
+    /// **Invariant 8: Active tool turns are not stopped before the hard ceiling,
+    /// unless diminishing returns are detected (unique files stagnant for 15+ turns).**
     #[test]
     fn active_turns_never_stopped(base_limit in 5u32..20) {
         let mut budget = AdaptiveTurnBudget::new(base_limit);
 
-        // Fill most of the budget with active work
+        // Fill most of the budget with active work AND growing unique files
+        // (no diminishing returns)
         for i in 0..(base_limit + 2) {
             let sig = TurnSignals {
                 files_mutated: 1,
                 tool_calls: 3,
                 had_error: false,
                 total_files_mutated: i + 1,
-                unique_files_modified: (i + 1).min(5),
+                unique_files_modified: i + 1,  // growing — no stall
                 idle_turns: 0,
                 model_signaled_done: false,
                 verification_passed: false,
@@ -323,11 +324,12 @@ proptest! {
             budget.record_turn(sig);
             let decision = budget.evaluate(i + 1);
 
-            // Before hard ceiling, active work should NEVER be stopped
+            // Before hard ceiling, active work with growing files should NEVER be stopped
             if i + 1 < budget.hard_ceiling {
                 prop_assert!(
                     !matches!(decision, TurnBudgetDecision::Stop { .. }),
-                    "Active turn {} (tools=3) was stopped before ceiling {}: {:?}",
+                    "Active turn {} (tools=3, unique_files={}) was stopped before ceiling {}: {:?}",
+                    i + 1,
                     i + 1,
                     budget.hard_ceiling,
                     decision

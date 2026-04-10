@@ -51,7 +51,7 @@ impl Default for AdaptiveRetryPolicy {
     fn default() -> Self {
         Self {
             base: RetryPolicy::default(),
-            max_overload_retries: 3,
+            max_overload_retries: 5,
             persistent_mode: false,
             persistent_max_duration_secs: 6 * 3600, // 6 hours
             persistent_heartbeat_interval_secs: 30,

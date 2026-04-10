@@ -81,7 +81,7 @@ impl SessionBuilder {
         Self {
             models: None,
             project_root: PathBuf::from("."),
-            tools: ToolRegistry::with_builtins(),
+            tools: ToolRegistry::with_all_tools(),
             agent_config: AgentLoopConfig::default(),
             context_settings: ContextSettings::default(),
             model_limit: 200_000,

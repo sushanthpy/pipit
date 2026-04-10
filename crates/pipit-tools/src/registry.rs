@@ -23,9 +23,14 @@ impl ToolRegistry {
         }
     }
 
-    /// Create a registry with all built-in tools.
-    /// Subagent must be registered separately via `register_subagent`
-    /// because it requires an executor callback.
+    /// Create a registry with core built-in tools only.
+    /// These are the essential tools for coding tasks:
+    /// read_file, write_file, edit_file, multi_edit_file,
+    /// list_directory, grep, glob, bash.
+    ///
+    /// Extended tools (browser, MCP, A2A, powershell, etc.) are registered
+    /// separately via `register_extended` to keep the default tool set lean
+    /// and avoid overwhelming smaller models with 30+ tool schemas.
     pub fn with_builtins() -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(crate::builtins::ReadFileTool));
@@ -36,11 +41,27 @@ impl ToolRegistry {
         registry.register(Arc::new(crate::builtins::GrepTool));
         registry.register(Arc::new(crate::builtins::GlobTool));
         registry.register(Arc::new(crate::builtins::BashTool));
-        // Register extended tools
+        // Register essential typed tools (task tracking + ask_user)
+        crate::register_typed(&mut registry, crate::builtins::typed::task::UnifiedTaskTool::new());
+        crate::register_typed(&mut registry, crate::builtins::typed::agent_tools::AskUserTool);
+        registry
+    }
+
+    /// Create a registry with ALL tools (core + extended).
+    /// Use this when the model is large enough to handle 30+ tools,
+    /// or when features like browser, MCP, A2A are needed.
+    pub fn with_all_tools() -> Self {
+        let mut registry = Self::with_builtins();
         crate::builtins::extended::register_extended_tools(&mut registry);
-        // Register new typed tools (Phase 0+ foundation)
         crate::builtins::typed::register_all_typed_tools(&mut registry);
         registry
+    }
+
+    /// Register extended tools on top of an existing registry.
+    /// Called when --tools=all or specific extended tools are requested.
+    pub fn register_extended(&mut self) {
+        crate::builtins::extended::register_extended_tools(self);
+        crate::builtins::typed::register_all_typed_tools(self);
     }
 
     /// Register the subagent tool with a provided executor.

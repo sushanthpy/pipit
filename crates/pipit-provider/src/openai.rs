@@ -134,9 +134,15 @@ impl OpenAiProvider {
             }
         }
         if !system_parts.is_empty() {
+            let system_content = system_parts.join("\n\n");
+            tracing::info!(
+                system_prompt_chars = system_content.len(),
+                system_prompt_approx_tokens = system_content.len() / 4,
+                "System prompt size"
+            );
             messages.push(serde_json::json!({
                 "role": "system",
-                "content": system_parts.join("\n\n"),
+                "content": system_content,
             }));
         }
 
@@ -221,9 +227,10 @@ impl OpenAiProvider {
                     let mut msg_json = serde_json::json!({
                         "role": "assistant",
                     });
-                    if !content_parts.is_empty() {
-                        msg_json["content"] = serde_json::json!(content_parts.join(""));
-                    }
+                    // Always set content. OpenAI/Azure rejects null content
+                    // on assistant messages. When the response has only thinking
+                    // (no visible text), content_parts is empty — use "".
+                    msg_json["content"] = serde_json::json!(content_parts.join(""));
                     if !tool_calls.is_empty() {
                         msg_json["tool_calls"] = serde_json::json!(tool_calls);
                     }
@@ -249,6 +256,19 @@ impl OpenAiProvider {
                     }));
                 }
             }
+        }
+
+        // Safety net: some providers (e.g. Qwen) require at least one
+        // user-role message. If compaction removed all of them, inject a
+        // minimal one so the request doesn't 400.
+        let has_user = messages
+            .iter()
+            .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
+        if !has_user {
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": "Continue.",
+            }));
         }
 
         let mut body = serde_json::json!({
@@ -278,6 +298,11 @@ impl OpenAiProvider {
         }
 
         if !request.tools.is_empty() {
+            tracing::info!(
+                tool_count = request.tools.len(),
+                tool_names = %request.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
+                "Sending tools to LLM"
+            );
             let tools: Vec<serde_json::Value> = request
                 .tools
                 .iter()
@@ -329,6 +354,15 @@ impl LlmProvider for OpenAiProvider {
 
         let status = response.status();
         if !status.is_success() {
+            // Parse Retry-After header before consuming body.
+            // Azure OpenAI sends this on 429: "Retry-After: 6" (seconds)
+            let retry_after_ms = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|secs| (secs * 1000.0) as u64);
+
             let body_text = response
                 .text()
                 .await
@@ -349,7 +383,7 @@ impl LlmProvider for OpenAiProvider {
                 401 => Err(ProviderError::AuthFailed { message: body_text }),
                 413 => Err(ProviderError::RequestTooLarge { message: body_text }),
                 429 => Err(ProviderError::RateLimited {
-                    retry_after_ms: None,
+                    retry_after_ms,
                 }),
                 400 if is_context_overflow => {
                     Err(ProviderError::ContextOverflow { used: 0, limit: 0 })

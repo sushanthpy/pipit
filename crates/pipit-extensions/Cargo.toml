@@ -3,6 +3,10 @@ name = "pipit-extensions"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+wasm-hooks = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -12,8 +16,8 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tempfile = { workspace = true }
-wasmtime = { workspace = true }
-wasmtime-wasi = { workspace = true }
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }

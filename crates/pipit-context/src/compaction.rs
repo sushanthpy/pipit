@@ -480,8 +480,29 @@ impl CompactionPass for SnipCompactPass {
                 "[Context snipped: {} earlier messages ({} tokens) removed to free space]",
                 messages_removed, tokens_freed
             ));
+
+            // Safety: some providers (e.g. Qwen) reject requests with no user
+            // message.  If snipping would remove every user message, keep the
+            // most recent one from the snipped region.
+            let has_user_after = messages[remove_up_to..]
+                .iter()
+                .any(|m| matches!(m.role, pipit_provider::Role::User));
+            let rescued_user = if !has_user_after {
+                // Walk backwards through the snip region to find the last user msg
+                messages[..remove_up_to]
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, pipit_provider::Role::User))
+                    .cloned()
+            } else {
+                None
+            };
+
             messages.drain(..remove_up_to);
             messages.insert(0, marker);
+            if let Some(user_msg) = rescued_user {
+                messages.insert(1, user_msg);
+            }
 
             Ok(PassResult {
                 messages_removed,

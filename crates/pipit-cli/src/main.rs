@@ -779,8 +779,11 @@ async fn main() -> Result<()> {
     // Initialize MCP servers (if configured)
     let _mcp_manager = pipit_mcp::initialize_mcp(&project_root, &mut tools).await;
 
-    // Register browser tools (CDP-backed)
-    pipit_browser::extension_bridge::register_browser_tools(&mut tools);
+    // Register browser tools only if a browser/CDP config exists.
+    // Without a browser, these 6 tools just waste context tokens.
+    if pipit_browser::extension_bridge::has_browser_config(&project_root) {
+        pipit_browser::extension_bridge::register_browser_tools(&mut tools);
+    }
 
     // Register subagent tool — enables the LLM to delegate subtasks to a
     // child pipit process with bounded scope and isolated execution.
@@ -910,6 +913,7 @@ async fn main() -> Result<()> {
         lint_command: config.project.lint_command.clone(),
         pev: pev_config,
         dry_run: cli.dry_run,
+        cli_explicit_max_turns: cli.max_turns.is_some(),
         boot_context: if boot_listing.is_empty() {
             None
         } else {

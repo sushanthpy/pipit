@@ -346,21 +346,12 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
         sections.push(PromptSection::new(SectionId::ProjectInstructions, content));
     }
 
-    // Section: Tool declarations
-    if !excluded.contains(&SectionId::ToolDeclarations) && !inputs.tools.is_empty() {
-        let mut content = String::from("\n## Available tools\n");
-        for tool in &inputs.tools {
-            if tool.requires_approval {
-                content.push_str(&format!(
-                    "- **{}** *(requires approval)*: {}\n",
-                    tool.name, tool.description
-                ));
-            } else {
-                content.push_str(&format!("- **{}**: {}\n", tool.name, tool.description));
-            }
-        }
-        sections.push(PromptSection::new(SectionId::ToolDeclarations, content));
-    }
+    // Section: Tool declarations — REMOVED
+    // Tool names and descriptions are already carried in the `tools` array
+    // of the OpenAI/Anthropic API request. Listing them again in the system
+    // prompt wastes ~1-2K tokens and adds no signal for the model.
+    // The Tool Selection Guide (above) already explains WHEN to use each
+    // tool category, which is the important part.
 
     // Section: Edit format
     if !excluded.contains(&SectionId::EditFormat) {

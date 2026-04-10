@@ -296,8 +296,8 @@ impl AgentPool {
         // 4. Build ModelRouter (single model for daemon tasks)
         let models = pipit_core::pev::ModelRouter::single(provider.clone(), model_name.clone());
 
-        // 5. Create ToolRegistry with builtins
-        let tools = pipit_tools::ToolRegistry::with_builtins();
+        // 5. Create ToolRegistry with all tools (daemon handles complex tasks)
+        let tools = pipit_tools::ToolRegistry::with_all_tools();
 
         // 6. Build system prompt — reflects the actual approval mode
         let approval_mode = parse_daemon_approval_mode(&approval_mode_str);
@@ -379,7 +379,7 @@ impl AgentPool {
             max_reflections: 3,
             loop_detection_window: 5,
             loop_detection_threshold: 3,
-            tool_timeout_secs: 120,
+            tool_timeout_secs: 300,
             enable_steering: true,
             approval_mode,
             pricing: Default::default(),
@@ -388,6 +388,7 @@ impl AgentPool {
             pev: None,
             max_budget_usd: None,
             dry_run: false,
+            cli_explicit_max_turns: false,
             boot_context: None,
         };
 

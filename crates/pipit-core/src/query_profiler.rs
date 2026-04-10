@@ -127,7 +127,7 @@ impl Default for LatencyBudget {
             ttft_p50_ms: 800,
             ttft_p95_ms: 3000,
             verification_max_fraction: 0.15,
-            tool_timeout_secs: 120,
+            tool_timeout_secs: 300,
         }
     }
 }

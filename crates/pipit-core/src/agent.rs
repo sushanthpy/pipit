@@ -58,6 +58,9 @@ pub struct AgentLoopConfig {
     /// Dry-run mode: read-only tools execute normally, mutating tools
     /// return a preview instead of executing.
     pub dry_run: bool,
+    /// Whether --max-turns was explicitly set via CLI (not the config default).
+    /// Controls how aggressively the adaptive budget extends beyond the limit.
+    pub cli_explicit_max_turns: bool,
     /// Boot context injected into the first user message preamble.
     /// Contains the initial project structure listing for orientation.
     /// Kept out of the system prompt for cache stability.
@@ -71,7 +74,7 @@ impl Default for AgentLoopConfig {
             max_reflections: 3,
             loop_detection_window: 10,
             loop_detection_threshold: 3,
-            tool_timeout_secs: 120,
+            tool_timeout_secs: 300,
             enable_steering: true,
             approval_mode: ApprovalMode::AutoEdit,
             pricing: PricingConfig::default(),
@@ -80,6 +83,7 @@ impl Default for AgentLoopConfig {
             pev: None,
             max_budget_usd: None,
             dry_run: false,
+            cli_explicit_max_turns: false,
             boot_context: None,
         }
     }
@@ -631,10 +635,46 @@ impl AgentLoop {
         let mut end_turn_continuations: u32 = 0;
 
         // ── Adaptive turn budget (replaces dumb counter for extension decisions) ──
-        let mut adaptive_budget =
-            crate::adaptive_budget::AdaptiveTurnBudget::new(self.config.max_turns);
+        let mut adaptive_budget = if self.config.cli_explicit_max_turns {
+            crate::adaptive_budget::AdaptiveTurnBudget::new_explicit(self.config.max_turns)
+        } else {
+            crate::adaptive_budget::AdaptiveTurnBudget::new(self.config.max_turns)
+        };
         /// Track unique files modified across the session.
         let mut unique_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // ── P1: Auto-detect test/lint commands from project files ──
+        // When no test_command is configured, scan the project root for
+        // well-known config files and infer the appropriate test runner.
+        // This enables auto-verification after every file mutation,
+        // preventing the model from silently breaking untested code paths.
+        if self.config.test_command.is_none() {
+            if let Some(detected) = detect_test_command(&self.tool_context.project_root) {
+                tracing::info!(
+                    command = %detected,
+                    "Auto-detected test command from project files"
+                );
+                self.config.test_command = Some(detected);
+            }
+        }
+
+        // ── P2: Focused test repetition tracking ──
+        // Tracks bash commands that look like test invocations with a
+        // narrowed scope (specific file/test). If the model runs focused
+        // tests >N times without ever running the full suite, inject a
+        // nudge to run all tests and check for regressions.
+        let mut focused_test_run_count: u32 = 0;
+        let mut last_full_test_turn: u32 = 0;
+        const FOCUSED_TEST_NUDGE_THRESHOLD: u32 = 5;
+
+        // ── P3: Edit revert tracking ──
+        // SHA-256 of file contents after each write. When an edit
+        // returns a file to a previously seen state, warn the model that
+        // it is cycling.
+        let mut file_content_hashes: std::collections::HashMap<
+            String,
+            Vec<u64>,
+        > = std::collections::HashMap::new();
 
         // ═══════════════════════════════════════════════════════
         // THE LOOP: LLM → tool calls → LLM → tool calls → done
@@ -1033,7 +1073,7 @@ impl AgentLoop {
                     let should_auto_continue = !model_says_done
                         && !is_semantic_stall
                         && had_recent_activity
-                        && end_turn_continuations < 3;
+                        && end_turn_continuations < 2;
 
                     // On the first turn of a non-QA task, always give the model
                     // one retry if it returned text without tools.  Weaker models
@@ -1064,7 +1104,7 @@ impl AgentLoop {
                         self.process_turn_outputs(&tk_outputs);
 
                         self.context.push_control_plane(
-                            "[SYSTEM] Your response ended without calling any tools. \
+                            "Your response ended without calling any tools. \
                              The task may not be fully complete. Review your progress:\n\
                              - Are all requested changes implemented?\n\
                              - Have you run verification (tests, lint) if applicable?\n\
@@ -1272,7 +1312,13 @@ impl AgentLoop {
                         verification_passed: false, // updated after verification
                     });
 
-                    // Check for loops
+                    // Check for loops — collect deferred control_plane messages
+                    // to push AFTER tool results. OpenAI/Azure requires that
+                    // assistant tool_calls are immediately followed by tool_result
+                    // messages; injecting user-role control_plane messages between
+                    // them causes HTTP 400 "tool_call_id without response".
+                    let mut deferred_control_plane: Vec<String> = Vec::new();
+
                     if let Some((name, count)) = self.loop_detector.is_looping() {
                         self.consecutive_loop_hits += 1;
                         self.emit(AgentEvent::LoopDetected {
@@ -1293,13 +1339,12 @@ impl AgentLoop {
                             ));
                         }
 
-                        self.context
-                            .push_control_plane(&build_loop_recovery_message(
-                                &name,
-                                count,
-                                &evidence,
-                                self.consecutive_loop_hits,
-                            ));
+                        deferred_control_plane.push(build_loop_recovery_message(
+                            &name,
+                            count,
+                            &evidence,
+                            self.consecutive_loop_hits,
+                        ));
                     } else {
                         // Reset counter when no loop is detected
                         self.consecutive_loop_hits = 0;
@@ -1328,14 +1373,14 @@ impl AgentLoop {
                             );
                         }
 
-                        self.context.push_control_plane(
-                            "[SYSTEM] Your reasoning is very similar to your previous turns. \
+                        deferred_control_plane.push(
+                            "Your reasoning is very similar to your previous turns. \
                              You appear to be stuck in a loop. STOP repeating the same approach. \
                              Try a fundamentally different strategy:\n\
                              - Use a different tool entirely\n\
                              - Read the file first to understand the current state\n\
                              - Ask the user for clarification\n\
-                             - If the task cannot be completed, explain why and stop",
+                             - If the task cannot be completed, explain why and stop".to_string(),
                         );
                     }
 
@@ -1367,8 +1412,114 @@ impl AgentLoop {
                                     true,
                                 )
                             };
+
+                        // ── P0: Empty bash output enrichment ──
+                        // When a bash command returns non-zero but produces no visible
+                        // output (stdout+stderr empty after noise stripping), the model
+                        // gets zero diagnostic signal. Inject a hint so the model knows
+                        // the command failed silently and should try a different approach.
+                        let content = if call.tool_name == "bash"
+                            && is_error
+                            && content.trim().is_empty()
+                        {
+                            "[No output produced] The command failed with a non-zero exit code \
+                             but produced no stdout or stderr. This usually means:\n\
+                             - The command has a syntax error (unmatched quotes, bad pipe)\n\
+                             - The command was not found (check spelling and PATH)\n\
+                             - A subshell/heredoc swallowed the output\n\
+                             Try running a simpler version of the command to diagnose."
+                                .to_string()
+                        } else {
+                            content
+                        };
+
                         self.context
                             .push_tool_result(&call.call_id, &content, is_error);
+                    }
+
+                    // ── Flush deferred loop-recovery messages ──
+                    // These must come AFTER all tool_result messages. Pushing
+                    // them between assistant(tool_calls) and tool_results
+                    // violates the OpenAI/Azure protocol and triggers HTTP 400.
+                    for msg in deferred_control_plane {
+                        self.context.push_control_plane(&msg);
+                    }
+
+                    // ── P1: Lazy re-detect test command after file creation ──
+                    // For greenfield projects, config files don't exist at startup.
+                    // Re-check after mutations so auto-verification kicks in once
+                    // the project has been scaffolded.
+                    if self.config.test_command.is_none() && had_mutation_success {
+                        if let Some(detected) = detect_test_command(&self.tool_context.project_root) {
+                            tracing::info!(
+                                command = %detected,
+                                turn,
+                                "Lazy-detected test command after file creation"
+                            );
+                            self.config.test_command = Some(detected);
+                        }
+                    }
+
+                    // ── P2: Focused test repetition guard ──
+                    // If the model keeps running a narrowed test command (e.g.
+                    // `pytest tests/test_foo.py::TestBar::test_baz`) without
+                    // ever running the full suite, inject a nudge.
+                    for call in &tool_calls {
+                        if call.tool_name == "bash" {
+                            if let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) {
+                                if is_focused_test_command(cmd) {
+                                    focused_test_run_count += 1;
+                                } else if is_full_test_command(cmd) {
+                                    focused_test_run_count = 0;
+                                    last_full_test_turn = turn;
+                                }
+                            }
+                        }
+                    }
+                    if focused_test_run_count >= FOCUSED_TEST_NUDGE_THRESHOLD
+                        && turn.saturating_sub(last_full_test_turn) > FOCUSED_TEST_NUDGE_THRESHOLD
+                    {
+                        self.context.push_control_plane(
+                            "You have been running focused/single tests for several turns \
+                             without running the full test suite. Focused testing causes tunnel vision — \
+                             you may be fixing one test while breaking others.\n\
+                             Run the FULL test suite now (e.g. `pytest`, `cargo test`, `npm test`) \
+                             to check for regressions before continuing with targeted fixes.",
+                        );
+                        focused_test_run_count = 0; // Reset to avoid spamming
+                        tracing::info!(turn, "Injected focused-test regression nudge");
+                    }
+
+                    // ── P3: Edit revert detection ──
+                    // Track content hashes of written files. If a file returns
+                    // to a state it was already in, the model is toggling the
+                    // same edit back and forth — warn it.
+                    for file in &modified_files {
+                        let path = self.tool_context.project_root.join(file);
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            let hash = {
+                                use std::hash::{Hash, Hasher};
+                                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                bytes.hash(&mut hasher);
+                                hasher.finish()
+                            };
+                            let history = file_content_hashes.entry(file.clone()).or_default();
+                            // Check if this exact state was seen before (not counting
+                            // the immediately previous state — allow undo-once).
+                            let is_revert = history.len() >= 2
+                                && history[..history.len() - 1].contains(&hash);
+                            history.push(hash);
+                            if is_revert {
+                                self.context.push_control_plane(&format!(
+                                    "File `{}` has returned to a state it was already in. \
+                                     You appear to be toggling the same edit back and forth. \
+                                     STOP and re-read the file to understand the current state. \
+                                     Then take a fundamentally different approach to fix the issue.",
+                                    file,
+                                ));
+                                tracing::warn!(turn, file, "Edit revert detected — file cycling");
+                            }
+                        }
                     }
 
                     self.emit(AgentEvent::TurnEnd {
@@ -1526,7 +1677,7 @@ impl AgentLoop {
                         }
                         // Inject a nudge so the model knows to be more concise
                         self.context.push_control_plane(
-                            "[SYSTEM] Your previous response was truncated due to output length. \
+                            "Your previous response was truncated due to output length. \
                              Please be more concise. Focus on the most important action and \
                              use tool calls instead of explaining what you would do.",
                         );
@@ -1578,10 +1729,13 @@ impl AgentLoop {
         let request_start = std::time::Instant::now();
         let mut first_token_recorded = false;
 
-        // TTFT timeout: if no data arrives for 60 seconds, abort.
+        // Chunk timeout: if no data arrives for 180 seconds, abort.
         // This prevents indefinite hangs when the model server accepts
         // the connection but never sends tokens (overloaded, crashed, etc.).
-        let chunk_timeout = std::time::Duration::from_secs(60);
+        // 180s is needed for large models (30B+) under concurrent load —
+        // they can legitimately take 2+ minutes between output chunks
+        // during complex tool-call reasoning.
+        let chunk_timeout = std::time::Duration::from_secs(180);
         let mut deadline = tokio::time::Instant::now() + chunk_timeout;
 
         loop {
@@ -1694,7 +1848,7 @@ impl AgentLoop {
                             .messages
                             .push(Message::assistant(&response.text));
                         continuation.messages.push(Message::user(
-                            "[SYSTEM] Your previous response was interrupted by a network error. \
+                            "Your previous response was interrupted by a network error. \
                              The partial response above has been preserved. Please continue from \
                              where you left off. Do not repeat what you already said.",
                         ));
@@ -3150,6 +3304,95 @@ mod tests {
             &pipit_provider::ProviderError::Other("HTTP 500 internal error".to_string(),)
         ));
     }
+
+    #[test]
+    fn focused_test_command_detects_pytest_selector() {
+        assert!(is_focused_test_command(
+            "pytest tests/test_projects.py::TestCreateProject::test_create_project_success"
+        ));
+        assert!(is_focused_test_command(
+            "python3 -m pytest tests/test_auth.py::TestAuth"
+        ));
+        assert!(is_focused_test_command("pytest tests/test_auth.py -k \"test_login\""));
+        assert!(is_focused_test_command("pytest tests/test_auth.py"));
+    }
+
+    #[test]
+    fn focused_test_command_detects_cargo_specific() {
+        assert!(is_focused_test_command("cargo test my_specific_test"));
+        assert!(is_focused_test_command(
+            "cargo test adaptive_budget::tests::explicit_budget"
+        ));
+    }
+
+    #[test]
+    fn full_test_command_detects_bare_pytest() {
+        assert!(is_full_test_command("pytest"));
+        assert!(is_full_test_command("python3 -m pytest"));
+        assert!(is_full_test_command("pytest --tb=short -q"));
+        assert!(is_full_test_command("python3 -m pytest --tb=short -q 2>&1 | head -80"));
+        assert!(is_full_test_command("pytest -v 2>&1 | tail -30"));
+    }
+
+    #[test]
+    fn full_test_command_detects_bare_cargo_npm() {
+        assert!(is_full_test_command("cargo test"));
+        assert!(is_full_test_command("cargo test --quiet"));
+        assert!(is_full_test_command("npm test"));
+        assert!(is_full_test_command("make test"));
+    }
+
+    #[test]
+    fn focused_and_full_are_mutually_exclusive() {
+        // These should be full, not focused
+        assert!(!is_focused_test_command("pytest"));
+        assert!(!is_focused_test_command("cargo test"));
+        assert!(!is_focused_test_command("npm test"));
+
+        // These should be focused, not full
+        assert!(!is_full_test_command(
+            "pytest tests/test_foo.py::TestBar::test_baz"
+        ));
+        assert!(!is_full_test_command("cargo test my_test_name"));
+    }
+
+    #[test]
+    fn detect_test_command_returns_none_for_empty_dir() {
+        let tmp = std::env::temp_dir().join("pipit_test_detect_empty");
+        let _ = std::fs::create_dir_all(&tmp);
+        assert!(detect_test_command(&tmp).is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_test_command_finds_pyproject_toml() {
+        let tmp = std::env::temp_dir().join("pipit_test_detect_pyproject");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(
+            tmp.join("pyproject.toml"),
+            "[tool.pytest.ini_options]\naddopts = \"-v\"\n",
+        )
+        .unwrap();
+        let cmd = detect_test_command(&tmp);
+        assert!(cmd.is_some());
+        assert!(cmd.unwrap().contains("pytest"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_test_command_finds_package_json() {
+        let tmp = std::env::temp_dir().join("pipit_test_detect_package_json");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"scripts": {"test": "jest"}}"#,
+        )
+        .unwrap();
+        let cmd = detect_test_command(&tmp);
+        assert!(cmd.is_some());
+        assert!(cmd.unwrap().contains("npm test"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 
 pub(crate) async fn execute_single_tool(
@@ -3386,4 +3629,196 @@ fn compute_cost(
     (usage.input_tokens as f64 * input_price)
         + (usage.output_tokens as f64 * output_price)
         + (usage.cache_read_tokens.unwrap_or(0) as f64 * cache_read_price)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// P1 / P2: Project-aware test command detection & focused test heuristics
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Auto-detect the test command for a project by scanning well-known config files.
+///
+/// Checks (in priority order):
+/// 1. `pyproject.toml` → `pytest` (if `[tool.pytest]` or `pytest` in deps)
+/// 2. `setup.cfg` or `pytest.ini` → `pytest`
+/// 3. `package.json` → `npm test` (if `scripts.test` exists and isn't default)
+/// 4. `Cargo.toml` → `cargo test`
+/// 5. `Makefile` → check for `test:` target → `make test`
+///
+/// Returns `None` if we can't confidently detect a test framework.
+fn detect_test_command(project_root: &std::path::Path) -> Option<String> {
+    // Python: pyproject.toml with pytest
+    let pyproject = project_root.join("pyproject.toml");
+    if pyproject.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pyproject) {
+            let lower = content.to_lowercase();
+            if lower.contains("[tool.pytest")
+                || lower.contains("pytest")
+                || lower.contains("test = \"pytest")
+            {
+                return Some("python3 -m pytest --tb=short -q 2>&1 | head -80".to_string());
+            }
+        }
+    }
+
+    // Python: pytest.ini or setup.cfg with [tool:pytest]
+    if project_root.join("pytest.ini").exists() {
+        return Some("python3 -m pytest --tb=short -q 2>&1 | head -80".to_string());
+    }
+    let setup_cfg = project_root.join("setup.cfg");
+    if setup_cfg.exists() {
+        if let Ok(content) = std::fs::read_to_string(&setup_cfg) {
+            if content.contains("[tool:pytest]") {
+                return Some("python3 -m pytest --tb=short -q 2>&1 | head -80".to_string());
+            }
+        }
+    }
+
+    // Node.js: package.json with a test script
+    let package_json = project_root.join("package.json");
+    if package_json.exists() {
+        if let Ok(content) = std::fs::read_to_string(&package_json) {
+            // Simple heuristic: if "scripts" contains "test" that isn't the default
+            // npm "echo Error" stub, use it.
+            if content.contains("\"test\"") && !content.contains("echo \\\"Error: no test specified") {
+                return Some("npm test 2>&1 | head -80".to_string());
+            }
+        }
+    }
+
+    // Rust: Cargo.toml
+    if project_root.join("Cargo.toml").exists() {
+        // Only auto-detect if there are actual test files
+        let has_tests = project_root.join("tests").exists()
+            || std::fs::read_to_string(project_root.join("src/lib.rs"))
+                .map(|c| c.contains("#[cfg(test)]") || c.contains("#[test]"))
+                .unwrap_or(false);
+        if has_tests {
+            return Some("cargo test --quiet 2>&1 | tail -30".to_string());
+        }
+    }
+
+    // Makefile with test target
+    let makefile = project_root.join("Makefile");
+    if makefile.exists() {
+        if let Ok(content) = std::fs::read_to_string(&makefile) {
+            if content.contains("\ntest:") || content.starts_with("test:") {
+                return Some("make test 2>&1 | tail -50".to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Heuristic: is this bash command a focused/narrowed test invocation?
+///
+/// Matches patterns like:
+/// - `pytest tests/test_foo.py::TestBar::test_baz`
+/// - `pytest tests/test_foo.py -k "specific_test"`
+/// - `cargo test specific_test_name`
+/// - `npm test -- --grep "pattern"`
+/// - `python -m pytest tests/specific.py`
+fn is_focused_test_command(cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+
+    // pytest with :: selector (most common focused pattern)
+    if trimmed.contains("pytest") && trimmed.contains("::") {
+        return true;
+    }
+
+    // pytest with -k filter
+    if trimmed.contains("pytest") && trimmed.contains(" -k ") {
+        return true;
+    }
+
+    // pytest with specific file (not just `pytest` alone)
+    if trimmed.contains("pytest") {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        for part in &parts {
+            if (part.ends_with(".py") && part.contains("test"))
+                || part.starts_with("tests/")
+                || part.starts_with("test/")
+            {
+                return true;
+            }
+        }
+    }
+
+    // cargo test with a specific test name
+    if trimmed.contains("cargo test") {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if let Some(idx) = parts.iter().position(|p| *p == "test") {
+            // After "test" there should be a test name that isn't a flag
+            if let Some(next) = parts.get(idx + 1) {
+                if !next.starts_with('-') && !next.starts_with('|') {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Heuristic: is this bash command a full test suite invocation?
+///
+/// Matches patterns like:
+/// - `pytest` (bare)
+/// - `python -m pytest` (bare)
+/// - `cargo test` (bare)
+/// - `npm test` (bare)
+/// - `make test`
+fn is_full_test_command(cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+
+    // Strip trailing pipe/redirect for matching
+    let base = trimmed
+        .split('|')
+        .next()
+        .unwrap_or(trimmed)
+        .split("2>&1")
+        .next()
+        .unwrap_or(trimmed)
+        .trim();
+
+    // bare pytest (possibly with flags but no file/class selector)
+    if (base == "pytest"
+        || base == "python3 -m pytest"
+        || base == "python -m pytest"
+        || base.starts_with("pytest -")
+        || base.starts_with("python3 -m pytest -")
+        || base.starts_with("python -m pytest -"))
+        && !base.contains("::")
+        && !base.contains(" -k ")
+    {
+        // Make sure there's no specific file target
+        let has_file_target = base.split_whitespace().any(|part| {
+            part.ends_with(".py") || part.starts_with("tests/") || part.starts_with("test/")
+        });
+        if !has_file_target {
+            return true;
+        }
+    }
+
+    // bare cargo test
+    if base == "cargo test" || base == "cargo test --quiet" || base.starts_with("cargo test --") {
+        // Check there's no specific test name filter
+        let parts: Vec<&str> = base.split_whitespace().collect();
+        if let Some(idx) = parts.iter().position(|p| *p == "test") {
+            if let Some(next) = parts.get(idx + 1) {
+                if next.starts_with('-') || next.is_empty() {
+                    return true;
+                }
+            } else {
+                return true; // just "cargo test"
+            }
+        }
+    }
+
+    // bare npm/make test
+    if base == "npm test" || base == "make test" || base == "npx jest" {
+        return true;
+    }
+
+    false
 }

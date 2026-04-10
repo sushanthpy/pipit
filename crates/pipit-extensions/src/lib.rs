@@ -3,6 +3,7 @@ pub mod hook_kind;
 pub mod prompt_runtime;
 pub mod replay;
 pub mod runtime;
+#[cfg(feature = "wasm-hooks")]
 pub mod wasm_runtime;
 
 pub use event::{HookEventMask, event_name_to_mask, events_to_mask};
@@ -18,6 +19,7 @@ pub use runtime::{
     ExtensionTool, LoadResult, RenderHandler, RuntimeEvent, RuntimeExtension, ToolHandler,
     ToolHandlerResult, discover_extension_dirs,
 };
+#[cfg(feature = "wasm-hooks")]
 pub use wasm_runtime::WasmHookRuntime;
 
 use async_trait::async_trait;
@@ -529,52 +531,60 @@ async fn run_pre_tool_hook(
             }
         }
         "wasm" => {
-            // WASM hooks dispatched via WasmHookRuntime
-            let ctx = hook_kind::HookContext {
-                event: hook.event.clone(),
-                tool_name: Some(tool_name.to_string()),
-                tool_args: Some(args.clone()),
-                tool_result: None,
-                project_root: project_root.to_path_buf(),
-                session_id: String::new(),
-                replay_mode: hook_kind::ReplayMode::Live,
-            };
-            match WasmHookRuntime::new() {
-                Ok(runtime) => {
-                    let module_path = project_root.join(&hook.script.command);
-                    match runtime.load_module(&module_path, None) {
-                        Ok((module, _hash)) => {
-                            let input_json = serde_json::to_string(&ctx).unwrap_or_default();
-                            match runtime.execute(
-                                &module,
-                                &input_json,
-                                10_000_000,
-                                16 * 1024 * 1024,
-                            ) {
-                                Ok(decision) if !decision.allow => {
-                                    Err(ExtensionError::HookBlocked(
-                                        decision
-                                            .message
-                                            .unwrap_or_else(|| "WASM hook denied".into()),
-                                    ))
-                                }
-                                Ok(_) => Ok(()),
-                                Err(e) => {
-                                    tracing::warn!("WASM hook error (allowing): {}", e);
-                                    Ok(())
+            #[cfg(feature = "wasm-hooks")]
+            {
+                // WASM hooks dispatched via WasmHookRuntime
+                let ctx = hook_kind::HookContext {
+                    event: hook.event.clone(),
+                    tool_name: Some(tool_name.to_string()),
+                    tool_args: Some(args.clone()),
+                    tool_result: None,
+                    project_root: project_root.to_path_buf(),
+                    session_id: String::new(),
+                    replay_mode: hook_kind::ReplayMode::Live,
+                };
+                match WasmHookRuntime::new() {
+                    Ok(runtime) => {
+                        let module_path = project_root.join(&hook.script.command);
+                        match runtime.load_module(&module_path, None) {
+                            Ok((module, _hash)) => {
+                                let input_json = serde_json::to_string(&ctx).unwrap_or_default();
+                                match runtime.execute(
+                                    &module,
+                                    &input_json,
+                                    10_000_000,
+                                    16 * 1024 * 1024,
+                                ) {
+                                    Ok(decision) if !decision.allow => {
+                                        Err(ExtensionError::HookBlocked(
+                                            decision
+                                                .message
+                                                .unwrap_or_else(|| "WASM hook denied".into()),
+                                        ))
+                                    }
+                                    Ok(_) => Ok(()),
+                                    Err(e) => {
+                                        tracing::warn!("WASM hook error (allowing): {}", e);
+                                        Ok(())
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            tracing::warn!("WASM module load error (allowing): {}", e);
-                            Ok(())
+                            Err(e) => {
+                                tracing::warn!("WASM module load error (allowing): {}", e);
+                                Ok(())
+                            }
                         }
                     }
+                    Err(e) => {
+                        tracing::warn!("WASM runtime init error (allowing): {}", e);
+                        Ok(())
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("WASM runtime init error (allowing): {}", e);
-                    Ok(())
-                }
+            }
+            #[cfg(not(feature = "wasm-hooks"))]
+            {
+                tracing::warn!("WASM hook '{}' ignored — compile with `wasm-hooks` feature to enable", hook.matcher);
+                Ok(())
             }
         }
         other => Err(ExtensionError::Other(format!(

@@ -335,7 +335,7 @@ impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
             max_tool_result_tokens: 8192,
-            shell_timeout_secs: 120,
+            shell_timeout_secs: 300,
             max_file_size_bytes: 1_048_576,
         }
     }
@@ -597,7 +597,7 @@ pub struct RetryPolicy {
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            max_retries: 3,
+            max_retries: 5,
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
             backoff_multiplier: 2.0,

@@ -106,7 +106,7 @@ impl Default for KernelConfig {
         Self {
             project_root: PathBuf::from("."),
             max_turns: 100,
-            tool_timeout_secs: 120,
+            tool_timeout_secs: 300,
             max_concurrent_reads: 8,
             enable_steering: true,
         }

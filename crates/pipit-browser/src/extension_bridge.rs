@@ -709,6 +709,17 @@ impl Tool for BrowserNetworkTool {
     }
 }
 
+/// Check if a browser config exists that would justify registering browser tools.
+/// Returns true if there's a `.pipit/browser.toml` or `PIPIT_BROWSER_CDP_URL` env var.
+pub fn has_browser_config(project_root: &std::path::Path) -> bool {
+    // Check for explicit CDP URL
+    if std::env::var("PIPIT_BROWSER_CDP_URL").is_ok() {
+        return true;
+    }
+    // Check for browser config file
+    project_root.join(".pipit/browser.toml").exists()
+}
+
 /// Register all browser tools into the tool registry.
 pub fn register_browser_tools(registry: &mut pipit_tools::ToolRegistry) {
     use std::sync::Arc;
