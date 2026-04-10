@@ -2,6 +2,7 @@ pub mod event;
 pub mod hook_kind;
 pub mod prompt_runtime;
 pub mod replay;
+pub mod runtime;
 pub mod wasm_runtime;
 
 pub use event::{HookEventMask, event_name_to_mask, events_to_mask};
@@ -11,6 +12,12 @@ pub use prompt_runtime::{
     PromptHookResult, execute_agent_hook, execute_http_hook, execute_prompt_hook,
 };
 pub use replay::{HookRecord, HookReplayCache, execute_with_replay};
+pub use runtime::{
+    ActivationContext, CommandHandler, EventHandler, EventSubscription, ExtensionActivateError,
+    ExtensionCommand, ExtensionFlag, ExtensionRenderer, ExtensionRuntime, ExtensionShortcut,
+    ExtensionTool, LoadResult, RenderHandler, RuntimeEvent, RuntimeExtension, ToolHandler,
+    ToolHandlerResult, discover_extension_dirs,
+};
 pub use wasm_runtime::WasmHookRuntime;
 
 use async_trait::async_trait;

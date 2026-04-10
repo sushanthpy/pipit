@@ -112,9 +112,11 @@ main() {
     chmod +x "${binary_path}"
 
     if [ -w "${INSTALL_DIR}" ]; then
+        mkdir -p "${INSTALL_DIR}"
         mv "${binary_path}" "${INSTALL_DIR}/${BINARY}"
     else
         info "Elevated permissions required to install to ${INSTALL_DIR}"
+        sudo mkdir -p "${INSTALL_DIR}"
         sudo mv "${binary_path}" "${INSTALL_DIR}/${BINARY}"
     fi
 

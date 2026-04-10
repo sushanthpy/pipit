@@ -14,6 +14,7 @@ pub mod delegation;
 pub mod deliberation;
 pub mod dx_surface;
 pub mod events;
+pub mod file_provenance;
 pub mod governor;
 pub mod hydration;
 pub mod integration_ports;
@@ -32,6 +33,7 @@ pub mod plugin_registry;
 pub mod policy_store;
 pub mod profiler;
 pub mod projections;
+pub mod prompt_kernel;
 pub mod proof;
 pub mod query_profiler;
 pub mod reactive;
@@ -45,6 +47,7 @@ pub mod sdd_pipeline;
 pub mod sdk;
 pub mod sdk_compat;
 pub mod service_graph;
+pub mod session_builder;
 pub mod session_kernel;
 pub mod skill_activation;
 pub mod skill_budget;
@@ -93,6 +96,12 @@ pub use proof::{
 pub use verifier::{NullVerifier, Verifier};
 pub use verifier_llm::LlmVerifier;
 pub use worktree::WorktreeManager;
+
+// ── New public APIs ──
+pub use file_provenance::{FileAction, FileActivity, FileProvenance, ProvenanceSummary};
+pub use prompt_kernel::{AssembledPrompt, PromptInputs, SectionId, ToolDecl};
+pub use sdk::{EngineConfig, EngineEvent, EngineHandle, EngineOutcome, InitConfig, PipitEngine};
+pub use session_builder::{BuiltSession, SessionBuildError, SessionBuilder, SessionMetadata};
 
 // ── Optional subsystem crates ──
 // These dependencies are feature-gated to reduce compile times when not needed.

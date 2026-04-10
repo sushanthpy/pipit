@@ -2683,7 +2683,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pipit-agent-mesh"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-agents"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2712,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-arch-evolution"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -2722,7 +2722,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-bench"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "pipit-config",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-bridge"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-browser"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2770,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-channel"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-cli"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-compliance"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2836,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-config"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "dirs 5.0.1",
  "reqwest",
@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-context"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-core"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2904,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-daemon"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2946,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-deps"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -2959,7 +2959,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-edit"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "pipit-provider",
  "serde",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-env"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2983,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-evolve"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -2997,7 +2997,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-extensions"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -3016,7 +3016,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-hw-codesign"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -3026,7 +3026,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-intelligence"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "dashmap",
  "ignore",
@@ -3049,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-io"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "ansi-to-tui",
  "async-trait",
@@ -3081,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-lsp"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-mcp"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3112,7 +3112,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-memory"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-mesh"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "pipit-agent-mesh",
@@ -3150,7 +3150,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-perf"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-permissions"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3178,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-provider"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3200,7 +3200,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-skills"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3212,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-spec"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-test-universe"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "rand 0.8.5",
  "serde",
@@ -3233,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-tools"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-vcs"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-verify"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "pipit-voice"
-version = "0.2.9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "cpal",

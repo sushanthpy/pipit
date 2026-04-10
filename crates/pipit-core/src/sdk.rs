@@ -31,6 +31,41 @@ pub const ENGINE_PROTOCOL_VERSION: u32 = 2;
 /// Every event is a typed transition. Validation is O(1) per event against the current state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum EngineEvent {
+    // ── Session init (v3+) ──
+    /// Capability/init envelope emitted once per session or query bootstrap.
+    /// Contains all information an SDK consumer needs to bootstrap its UI
+    /// and gate features. Cost: O(T + S + P + A) over tools, skills, plugins, agents.
+    Init {
+        /// Protocol version for forward compatibility.
+        protocol_version: u32,
+        /// Session identifier.
+        session_id: String,
+        /// Current working directory.
+        cwd: String,
+        /// Configured model identifier.
+        model: String,
+        /// Provider name.
+        provider: String,
+        /// Permission/approval mode.
+        permission_mode: String,
+        /// Available tools.
+        tools: Vec<String>,
+        /// Available slash commands.
+        slash_commands: Vec<String>,
+        /// Loaded skills.
+        skills: Vec<String>,
+        /// Loaded plugins.
+        plugins: Vec<String>,
+        /// Active agents.
+        agents: Vec<String>,
+        /// MCP server connections.
+        mcp_servers: Vec<String>,
+        /// Agent mode (fast/balanced/guarded/custom).
+        agent_mode: String,
+        /// Runtime capabilities (feature flags the SDK can gate on).
+        capabilities: Vec<String>,
+    },
+
     // ── Turn lifecycle ──
     /// A new turn is beginning.
     TurnStart { turn_number: u32 },
@@ -101,6 +136,31 @@ pub enum EngineEvent {
     /// An error occurred (may be retriable).
     Error { message: String, retriable: bool },
 
+    // ── Profiling (v3+) ──
+    /// Turn-level profiling checkpoint. Emitted for each named checkpoint
+    /// within a turn. Overhead: O(1) per checkpoint.
+    ProfileCheckpoint {
+        turn_number: u32,
+        checkpoint: String,
+        elapsed_ms: f64,
+    },
+    /// Turn-level profiling summary. Emitted at the end of each turn.
+    /// Contains per-phase breakdown: O(C) for C checkpoints.
+    ProfileTurnSummary {
+        turn_number: u32,
+        total_ms: f64,
+        phases: Vec<(String, f64)>,
+    },
+
+    // ── File provenance (v3+) ──
+    /// A file was touched by the agent during this session.
+    FileTouched {
+        path: String,
+        action: String,
+        tool_name: String,
+        turn_number: u32,
+    },
+
     // ── Session replay (v3+) ──
     /// A replayed historical message from a resumed session.
     Replay {
@@ -155,6 +215,26 @@ pub struct EngineConfig {
     pub context_settings: ContextSettings,
     pub system_prompt: String,
     pub model_limit: u64,
+}
+
+/// Configuration for the Init capability envelope.
+/// Passed to `PipitEngine::emit_init()` to produce an `EngineEvent::Init`.
+/// Cost: O(T + S + P + A) over tools, skills, plugins, agents — paid once per session.
+#[derive(Debug, Clone, Default)]
+pub struct InitConfig {
+    pub session_id: String,
+    pub cwd: String,
+    pub model: String,
+    pub provider: String,
+    pub permission_mode: String,
+    pub tools: Vec<String>,
+    pub slash_commands: Vec<String>,
+    pub skills: Vec<String>,
+    pub plugins: Vec<String>,
+    pub agents: Vec<String>,
+    pub mcp_servers: Vec<String>,
+    pub agent_mode: String,
+    pub capabilities: Vec<String>,
 }
 
 impl Default for EngineConfig {
@@ -449,6 +529,28 @@ impl PipitEngine {
     /// Clear the conversation context.
     pub fn clear_context(&mut self) {
         self.agent.clear_context();
+    }
+
+    /// Emit the Init capability envelope as the first event in the stream.
+    /// Should be called once per session before any `submit()` calls.
+    /// Cost: O(1) — the caller pre-computes the InitConfig.
+    pub fn emit_init(&self, config: InitConfig) -> EngineEvent {
+        EngineEvent::Init {
+            protocol_version: ENGINE_PROTOCOL_VERSION,
+            session_id: config.session_id,
+            cwd: config.cwd,
+            model: config.model,
+            provider: config.provider,
+            permission_mode: config.permission_mode,
+            tools: config.tools,
+            slash_commands: config.slash_commands,
+            skills: config.skills,
+            plugins: config.plugins,
+            agents: config.agents,
+            mcp_servers: config.mcp_servers,
+            agent_mode: config.agent_mode,
+            capabilities: config.capabilities,
+        }
     }
 }
 

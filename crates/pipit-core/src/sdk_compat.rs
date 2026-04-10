@@ -265,6 +265,73 @@ pub fn map_event(event: &EngineEvent, version: SdkVersion) -> Option<Value> {
             "message": message,
             "retriable": retriable,
         })),
+
+        // v3+ events — pass through as typed JSON for v3 consumers, skip for v2
+        EngineEvent::Init { protocol_version, session_id, cwd, model, provider,
+            permission_mode, tools, slash_commands, skills, plugins, agents,
+            mcp_servers, agent_mode, capabilities } => {
+            if version >= SdkVersion::V3 {
+                Some(serde_json::json!({
+                    "type": "init",
+                    "protocol_version": protocol_version,
+                    "session_id": session_id,
+                    "cwd": cwd,
+                    "model": model,
+                    "provider": provider,
+                    "permission_mode": permission_mode,
+                    "tools": tools,
+                    "slash_commands": slash_commands,
+                    "skills": skills,
+                    "plugins": plugins,
+                    "agents": agents,
+                    "mcp_servers": mcp_servers,
+                    "agent_mode": agent_mode,
+                    "capabilities": capabilities,
+                }))
+            } else {
+                None
+            }
+        }
+
+        EngineEvent::ProfileCheckpoint { turn_number, checkpoint, elapsed_ms } => {
+            if version >= SdkVersion::V3 {
+                Some(serde_json::json!({
+                    "type": "profile_checkpoint",
+                    "turn_number": turn_number,
+                    "checkpoint": checkpoint,
+                    "elapsed_ms": elapsed_ms,
+                }))
+            } else {
+                None
+            }
+        }
+
+        EngineEvent::ProfileTurnSummary { turn_number, total_ms, phases } => {
+            if version >= SdkVersion::V3 {
+                Some(serde_json::json!({
+                    "type": "profile_turn_summary",
+                    "turn_number": turn_number,
+                    "total_ms": total_ms,
+                    "phases": phases.iter().map(|(name, ms)| serde_json::json!({"name": name, "ms": ms})).collect::<Vec<_>>(),
+                }))
+            } else {
+                None
+            }
+        }
+
+        EngineEvent::FileTouched { path, action, tool_name, turn_number } => {
+            if version >= SdkVersion::V3 {
+                Some(serde_json::json!({
+                    "type": "file_touched",
+                    "path": path,
+                    "action": action,
+                    "tool_name": tool_name,
+                    "turn_number": turn_number,
+                }))
+            } else {
+                None
+            }
+        }
     }
 }
 

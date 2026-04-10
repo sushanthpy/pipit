@@ -3,6 +3,7 @@ use pipit_context::cache_optimizer::{
     CacheBreakpoint, CacheContentType, CacheOptimizer, PromptSection,
 };
 use pipit_context::knowledge_injection;
+use pipit_core::prompt_kernel::{self, PromptInputs, SectionId, ToolDecl};
 use pipit_skills::SkillRegistry;
 use pipit_tools::ToolRegistry;
 use std::path::Path;
@@ -501,6 +502,224 @@ pub fn build_prompt_with_cache_sections(
     }
 
     (sections, full_prompt, boot_listing)
+}
+
+/// Build a system prompt using the composable prompt assembly kernel.
+///
+/// This is the preferred API for new surfaces. It returns typed sections
+/// that support section-level replacement, exclusion, and cache invalidation.
+pub fn build_composed_prompt(
+    project_root: &Path,
+    tools: &ToolRegistry,
+    approval_mode: ApprovalMode,
+    provider: ProviderKind,
+    skills: &SkillRegistry,
+    workflow_assets: &WorkflowAssets,
+) -> (prompt_kernel::AssembledPrompt, String) {
+    let boot_listing = generate_boot_listing(project_root);
+
+    // Load project instructions
+    let project_instructions = load_project_instructions(project_root);
+
+    // Load conventions
+    let conventions_path = project_root.join(".pipit").join("CONVENTIONS.md");
+    let conventions = if conventions_path.exists() {
+        std::fs::read_to_string(&conventions_path).ok()
+    } else {
+        None
+    };
+
+    // Build tool declarations
+    let tool_decls: Vec<ToolDecl> = tools
+        .declarations_annotated(approval_mode)
+        .into_iter()
+        .map(|(decl, needs_approval)| ToolDecl {
+            name: decl.name,
+            description: decl.description,
+            requires_approval: needs_approval,
+        })
+        .collect();
+
+    // Load knowledge
+    let knowledge_section = load_knowledge_section(project_root);
+
+    let inputs = PromptInputs {
+        project_root: Some(project_root.to_path_buf()),
+        project_name: None,
+        tools: tool_decls,
+        provider_hint: provider_hint_text(provider).map(String::from),
+        project_instructions,
+        conventions,
+        skills_section: Some(skills.prompt_section()),
+        workflow_section: Some(workflow_assets.prompt_section()),
+        knowledge_section,
+        memory_section: None,
+        custom_sections: Vec::new(),
+        exclude_sections: Vec::new(),
+        override_sections: std::collections::HashMap::new(),
+    };
+
+    let assembled = prompt_kernel::assemble(&inputs);
+    (assembled, boot_listing)
+}
+
+/// Load project instruction files (PIPIT.md / CLAUDE.md) walking up the directory tree.
+fn load_project_instructions(project_root: &Path) -> Vec<(String, String)> {
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    let instruction_names = ["PIPIT.md", "CLAUDE.md"];
+    let instruction_dirs = [".pipit", ".claude"];
+
+    let mut ancestor_instructions: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut current = project_root.to_path_buf();
+    loop {
+        for name in &instruction_names {
+            let candidate = current.join(name);
+            if candidate.exists() {
+                if let Ok(content) = std::fs::read_to_string(&candidate) {
+                    ancestor_instructions.push((candidate, content));
+                    break;
+                }
+            }
+        }
+        if ancestor_instructions
+            .last()
+            .map(|(p, _)| p.parent() != Some(&current))
+            .unwrap_or(true)
+        {
+            for dir in &instruction_dirs {
+                for name in &instruction_names {
+                    let candidate = current.join(dir).join(name);
+                    if candidate.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&candidate) {
+                            ancestor_instructions.push((candidate, content));
+                            break;
+                        }
+                    }
+                }
+                if ancestor_instructions
+                    .last()
+                    .map(|(p, _)| p.starts_with(&current.join(dir)))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }
+
+        if let Some(ref home_dir) = home {
+            if current == *home_dir {
+                break;
+            }
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+
+    if let Some(ref home_dir) = home {
+        let global_candidate = home_dir.join(".config").join("pipit").join("PIPIT.md");
+        if global_candidate.exists() {
+            if let Ok(content) = std::fs::read_to_string(&global_candidate) {
+                ancestor_instructions.push((global_candidate, content));
+            }
+        }
+    }
+
+    ancestor_instructions.reverse();
+    let mut seen_paths = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for (path, content) in &ancestor_instructions {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen_paths.insert(canonical) {
+            let rel = path
+                .strip_prefix(project_root)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.display().to_string());
+            result.push((rel, content.clone()));
+        }
+    }
+    result
+}
+
+/// Load knowledge injection section from .pipit/knowledge/*.json.
+fn load_knowledge_section(project_root: &Path) -> Option<String> {
+    let knowledge_dir = project_root.join(".pipit").join("knowledge");
+    if !knowledge_dir.exists() {
+        return None;
+    }
+    let entries = std::fs::read_dir(&knowledge_dir).ok()?;
+    let mut units: Vec<knowledge_injection::InjectedKnowledge> = Vec::new();
+    for entry in entries.flatten() {
+        if entry
+            .path()
+            .extension()
+            .map(|e| e == "json")
+            .unwrap_or(false)
+        {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                if let Ok(unit) =
+                    serde_json::from_str::<knowledge_injection::InjectedKnowledge>(&content)
+                {
+                    units.push(unit);
+                }
+            }
+        }
+    }
+    if units.is_empty() {
+        return None;
+    }
+    let preamble = knowledge_injection::format_knowledge_preamble(
+        &units,
+        knowledge_injection::DEFAULT_KNOWLEDGE_BUDGET_TOKENS,
+    );
+    if preamble.is_empty() {
+        None
+    } else {
+        Some(preamble)
+    }
+}
+
+/// Get the provider-specific hint text.
+fn provider_hint_text(provider: ProviderKind) -> Option<&'static str> {
+    match provider {
+        ProviderKind::Anthropic
+        | ProviderKind::AnthropicCompatible
+        | ProviderKind::AmazonBedrock
+        | ProviderKind::MiniMax
+        | ProviderKind::MiniMaxCn => Some(
+            "You support parallel tool use — call multiple tools in a single response when possible.",
+        ),
+        ProviderKind::OpenAi
+        | ProviderKind::OpenAiCompatible
+        | ProviderKind::AzureOpenAi
+        | ProviderKind::GitHubCopilot
+        | ProviderKind::OpenRouter
+        | ProviderKind::VercelAiGateway
+        | ProviderKind::HuggingFace
+        | ProviderKind::Cerebras
+        | ProviderKind::Groq
+        | ProviderKind::Mistral
+        | ProviderKind::XAi
+        | ProviderKind::ZAi
+        | ProviderKind::Ollama
+        | ProviderKind::OpenAiCodex
+        | ProviderKind::Opencode
+        | ProviderKind::OpencodeGo
+        | ProviderKind::KimiCoding => Some(
+            "You support parallel function calling. Use it to batch reads and searches.",
+        ),
+        ProviderKind::Google
+        | ProviderKind::GoogleGeminiCli
+        | ProviderKind::GoogleAntigravity
+        | ProviderKind::Vertex => Some(
+            "You support parallel function calling. Batch tools aggressively — reads, searches, and edits can all be issued together.",
+        ),
+        ProviderKind::DeepSeek => Some(
+            "When using your thinking capability, plan your tool calls before executing. \
+             Prefer a single well-chosen tool over a sequence of exploratory ones.",
+        ),
+    }
 }
 
 /// Analyze prompt sections and return cache breakpoints.
