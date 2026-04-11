@@ -268,6 +268,10 @@ pub async fn run(
     //   5. Never hold the mutex during draw preparation — only during state mutation
     let mut needs_redraw = true; // Force initial draw
 
+    // Track the working directory for `!` shell passthrough commands.
+    // `cd` is intercepted and updates this; all other `!` commands run in it.
+    let shell_cwd = Arc::new(std::sync::Mutex::new(project_root.clone()));
+
     loop {
         // ── Phase 1: Drain agent events (batch) ──
         // Process ALL pending events before drawing — this prevents
@@ -1027,57 +1031,119 @@ pub async fn run(
                                     s.composer.push_shell_history(&cmd);
                                     s.push_activity("$", Color::Green, format!("$ {}", cmd));
                                 }
-                                // Execute directly in shell — NOT through the AI
-                                let output = tokio::process::Command::new("sh")
-                                    .arg("-c")
-                                    .arg(&cmd)
-                                    .current_dir(project_root)
-                                    .output()
-                                    .await;
-                                let mut s = tui_state.lock().unwrap();
-                                // Add a visual header in the content pane
-                                s.content_lines.push(String::new());
-                                s.content_lines.push(format!("$ {}", cmd));
-                                match output {
-                                    Ok(o) => {
-                                        let stdout = String::from_utf8_lossy(&o.stdout);
-                                        let stderr = String::from_utf8_lossy(&o.stderr);
-                                        if !stdout.is_empty() {
-                                            for line in stdout.lines() {
-                                                s.content_lines.push(line.to_string());
-                                            }
-                                        }
-                                        if !stderr.is_empty() {
-                                            s.content_lines.push("[stderr]".to_string());
-                                            for line in stderr.lines() {
-                                                s.content_lines.push(line.to_string());
-                                            }
-                                        }
-                                        if stdout.is_empty() && stderr.is_empty() {
-                                            s.content_lines.push("(no output)".to_string());
-                                        }
-                                        if !o.status.success() {
-                                            if let Some(code) = o.status.code() {
-                                                s.content_lines
-                                                    .push(format!("exit code: {}", code));
-                                                s.push_activity(
-                                                    "✗",
-                                                    Color::Red,
-                                                    format!("exit {}", code),
-                                                );
+
+                                // Intercept `cd` to persist directory changes
+                                let trimmed = cmd.trim();
+                                if trimmed == "cd"
+                                    || (trimmed.starts_with("cd ")
+                                        && !trimmed.contains("&&")
+                                        && !trimmed.contains(';')
+                                        && !trimmed.contains('|'))
+                                {
+                                    let current = shell_cwd.lock().unwrap().clone();
+                                    let target = if trimmed == "cd" {
+                                        std::env::var("HOME")
+                                            .map(std::path::PathBuf::from)
+                                            .unwrap_or_else(|_| project_root.clone())
+                                    } else {
+                                        let arg = trimmed.strip_prefix("cd ").unwrap().trim();
+                                        let arg = arg.trim_matches('"').trim_matches('\'');
+                                        let expanded = if arg.starts_with("~/") || arg == "~" {
+                                            if let Ok(home) = std::env::var("HOME") {
+                                                std::path::PathBuf::from(home)
+                                                    .join(arg.strip_prefix("~/").unwrap_or(""))
+                                            } else {
+                                                std::path::PathBuf::from(arg)
                                             }
                                         } else {
+                                            std::path::PathBuf::from(arg)
+                                        };
+                                        if expanded.is_absolute() {
+                                            expanded
+                                        } else {
+                                            current.join(&expanded)
+                                        }
+                                    };
+                                    let mut s = tui_state.lock().unwrap();
+                                    s.content_lines.push(String::new());
+                                    s.content_lines.push(format!("$ {}", cmd));
+                                    match target.canonicalize() {
+                                        Ok(resolved) if resolved.is_dir() => {
+                                            *shell_cwd.lock().unwrap() = resolved.clone();
+                                            s.content_lines.push(format!(
+                                                "Changed directory to {}",
+                                                resolved.display()
+                                            ));
                                             s.push_activity("✓", Color::Green, "done".to_string());
                                         }
+                                        Ok(resolved) => {
+                                            s.content_lines.push(format!(
+                                                "cd: {}: Not a directory",
+                                                resolved.display()
+                                            ));
+                                            s.push_activity("✗", Color::Red, "not a directory".to_string());
+                                        }
+                                        Err(e) => {
+                                            s.content_lines.push(format!("cd: {}: {}", target.display(), e));
+                                            s.push_activity("✗", Color::Red, format!("cd: {}", e));
+                                        }
                                     }
-                                    Err(e) => {
-                                        s.content_lines.push(format!("Error: {}", e));
-                                        s.push_activity("✗", Color::Red, format!("error: {}", e));
+                                    s.has_received_input = true;
+                                    s.ui_mode = pipit_io::app::UiMode::Task;
+                                    s.auto_scroll_content();
+                                } else {
+                                    // Execute in the tracked shell_cwd
+                                    let cwd = shell_cwd.lock().unwrap().clone();
+                                    let output = tokio::process::Command::new("sh")
+                                        .arg("-c")
+                                        .arg(&cmd)
+                                        .current_dir(&cwd)
+                                        .output()
+                                        .await;
+                                    let mut s = tui_state.lock().unwrap();
+                                    s.content_lines.push(String::new());
+                                    s.content_lines.push(format!("$ {}", cmd));
+                                    match output {
+                                        Ok(o) => {
+                                            let stdout = String::from_utf8_lossy(&o.stdout);
+                                            let stderr = String::from_utf8_lossy(&o.stderr);
+                                            if !stdout.is_empty() {
+                                                for line in stdout.lines() {
+                                                    s.content_lines.push(line.to_string());
+                                                }
+                                            }
+                                            if !stderr.is_empty() {
+                                                s.content_lines.push("[stderr]".to_string());
+                                                for line in stderr.lines() {
+                                                    s.content_lines.push(line.to_string());
+                                                }
+                                            }
+                                            if stdout.is_empty() && stderr.is_empty() {
+                                                s.content_lines.push("(no output)".to_string());
+                                            }
+                                            if !o.status.success() {
+                                                if let Some(code) = o.status.code() {
+                                                    s.content_lines
+                                                        .push(format!("exit code: {}", code));
+                                                    s.push_activity(
+                                                        "✗",
+                                                        Color::Red,
+                                                        format!("exit {}", code),
+                                                    );
+                                                }
+                                            } else {
+                                                s.push_activity("✓", Color::Green, "done".to_string());
+                                            }
+                                        }
+                                        Err(e) => {
+                                            s.content_lines.push(format!("Error: {}", e));
+                                            s.push_activity("✗", Color::Red, format!("error: {}", e));
+                                        }
                                     }
+                                    s.has_received_input = true;
+                                    s.ui_mode = pipit_io::app::UiMode::Task;
+                                    s.auto_scroll_content();
                                 }
-                                s.has_received_input = true;
-                                s.ui_mode = pipit_io::app::UiMode::Task;
-                                s.auto_scroll_content();
                             }
                             pipit_io::input::UserInput::PromptWithFiles { prompt, files } => {
                                 let enriched = format!(

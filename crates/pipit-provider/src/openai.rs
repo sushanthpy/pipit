@@ -91,12 +91,17 @@ impl OpenAiProvider {
             16_384
         };
 
+        // o-series models (o1, o3, o4) support extended thinking / reasoning
+        let supports_thinking = lower.contains("o1")
+            || lower.contains("o3")
+            || lower.contains("o4");
+
         ModelCapabilities {
             context_window: 128_000,
             max_output_tokens,
             supports_tool_use: true,
             supports_streaming: true,
-            supports_thinking: false,
+            supports_thinking,
             // Most modern models support vision — enable by default for OpenAI-compatible
             supports_images: true,
             supports_prefill: false,
@@ -680,6 +685,280 @@ impl Stream for OpenAiEventStream {
                 }
                 std::task::Poll::Pending => return std::task::Poll::Pending,
             }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Streaming conformance tests for OpenAI SSE parser
+// ═══════════════════════════════════════════════════════════════════════
+//
+// These tests verify that the parser correctly transduces raw OpenAI
+// SSE chunks into the canonical ContentEvent sequence. The contract:
+//
+//   1. Every stream MUST end with exactly one Finished event.
+//   2. ContentDelta events MUST NOT contain empty text.
+//   3. ToolCallComplete args MUST be valid JSON (or Value::Null on parse failure).
+//   4. Usage MUST be propagated into the Finished event when present.
+//   5. Streaming tool call fragments MUST be buffered and emitted as
+//      a single ToolCallComplete per tool invocation.
+//   6. ToolCallDelta is NEVER emitted (buffered internally).
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers ──
+
+    fn text_chunk(content: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "delta": {"content": content},
+                "finish_reason": null
+            }]
+        })
+        .to_string()
+    }
+
+    fn finish_chunk(reason: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": reason
+            }]
+        })
+        .to_string()
+    }
+
+    fn tool_call_start_chunk(index: u32, id: &str, name: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": index,
+                        "id": id,
+                        "function": {"name": name, "arguments": ""}
+                    }]
+                },
+                "finish_reason": null
+            }]
+        })
+        .to_string()
+    }
+
+    fn tool_call_args_chunk(index: u32, args_fragment: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": index,
+                        "function": {"arguments": args_fragment}
+                    }]
+                },
+                "finish_reason": null
+            }]
+        })
+        .to_string()
+    }
+
+    fn usage_chunk(input: u64, output: u64) -> String {
+        serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": input,
+                "completion_tokens": output
+            }
+        })
+        .to_string()
+    }
+
+    // ── Contract: Simple text response ──
+
+    #[test]
+    fn text_response_emits_content_deltas_then_finished() {
+        let mut parser = OpenAiStreamParser::new();
+
+        let e1 = parser.process_chunk(&text_chunk("Hello"));
+        assert_eq!(e1.len(), 1);
+        assert!(matches!(&e1[0], ContentEvent::ContentDelta { text } if text == "Hello"));
+
+        let e2 = parser.process_chunk(&text_chunk(" world"));
+        assert_eq!(e2.len(), 1);
+        assert!(matches!(&e2[0], ContentEvent::ContentDelta { text } if text == " world"));
+
+        let e3 = parser.process_chunk(&finish_chunk("stop"));
+        assert_eq!(e3.len(), 1);
+        assert!(matches!(&e3[0], ContentEvent::Finished { stop_reason: StopReason::Stop, .. }));
+    }
+
+    // ── Contract: Empty content is suppressed ──
+
+    #[test]
+    fn empty_content_delta_is_suppressed() {
+        let mut parser = OpenAiStreamParser::new();
+        let events = parser.process_chunk(&text_chunk(""));
+        assert!(events.is_empty(), "Empty text should not emit ContentDelta");
+    }
+
+    // ── Contract: Tool call streaming accumulation ──
+
+    #[test]
+    fn tool_call_fragments_are_buffered_into_single_complete() {
+        let mut parser = OpenAiStreamParser::new();
+
+        // Start tool call
+        let e1 = parser.process_chunk(&tool_call_start_chunk(0, "call_abc", "read_file"));
+        assert!(e1.is_empty(), "Tool call start should not emit events (buffered)");
+
+        // Stream argument fragments
+        let e2 = parser.process_chunk(&tool_call_args_chunk(0, r#"{"pa"#));
+        assert!(e2.is_empty());
+        let e3 = parser.process_chunk(&tool_call_args_chunk(0, r#"th":"#));
+        assert!(e3.is_empty());
+        let e4 = parser.process_chunk(&tool_call_args_chunk(0, r#""foo.rs"}"#));
+        assert!(e4.is_empty());
+
+        // Finish — tool call emitted before Finished
+        let e5 = parser.process_chunk(&finish_chunk("tool_calls"));
+        assert_eq!(e5.len(), 2, "Should emit ToolCallComplete + Finished");
+        assert!(matches!(&e5[0], ContentEvent::ToolCallComplete {
+            call_id, tool_name, args
+        } if call_id == "call_abc" && tool_name == "read_file"
+            && args.get("path").and_then(|v| v.as_str()) == Some("foo.rs")));
+        assert!(matches!(&e5[1], ContentEvent::Finished {
+            stop_reason: StopReason::ToolUse, ..
+        }));
+    }
+
+    // ── Contract: Multiple parallel tool calls ──
+
+    #[test]
+    fn multiple_parallel_tool_calls_are_tracked_independently() {
+        let mut parser = OpenAiStreamParser::new();
+
+        parser.process_chunk(&tool_call_start_chunk(0, "call_1", "read_file"));
+        parser.process_chunk(&tool_call_start_chunk(1, "call_2", "grep"));
+        parser.process_chunk(&tool_call_args_chunk(0, r#"{"path":"a.rs"}"#));
+        parser.process_chunk(&tool_call_args_chunk(1, r#"{"pattern":"foo"}"#));
+
+        let events = parser.process_chunk(&finish_chunk("tool_calls"));
+        // 2 ToolCallComplete + 1 Finished
+        assert_eq!(events.len(), 3);
+
+        let tool_events: Vec<_> = events.iter().filter(|e| matches!(e, ContentEvent::ToolCallComplete { .. })).collect();
+        assert_eq!(tool_events.len(), 2);
+        assert!(matches!(&events.last().unwrap(), ContentEvent::Finished { .. }));
+    }
+
+    // ── Contract: [DONE] marker terminates stream ──
+
+    #[test]
+    fn done_marker_emits_pending_tools_and_finished() {
+        let mut parser = OpenAiStreamParser::new();
+        parser.process_chunk(&tool_call_start_chunk(0, "call_x", "bash"));
+        parser.process_chunk(&tool_call_args_chunk(0, r#"{"command":"ls"}"#));
+
+        let events = parser.process_chunk("[DONE]");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ContentEvent::ToolCallComplete { .. }));
+        assert!(matches!(&events[1], ContentEvent::Finished {
+            stop_reason: StopReason::EndTurn, ..
+        }));
+    }
+
+    // ── Contract: Usage propagation ──
+
+    #[test]
+    fn usage_is_captured_and_propagated_to_finished() {
+        let mut parser = OpenAiStreamParser::new();
+        parser.process_chunk(&text_chunk("Hi"));
+        parser.process_chunk(&usage_chunk(100, 50));
+
+        let events = parser.process_chunk(&finish_chunk("stop"));
+        let finished = events.iter().find(|e| matches!(e, ContentEvent::Finished { .. }));
+        assert!(finished.is_some());
+        if let ContentEvent::Finished { usage, .. } = finished.unwrap() {
+            assert_eq!(usage.input_tokens, 100);
+            assert_eq!(usage.output_tokens, 50);
+        }
+    }
+
+    // ── Contract: Stop reason mapping ──
+
+    #[test]
+    fn stop_reasons_are_mapped_correctly() {
+        let cases = [
+            ("stop", StopReason::Stop),
+            ("tool_calls", StopReason::ToolUse),
+            ("length", StopReason::MaxTokens),
+            ("content_filter", StopReason::EndTurn), // unknown → EndTurn
+        ];
+        for (reason, expected) in cases {
+            let mut parser = OpenAiStreamParser::new();
+            let events = parser.process_chunk(&finish_chunk(reason));
+            assert!(matches!(&events[0], ContentEvent::Finished { stop_reason, .. } if *stop_reason == expected),
+                "reason '{}' should map to {:?}", reason, expected);
+        }
+    }
+
+    // ── Contract: ToolCallDelta is never emitted ──
+
+    #[test]
+    fn no_tool_call_delta_is_ever_emitted() {
+        let mut parser = OpenAiStreamParser::new();
+        parser.process_chunk(&tool_call_start_chunk(0, "c1", "write_file"));
+        let e1 = parser.process_chunk(&tool_call_args_chunk(0, r#"{"p"#));
+        let e2 = parser.process_chunk(&tool_call_args_chunk(0, r#":"v"}"#));
+        let e3 = parser.process_chunk(&finish_chunk("tool_calls"));
+
+        for events in [e1, e2, e3] {
+            for event in &events {
+                assert!(!matches!(event, ContentEvent::ToolCallDelta { .. }),
+                    "ToolCallDelta must never be emitted");
+            }
+        }
+    }
+
+    // ── Contract: Invalid JSON is silently skipped ──
+
+    #[test]
+    fn invalid_json_chunk_returns_empty() {
+        let mut parser = OpenAiStreamParser::new();
+        let events = parser.process_chunk("not valid json {{");
+        assert!(events.is_empty());
+    }
+
+    // ── Contract: Malformed tool call args parse to Null ──
+
+    #[test]
+    fn malformed_tool_args_parse_to_null() {
+        let mut parser = OpenAiStreamParser::new();
+        parser.process_chunk(&tool_call_start_chunk(0, "c1", "bash"));
+        parser.process_chunk(&tool_call_args_chunk(0, "not json at all"));
+
+        let events = parser.process_chunk(&finish_chunk("tool_calls"));
+        if let ContentEvent::ToolCallComplete { args, .. } = &events[0] {
+            assert!(args.is_null(), "Unparseable args should become Value::Null");
+        } else {
+            panic!("Expected ToolCallComplete");
+        }
+    }
+
+    // ── Capability: o-series thinking support ──
+
+    #[test]
+    fn o_series_models_have_thinking_support() {
+        for model in ["o1-preview", "o3-mini", "o4-mini"] {
+            let caps = OpenAiProvider::capabilities_for_model(model);
+            assert!(caps.supports_thinking, "{} should support thinking", model);
+        }
+    }
+
+    #[test]
+    fn standard_models_do_not_support_thinking() {
+        for model in ["gpt-4o", "gpt-4-turbo", "Qwen/Qwen3.5-35B", "deepseek-v3"] {
+            let caps = OpenAiProvider::capabilities_for_model(model);
+            assert!(!caps.supports_thinking, "{} should not support thinking", model);
         }
     }
 }

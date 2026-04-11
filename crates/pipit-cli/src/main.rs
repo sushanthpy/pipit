@@ -1277,6 +1277,10 @@ async fn main() -> Result<()> {
     // Slash commands route through here instead of shelling out directly.
     let mut vcs_gateway = pipit_vcs::VcsGateway::new(project_root.clone());
 
+    // Track the working directory for `!` shell passthrough commands.
+    // `cd` is intercepted and persists across `!` invocations.
+    let mut shell_cwd = project_root.clone();
+
     loop {
         ui.print_prompt();
 
@@ -2918,11 +2922,58 @@ async fn main() -> Result<()> {
             }
             UserInput::ShellPassthrough(cmd) => {
                 // Direct shell execution — run DIRECTLY, not through the AI
+                let trimmed = cmd.trim();
+
+                // Intercept `cd` to persist directory changes across `!` calls
+                if trimmed == "cd"
+                    || (trimmed.starts_with("cd ")
+                        && !trimmed.contains("&&")
+                        && !trimmed.contains(';')
+                        && !trimmed.contains('|'))
+                {
+                    let target = if trimmed == "cd" {
+                        std::env::var("HOME")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|_| project_root.clone())
+                    } else {
+                        let arg = trimmed.strip_prefix("cd ").unwrap().trim();
+                        let arg = arg.trim_matches('"').trim_matches('\'');
+                        let expanded = if arg.starts_with("~/") || arg == "~" {
+                            if let Ok(home) = std::env::var("HOME") {
+                                PathBuf::from(home)
+                                    .join(arg.strip_prefix("~/").unwrap_or(""))
+                            } else {
+                                PathBuf::from(arg)
+                            }
+                        } else {
+                            PathBuf::from(arg)
+                        };
+                        if expanded.is_absolute() {
+                            expanded
+                        } else {
+                            shell_cwd.join(&expanded)
+                        }
+                    };
+                    match target.canonicalize() {
+                        Ok(resolved) if resolved.is_dir() => {
+                            shell_cwd = resolved.clone();
+                            eprintln!("Changed directory to {}", resolved.display());
+                        }
+                        Ok(resolved) => {
+                            eprintln!("\x1b[31mcd: {}: Not a directory\x1b[0m", resolved.display());
+                        }
+                        Err(e) => {
+                            eprintln!("\x1b[31mcd: {}: {}\x1b[0m", target.display(), e);
+                        }
+                    }
+                    continue;
+                }
+
                 eprintln!("\x1b[2m$ {}\x1b[0m", cmd);
                 let output = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&cmd)
-                    .current_dir(&project_root)
+                    .current_dir(&shell_cwd)
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())
                     .status();

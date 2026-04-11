@@ -1811,7 +1811,15 @@ impl AgentLoop {
                 Ok(ContentEvent::Finished { stop_reason, usage }) => {
                     response.finish(stop_reason, usage);
                 }
-                Ok(_) => {}
+                Ok(ContentEvent::ToolCallDelta { call_id, tool_name, .. }) => {
+                    // ToolCallDelta is defined in the event model but no provider
+                    // currently emits it (all buffer internally and emit ToolCallComplete).
+                    // Log so we notice if a provider starts using it.
+                    tracing::debug!(
+                        "ToolCallDelta received (not yet consumed): call_id={}, tool={}",
+                        call_id, tool_name
+                    );
+                }
                 Err(e) => {
                     // If we have completed tool calls, salvage them instead of discarding
                     if has_tool_calls {
@@ -2302,6 +2310,11 @@ impl AgentLoop {
         );
 
         // ── Execute batches: concurrent within batch, sequential across batches ──
+        // The scheduler already proved that calls within each batch are non-conflicting
+        // (disjoint resource signatures). This is safe for both reads AND writes:
+        //   - edit_file("a.rs") + edit_file("b.rs") → concurrent (disjoint paths)
+        //   - edit_file("a.rs") + edit_file("a.rs") → separate batches (conflict)
+        //   - bash + anything → separate batches (Process is globally exclusive)
         for batch in &batches {
             if cancel.is_cancelled() {
                 break;
@@ -2310,8 +2323,8 @@ impl AgentLoop {
             let batch_calls: Vec<&pipit_provider::ToolCall> =
                 batch.indices.iter().map(|&i| &all_approved[i]).collect();
 
-            if batch_calls.len() == 1 || !batch.all_read_only {
-                // Sequential: execute one at a time (writes, or mixed)
+            if batch_calls.len() == 1 {
+                // Single call — always sequential (no concurrency overhead)
                 for call in batch_calls {
                     if cancel.is_cancelled() {
                         break;
@@ -2407,7 +2420,9 @@ impl AgentLoop {
                     results.push((call.call_id.clone(), outcome));
                 }
             } else {
-                // Concurrent: all calls in this batch are independent reads
+                // Concurrent: the scheduler proved these calls are non-conflicting.
+                // This applies to both read-only batches AND proven-disjoint writes
+                // (e.g., edit_file("a.rs") + edit_file("b.rs") in the same batch).
                 let concurrent_futures: Vec<_> = batch_calls
                     .into_iter()
                     .map(|call| {
@@ -2427,6 +2442,8 @@ impl AgentLoop {
                                 Err(err) => {
                                     return (
                                         call.call_id.clone(),
+                                        call.tool_name.clone(),
+                                        call.args.clone(),
                                         ToolCallOutcome::Error {
                                             message: err.to_string(),
                                         },
@@ -2440,28 +2457,58 @@ impl AgentLoop {
                                     .await;
                             let outcome =
                                 apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
-                            (call.call_id.clone(), outcome)
+                            (call.call_id.clone(), call.tool_name.clone(), call.args.clone(), outcome)
                         }
                     })
                     .collect();
 
                 let batch_results = futures::future::join_all(concurrent_futures).await;
-                for (call_id, outcome) in &batch_results {
-                    let name = calls
-                        .iter()
-                        .find(|c| c.call_id == *call_id)
-                        .map(|c| c.tool_name.as_str())
-                        .unwrap_or("unknown");
+                for (call_id, tool_name, args, outcome) in batch_results {
+                    self.telemetry.session_counters.increment_tool_calls();
+                    let mutation_applied =
+                        matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
+                    if mutation_applied {
+                        if let Some(path) = args.get("path").and_then(|value| value.as_str()) {
+                            modified_files.push(path.to_string());
+                            realized_edits.push(RealizedEdit {
+                                path: path.to_string(),
+                                summary: summarize_tool_outcome(&tool_name, &outcome),
+                            });
+                        }
+                    }
+                    if let ToolCallOutcome::Success {
+                        ref artifacts,
+                        ref edits,
+                        ..
+                    } = outcome
+                    {
+                        for artifact in artifacts {
+                            evidence.push(crate::proof::EvidenceArtifact::ToolExecution {
+                                tool_name: tool_name.clone(),
+                                summary: format!("{:?}", artifact),
+                                success: true,
+                            });
+                        }
+                        for edit in edits {
+                            if !modified_files.contains(&edit.path.to_string_lossy().to_string()) {
+                                modified_files.push(edit.path.to_string_lossy().to_string());
+                            }
+                            realized_edits.push(RealizedEdit {
+                                path: edit.path.to_string_lossy().to_string(),
+                                summary: format!("{} hunks", edit.hunks),
+                            });
+                        }
+                    }
+                    if let Some(call) = calls.iter().find(|c| c.call_id == call_id) {
+                        evidence.push(evidence_from_tool(call, &outcome));
+                    }
                     self.emit(AgentEvent::ToolCallEnd {
                         call_id: call_id.clone(),
-                        name: name.to_string(),
+                        name: tool_name,
                         result: outcome.clone(),
                     });
-                    if let Some(call) = calls.iter().find(|c| c.call_id == *call_id) {
-                        evidence.push(evidence_from_tool(call, outcome));
-                    }
+                    results.push((call_id, outcome));
                 }
-                results.extend(batch_results);
             }
         }
 

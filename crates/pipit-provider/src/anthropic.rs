@@ -584,3 +584,211 @@ impl Stream for AnthropicEventStream {
 fn find_double_newline(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n")
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Streaming conformance tests for Anthropic SSE parser
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Contract assertions for the Anthropic event-driven transducer:
+//
+//   1. message_start → no ContentEvent, but captures input usage.
+//   2. content_block_start + content_block_delta (text_delta) → ContentDelta.
+//   3. content_block_start + content_block_delta (thinking_delta) → ThinkingDelta.
+//   4. content_block_start (tool_use) + input_json_delta* + content_block_stop
+//      → single ToolCallComplete with accumulated JSON args.
+//   5. message_delta → Finished with correct stop_reason + output usage.
+//   6. ToolCallDelta is NEVER emitted.
+//   7. Error events are logged but produce no ContentEvents.
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Simple text response ──
+
+    #[test]
+    fn text_deltas_then_finished() {
+        let mut p = AnthropicStreamParser::new();
+
+        // message_start with usage
+        let e0 = p.process_event("message_start", &serde_json::json!({
+            "message": {"usage": {"input_tokens": 200}}
+        }).to_string());
+        assert!(e0.is_empty());
+
+        // content_block_start (text)
+        let e1 = p.process_event("content_block_start", &serde_json::json!({
+            "content_block": {"type": "text"}
+        }).to_string());
+        assert!(e1.is_empty());
+
+        // text deltas
+        let e2 = p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "text_delta", "text": "Hello"}
+        }).to_string());
+        assert_eq!(e2.len(), 1);
+        assert!(matches!(&e2[0], ContentEvent::ContentDelta { text } if text == "Hello"));
+
+        let e3 = p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "text_delta", "text": " world"}
+        }).to_string());
+        assert!(matches!(&e3[0], ContentEvent::ContentDelta { text } if text == " world"));
+
+        // content_block_stop
+        let e4 = p.process_event("content_block_stop", "{}");
+        assert!(e4.is_empty());
+
+        // message_delta (finished)
+        let e5 = p.process_event("message_delta", &serde_json::json!({
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 50}
+        }).to_string());
+        assert_eq!(e5.len(), 1);
+        assert!(matches!(&e5[0], ContentEvent::Finished {
+            stop_reason: StopReason::EndTurn,
+            usage
+        } if usage.input_tokens == 200 && usage.output_tokens == 50));
+    }
+
+    // ── Thinking deltas ──
+
+    #[test]
+    fn thinking_delta_events_are_propagated() {
+        let mut p = AnthropicStreamParser::new();
+
+        p.process_event("content_block_start", &serde_json::json!({
+            "content_block": {"type": "thinking"}
+        }).to_string());
+
+        let events = p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "thinking_delta", "thinking": "Let me analyze..."}
+        }).to_string());
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ThinkingDelta { text } if text == "Let me analyze..."));
+    }
+
+    // ── Tool call accumulation ──
+
+    #[test]
+    fn tool_use_args_are_accumulated_and_emitted_on_block_stop() {
+        let mut p = AnthropicStreamParser::new();
+
+        // Start tool_use block
+        p.process_event("content_block_start", &serde_json::json!({
+            "content_block": {"type": "tool_use", "id": "tu_123", "name": "bash"}
+        }).to_string());
+
+        // Stream argument fragments
+        let e1 = p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "input_json_delta", "partial_json": r#"{"com"#}
+        }).to_string());
+        assert!(e1.is_empty(), "input_json_delta should buffer, not emit");
+
+        p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "input_json_delta", "partial_json": r#"mand":"ls"}"#}
+        }).to_string());
+
+        // content_block_stop → emits ToolCallComplete
+        let events = p.process_event("content_block_stop", "{}");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ToolCallComplete {
+            call_id, tool_name, args
+        } if call_id == "tu_123" && tool_name == "bash"
+            && args.get("command").and_then(|v| v.as_str()) == Some("ls")));
+    }
+
+    // ── Stop reason mapping ──
+
+    #[test]
+    fn stop_reasons_are_mapped_correctly() {
+        let cases = [
+            ("end_turn", StopReason::EndTurn),
+            ("tool_use", StopReason::ToolUse),
+            ("max_tokens", StopReason::MaxTokens),
+            ("stop_sequence", StopReason::Stop),
+        ];
+        for (reason, expected) in cases {
+            let mut p = AnthropicStreamParser::new();
+            let events = p.process_event("message_delta", &serde_json::json!({
+                "delta": {"stop_reason": reason},
+                "usage": {"output_tokens": 10}
+            }).to_string());
+            assert!(matches!(&events[0], ContentEvent::Finished { stop_reason, .. } if *stop_reason == expected),
+                "reason '{}' should map to {:?}", reason, expected);
+        }
+    }
+
+    // ── No ToolCallDelta emitted ──
+
+    #[test]
+    fn no_tool_call_delta_is_ever_emitted() {
+        let mut p = AnthropicStreamParser::new();
+        p.process_event("content_block_start", &serde_json::json!({
+            "content_block": {"type": "tool_use", "id": "tu_1", "name": "bash"}
+        }).to_string());
+
+        let e1 = p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "input_json_delta", "partial_json": r#"{"cmd":"a"}"#}
+        }).to_string());
+
+        let e2 = p.process_event("content_block_stop", "{}");
+
+        for events in [e1, e2] {
+            for event in &events {
+                assert!(!matches!(event, ContentEvent::ToolCallDelta { .. }),
+                    "ToolCallDelta must never be emitted");
+            }
+        }
+    }
+
+    // ── Error events produce no output ──
+
+    #[test]
+    fn error_event_produces_no_content_events() {
+        let mut p = AnthropicStreamParser::new();
+        let events = p.process_event("error", &serde_json::json!({
+            "error": {"type": "overloaded_error", "message": "Server busy"}
+        }).to_string());
+        assert!(events.is_empty());
+    }
+
+    // ── Invalid JSON is silently skipped ──
+
+    #[test]
+    fn invalid_json_returns_empty() {
+        let mut p = AnthropicStreamParser::new();
+        let events = p.process_event("content_block_delta", "not json {{");
+        assert!(events.is_empty());
+    }
+
+    // ── Usage is split across message_start and message_delta ──
+
+    #[test]
+    fn usage_aggregation_across_events() {
+        let mut p = AnthropicStreamParser::new();
+        p.process_event("message_start", &serde_json::json!({
+            "message": {"usage": {"input_tokens": 500}}
+        }).to_string());
+
+        // Some text
+        p.process_event("content_block_start", &serde_json::json!({
+            "content_block": {"type": "text"}
+        }).to_string());
+        p.process_event("content_block_delta", &serde_json::json!({
+            "delta": {"type": "text_delta", "text": "ok"}
+        }).to_string());
+
+        let events = p.process_event("message_delta", &serde_json::json!({
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 25}
+        }).to_string());
+
+        if let ContentEvent::Finished { usage, .. } = &events[0] {
+            assert_eq!(usage.input_tokens, 500, "input tokens from message_start");
+            assert_eq!(usage.output_tokens, 25, "output tokens from message_delta");
+        } else {
+            panic!("Expected Finished");
+        }
+    }
+}

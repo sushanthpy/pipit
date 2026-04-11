@@ -593,7 +593,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_declarations_rendered() {
+    fn tool_declarations_not_in_system_prompt() {
+        // Tool declarations were removed from the system prompt in v0.3.1:
+        // they are already carried in the API request's `tools` array.
         let inputs = PromptInputs {
             tools: vec![
                 ToolDecl {
@@ -611,8 +613,10 @@ mod tests {
         };
         let assembled = assemble(&inputs);
         let text = assembled.materialize();
-        assert!(text.contains("- **read_file**: Read a file"));
-        assert!(text.contains("- **bash** *(requires approval)*: Run shell commands"));
+        assert!(!text.contains("- **read_file**: Read a file"),
+            "Tool declarations should not be duplicated in system prompt");
+        assert!(!text.contains("## Available tools"),
+            "Available tools section should not be in system prompt");
     }
 
     #[test]

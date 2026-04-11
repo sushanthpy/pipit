@@ -381,6 +381,14 @@ fn parse_google_cli_chunk(data: &str) -> (Vec<ContentEvent>, Option<UsageMetadat
                                     args,
                                 });
                             }
+                            // Thinking / reasoning (Gemini thinking models)
+                            if let Some(thought) = part.get("thought").and_then(|t| t.as_str()) {
+                                if !thought.is_empty() {
+                                    events.push(ContentEvent::ThinkingDelta {
+                                        text: thought.to_string(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -513,5 +521,175 @@ impl Stream for GoogleCliEventStream {
                 std::task::Poll::Pending => return std::task::Poll::Pending,
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Streaming conformance tests for GoogleCli SSE parser
+// ═══════════════════════════════════════════════════════════════════════
+//
+// GoogleCli wraps the Gemini response under a `.response` envelope.
+// Contract is identical to Google provider except:
+//   - Data is nested under `json.response.*` instead of `json.*`.
+//   - call_id can come from explicit `id` field in functionCall.
+//   - thinking/thought support now matches Google provider.
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrap(inner: serde_json::Value) -> String {
+        serde_json::json!({"response": inner}).to_string()
+    }
+
+    // ── Text response ──
+
+    #[test]
+    fn text_parts_emit_content_delta() {
+        let data = wrap(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello from GoogleCli"}]
+                }
+            }]
+        }));
+
+        let (events, _) = parse_google_cli_chunk(&data);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ContentDelta { text } if text == "Hello from GoogleCli"));
+    }
+
+    // ── Function call with explicit ID ──
+
+    #[test]
+    fn function_call_with_explicit_id() {
+        let data = wrap(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "id": "fc_abc",
+                            "name": "grep",
+                            "args": {"pattern": "TODO"}
+                        }
+                    }]
+                }
+            }]
+        }));
+
+        let (events, _) = parse_google_cli_chunk(&data);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ToolCallComplete {
+            call_id, tool_name, args
+        } if call_id == "fc_abc" && tool_name == "grep"
+            && args.get("pattern").and_then(|v| v.as_str()) == Some("TODO")));
+    }
+
+    // ── Function call defaults call_id to name when no ID ──
+
+    #[test]
+    fn function_call_defaults_call_id_to_name() {
+        let data = wrap(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "bash",
+                            "args": {"command": "ls"}
+                        }
+                    }]
+                }
+            }]
+        }));
+
+        let (events, _) = parse_google_cli_chunk(&data);
+        if let ContentEvent::ToolCallComplete { call_id, tool_name, .. } = &events[0] {
+            assert_eq!(call_id, tool_name, "call_id should default to tool_name");
+        }
+    }
+
+    // ── Thinking support (newly added) ──
+
+    #[test]
+    fn thought_parts_emit_thinking_delta() {
+        let data = wrap(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"thought": "Reasoning about the problem..."}]
+                }
+            }]
+        }));
+
+        let (events, _) = parse_google_cli_chunk(&data);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ThinkingDelta { text } if text == "Reasoning about the problem..."));
+    }
+
+    #[test]
+    fn empty_thought_is_suppressed() {
+        let data = wrap(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"thought": ""}]}
+            }]
+        }));
+
+        let (events, _) = parse_google_cli_chunk(&data);
+        assert!(events.is_empty());
+    }
+
+    // ── Usage metadata ──
+
+    #[test]
+    fn usage_metadata_is_extracted() {
+        let data = wrap(serde_json::json!({
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 400,
+                "candidatesTokenCount": 80,
+                "cachedContentTokenCount": 100
+            }
+        }));
+
+        let (_, usage) = parse_google_cli_chunk(&data);
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 400);
+        assert_eq!(u.output_tokens, 80);
+        assert_eq!(u.cache_read_tokens, Some(100));
+    }
+
+    // ── Finish reason ──
+
+    #[test]
+    fn finish_reasons_are_mapped() {
+        for (reason, expected) in [("STOP", StopReason::EndTurn), ("MAX_TOKENS", StopReason::MaxTokens)] {
+            let data = wrap(serde_json::json!({
+                "candidates": [{"finishReason": reason}]
+            }));
+
+            let (events, _) = parse_google_cli_chunk(&data);
+            assert!(matches!(&events[0], ContentEvent::Finished { stop_reason, .. } if *stop_reason == expected));
+        }
+    }
+
+    // ── No response wrapper → empty ──
+
+    #[test]
+    fn missing_response_wrapper_returns_empty() {
+        let data = serde_json::json!({
+            "candidates": [{"content": {"parts": [{"text": "oops"}]}}]
+        }).to_string();
+
+        let (events, usage) = parse_google_cli_chunk(&data);
+        assert!(events.is_empty(), "Without .response wrapper, nothing should parse");
+        assert!(usage.is_none());
+    }
+
+    // ── Invalid JSON ──
+
+    #[test]
+    fn invalid_json_returns_empty() {
+        let (events, usage) = parse_google_cli_chunk("broken {{");
+        assert!(events.is_empty());
+        assert!(usage.is_none());
     }
 }

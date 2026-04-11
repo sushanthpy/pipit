@@ -637,3 +637,198 @@ impl Stream for GeminiEventStream {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Streaming conformance tests for Gemini SSE parser
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Contract for Google/Gemini streaming:
+//
+//   1. text parts → ContentDelta (non-empty only).
+//   2. functionCall parts → ToolCallComplete (args are complete, not deltified).
+//   3. thought parts → ThinkingDelta.
+//   4. finishReason → Finished with mapped stop reason.
+//   5. usageMetadata → UsageMetadata with prompt/candidate/cache tokens.
+//   6. ToolCallDelta is NEVER emitted.
+//   7. call_id defaults to tool name when no explicit ID.
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Simple text response ──
+
+    #[test]
+    fn text_parts_emit_content_delta() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello from Gemini"}]
+                }
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ContentDelta { text } if text == "Hello from Gemini"));
+    }
+
+    // ── Empty text is suppressed ──
+
+    #[test]
+    fn empty_text_is_suppressed() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"text": ""}]}
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        assert!(events.is_empty());
+    }
+
+    // ── Function call (complete, not deltified) ──
+
+    #[test]
+    fn function_call_emits_tool_call_complete() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "read_file",
+                            "args": {"path": "/tmp/test.rs"}
+                        }
+                    }]
+                }
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ToolCallComplete {
+            call_id, tool_name, args
+        } if call_id == "read_file" && tool_name == "read_file"
+            && args.get("path").and_then(|v| v.as_str()) == Some("/tmp/test.rs")));
+    }
+
+    // ── Thinking parts ──
+
+    #[test]
+    fn thought_parts_emit_thinking_delta() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"thought": "Let me think about this..."}]
+                }
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ContentEvent::ThinkingDelta { text } if text == "Let me think about this..."));
+    }
+
+    #[test]
+    fn empty_thought_is_suppressed() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"thought": ""}]}
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        assert!(events.is_empty());
+    }
+
+    // ── Finish reason mapping ──
+
+    #[test]
+    fn finish_reasons_are_mapped_correctly() {
+        let cases = [
+            ("STOP", StopReason::EndTurn),
+            ("MAX_TOKENS", StopReason::MaxTokens),
+            ("SAFETY", StopReason::Stop),
+            ("OTHER", StopReason::EndTurn),
+        ];
+        for (reason, expected) in cases {
+            let chunk = serde_json::json!({
+                "candidates": [{"finishReason": reason}]
+            }).to_string();
+
+            let (events, _) = parse_gemini_chunk(&chunk);
+            assert!(matches!(&events[0], ContentEvent::Finished { stop_reason, .. } if *stop_reason == expected),
+                "reason '{}' should map to {:?}", reason, expected);
+        }
+    }
+
+    // ── Usage metadata extraction ──
+
+    #[test]
+    fn usage_metadata_is_extracted() {
+        let chunk = serde_json::json!({
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 300,
+                "candidatesTokenCount": 75,
+                "cachedContentTokenCount": 50
+            }
+        }).to_string();
+
+        let (_, usage) = parse_gemini_chunk(&chunk);
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 300);
+        assert_eq!(u.output_tokens, 75);
+        assert_eq!(u.cache_read_tokens, Some(50));
+    }
+
+    // ── Mixed content: text + function call in same chunk ──
+
+    #[test]
+    fn mixed_parts_in_single_chunk() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "I'll read that file."},
+                        {"functionCall": {"name": "read_file", "args": {"path": "main.rs"}}}
+                    ]
+                }
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ContentEvent::ContentDelta { .. }));
+        assert!(matches!(&events[1], ContentEvent::ToolCallComplete { .. }));
+    }
+
+    // ── Invalid JSON ──
+
+    #[test]
+    fn invalid_json_returns_empty() {
+        let (events, usage) = parse_gemini_chunk("{{not json");
+        assert!(events.is_empty());
+        assert!(usage.is_none());
+    }
+
+    // ── No ToolCallDelta ever emitted ──
+
+    #[test]
+    fn no_tool_call_delta_is_ever_emitted() {
+        let chunk = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"functionCall": {"name": "bash", "args": {"cmd": "ls"}}}]
+                },
+                "finishReason": "STOP"
+            }]
+        }).to_string();
+
+        let (events, _) = parse_gemini_chunk(&chunk);
+        for event in &events {
+            assert!(!matches!(event, ContentEvent::ToolCallDelta { .. }),
+                "ToolCallDelta must never be emitted");
+        }
+    }
+}
