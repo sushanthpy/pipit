@@ -3,6 +3,7 @@
 //! Composed widgets for agent tool output, approval cards, session
 //! summaries, and other AI-agent-specific UI elements.
 
+use crate::app::render_markdown_lines;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Wrap};
 
@@ -72,7 +73,7 @@ impl Widget for &ToolCallDisplay<'_> {
         ])];
 
         // Args (truncated)
-        let args_display: String = self.args.chars().take(120).collect();
+        let args_display = truncate_with_ellipsis(self.args, 120);
         lines.push(Line::from(Span::styled(
             format!("  {}", args_display),
             Style::default().fg(Color::DarkGray),
@@ -106,6 +107,16 @@ impl Widget for &ToolCallDisplay<'_> {
     }
 }
 
+fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    format!("{}…", text.chars().take(keep).collect::<String>())
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 64. AgentOutput — streaming LLM response with incremental rendering
 // ═══════════════════════════════════════════════════════════════════════
@@ -136,19 +147,13 @@ impl<'a> AgentOutput<'a> {
 
 impl Widget for &AgentOutput<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut lines: Vec<Line> = Vec::new();
-
-        // Committed lines
-        for line in self.committed_lines {
-            lines.push(Line::from(line.clone()));
-        }
-
-        // Streaming text
-        if !self.streaming_text.is_empty() {
-            for line in self.streaming_text.lines() {
-                lines.push(Line::from(line.to_string()));
-            }
-        }
+        let mut lines = render_markdown_lines(
+            self.committed_lines,
+            self.streaming_text,
+            area.width as usize,
+            &[],
+            None,
+        );
 
         // Thinking indicator
         if self.is_thinking {
@@ -744,5 +749,23 @@ impl Widget for &McpServerStatus<'_> {
             .title(" MCP servers ");
 
         super::render_widget(Table::new(rows, widths).block(block), area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_with_ellipsis;
+
+    #[test]
+    fn preserves_short_tool_args() {
+        assert_eq!(truncate_with_ellipsis("echo test", 120), "echo test");
+    }
+
+    #[test]
+    fn appends_ellipsis_when_tool_args_are_truncated() {
+        let input = "a".repeat(130);
+        let output = truncate_with_ellipsis(&input, 120);
+        assert_eq!(output.chars().count(), 120);
+        assert!(output.ends_with('…'));
     }
 }

@@ -13,7 +13,7 @@ pub use dataflow::DataFlowGraph;
 pub use dependency_health::{DependencyHealthReport, analyze_dependencies};
 pub use discovery::discover_files;
 pub use git_archaeology::TemporalKnowledgeGraph;
-pub use graph::ReferenceGraph;
+pub use graph::{ChangeRisk, ImpactedFile, ReferenceGraph, RiskFactors};
 pub use projector::project;
 pub use repomap::RepoMap;
 pub use semantic_ir::SemanticIR;

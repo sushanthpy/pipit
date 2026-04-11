@@ -38,6 +38,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -2089,6 +2090,11 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
     ));
     spans.push(Span::styled(status_text, Style::default().fg(Color::Cyan)));
 
+    spans.push(Span::styled(
+        format!("  {}", state.status.model),
+        Style::default().fg(Color::Green),
+    ));
+
     // Show active tool name if executing
     if let Some(ref tool_info) = state.active_tool {
         spans.push(Span::styled(
@@ -2113,6 +2119,36 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
         spans.push(Span::styled(
             format!("  turn {}/{}", state.current_turn, state.max_turns),
             Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    if state.status.tokens_limit > 0 {
+        let used = state.status.tokens_used;
+        let limit = state.status.tokens_limit;
+        let pct = state.status.token_pct().min(100);
+        let bar_width = 10usize;
+        let filled = (pct as usize * bar_width / 100).min(bar_width);
+        let token_color = match pct {
+            0..=50 => Color::Green,
+            51..=80 => Color::Yellow,
+            _ => Color::Red,
+        };
+
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            format!("{}/{}", format_token_count(used), format_token_count(limit)),
+            Style::default().fg(token_color),
+        ));
+        spans.push(Span::styled(
+            format!("[{}{}]", "█".repeat(filled), "░".repeat(bar_width - filled)),
+            Style::default().fg(token_color),
+        ));
+    }
+
+    if state.status.cost > 0.0 {
+        spans.push(Span::styled(
+            format!("  ${:.02}", state.status.cost),
+            Style::default().fg(Color::Yellow),
         ));
     }
 
@@ -2254,13 +2290,6 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let pane_width = area.width.saturating_sub(2) as usize;
 
-    // Collect all raw lines: committed + streaming
-    let streaming_lines: Vec<&str> = if !state.streaming_text.is_empty() {
-        state.streaming_text.lines().collect()
-    } else {
-        Vec::new()
-    };
-
     // Live streaming indicator: blinking cursor at end of current output
     let is_streaming = !state.streaming_text.is_empty() && state.is_working;
     let cursor_char = if is_streaming {
@@ -2274,14 +2303,6 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         ""
     };
 
-    let mut all_lines: Vec<Line> = Vec::with_capacity(inner_height + 2);
-    let mut in_code_block = false;
-    let mut in_diff_block = false;
-    let mut code_lang = String::new();
-    let mut in_turn_cell = false;
-    let mut turn_has_body = false;
-    let mut turn_start_index: Option<usize> = None;
-    let mut prev_was_empty = false;
     let content_matches = if state.search_target == PaneFocus::Response {
         state.search_matches(PaneFocus::Response)
     } else {
@@ -2294,378 +2315,13 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     } else {
         None
     };
-
-    // Helper: push with optional turn gutter
-    macro_rules! emit {
-        ($line:expr, $is_match:expr, $is_current:expr) => {{
-            let mut line: Line<'static> = $line;
-            if $is_match {
-                apply_search_highlight(&mut line, $is_current);
-            }
-            if in_turn_cell && !in_code_block {
-                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
-                bordered.extend(line.spans);
-                all_lines.push(Line::from(bordered));
-            } else {
-                all_lines.push(line);
-            }
-        }};
-    }
-
-    for (raw_line_index, raw) in state
-        .content_lines
-        .iter()
-        .map(String::as_str)
-        .chain(streaming_lines.iter().copied())
-        .enumerate()
-    {
-        let trimmed = raw.trim();
-        let raw_is_match = content_matches.contains(&raw_line_index);
-        let raw_is_current = content_active_match == Some(raw_line_index);
-
-        // ── Inline activity entries (merged from push_activity) ──
-        if let Some(activity_text) = trimmed.strip_prefix("◈activity◈") {
-            let activity_text = activity_text.trim();
-            emit!(
-                Line::from(Span::styled(
-                    format!(" {}", activity_text),
-                    Style::default().fg(Color::DarkGray),
-                )),
-                raw_is_match,
-                raw_is_current
-            );
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Code fence ──
-        if trimmed.starts_with("```") {
-            if in_code_block {
-                in_code_block = false;
-                turn_has_body |= in_turn_cell;
-                emit!(
-                    Line::from(Span::styled(
-                        format!("  └{}", "─".repeat(pane_width.saturating_sub(5).min(30))),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                    raw_is_match,
-                    raw_is_current
-                );
-                code_lang.clear();
-                prev_was_empty = false;
-            } else {
-                in_code_block = true;
-                turn_has_body |= in_turn_cell;
-                code_lang = trimmed.trim_start_matches('`').to_string();
-                if !prev_was_empty {
-                    emit!(Line::from(""), raw_is_match, raw_is_current);
-                }
-                let label = if code_lang.is_empty() {
-                    " code ".to_string()
-                } else {
-                    format!(" {} ", code_lang)
-                };
-                emit!(
-                    Line::from(vec![
-                        Span::styled("  ┌", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            label,
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD)
-                        ),
-                        Span::styled(
-                            "─".repeat(pane_width.saturating_sub(6 + code_lang.len()).min(16)),
-                            Style::default().fg(Color::DarkGray)
-                        ),
-                    ]),
-                    raw_is_match,
-                    raw_is_current
-                );
-                prev_was_empty = false;
-            }
-            continue;
-        }
-
-        // ── Inside code block ──
-        if in_code_block {
-            turn_has_body |= in_turn_cell;
-            let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
-            let highlighted = highlight_code_line(raw, &code_lang);
-            if highlighted.is_empty() {
-                spans.push(Span::styled(
-                    raw.to_string(),
-                    Style::default().fg(Color::Green),
-                ));
-            } else {
-                spans.extend(highlighted);
-            }
-            if in_turn_cell {
-                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
-                bordered.extend(spans);
-                all_lines.push(Line::from(bordered));
-            } else {
-                all_lines.push(Line::from(spans));
-            }
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Unified diff blocks ──
-        if !in_diff_block && looks_like_diff_start(raw) {
-            in_diff_block = true;
-        }
-        if in_diff_block {
-            if raw.is_empty() || looks_like_diff_line(raw) {
-                turn_has_body |= in_turn_cell;
-                emit!(render_diff_line(raw), raw_is_match, raw_is_current);
-                prev_was_empty = raw.is_empty();
-                continue;
-            }
-            in_diff_block = false;
-        }
-
-        // ── Turn separator ──
-        if trimmed.starts_with("══ Turn ") && trimmed.ends_with(" ══") {
-            if in_turn_cell {
-                if turn_has_body {
-                    all_lines.push(Line::from(""));
-                } else if let Some(start_idx) = turn_start_index.take() {
-                    all_lines.truncate(start_idx);
-                }
-            }
-            let turn_label = trimmed.trim_start_matches("══ ").trim_end_matches(" ══");
-            turn_start_index = Some(all_lines.len());
-            all_lines.push(Line::from(""));
-            all_lines.push(Line::from(vec![
-                Span::styled(" ╭─ ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    turn_label.to_string(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(
-                        " {}",
-                        "─".repeat(pane_width.saturating_sub(turn_label.len() + 6).min(40))
-                    ),
-                    Style::default().fg(Color::Rgb(50, 50, 60)),
-                ),
-            ]));
-            in_turn_cell = true;
-            turn_has_body = false;
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Legacy separator ──
-        if trimmed.starts_with("───") || trimmed.starts_with("═══") {
-            emit!(
-                Line::from(Span::styled(
-                    format!(" {}", trimmed),
-                    Style::default().fg(Color::DarkGray)
-                )),
-                raw_is_match,
-                raw_is_current
-            );
-            prev_was_empty = false;
-            continue;
-        }
-
-        if in_turn_cell && !trimmed.is_empty() {
-            turn_has_body = true;
-        }
-
-        // ── Markdown headers ──
-        if trimmed.starts_with("### ") {
-            let heading = trimmed.trim_start_matches("### ");
-            if !prev_was_empty {
-                emit!(Line::from(""), raw_is_match, raw_is_current);
-            }
-            emit!(
-                Line::from(vec![
-                    Span::styled("   ", Style::default()),
-                    Span::styled(
-                        heading.to_string(),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    ),
-                ]),
-                raw_is_match,
-                raw_is_current
-            );
-            emit!(Line::from(""), raw_is_match, raw_is_current);
-            prev_was_empty = true;
-            continue;
-        }
-        if trimmed.starts_with("## ") {
-            let heading = trimmed.trim_start_matches("## ");
-            if !prev_was_empty {
-                emit!(Line::from(""), raw_is_match, raw_is_current);
-            }
-            emit!(
-                Line::from(vec![
-                    Span::styled(" ◆ ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        heading.to_string(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    ),
-                ]),
-                raw_is_match,
-                raw_is_current
-            );
-            emit!(Line::from(""), raw_is_match, raw_is_current);
-            prev_was_empty = true;
-            continue;
-        }
-        if trimmed.starts_with("# ") {
-            let heading = trimmed.trim_start_matches("# ");
-            if !prev_was_empty {
-                emit!(Line::from(""), raw_is_match, raw_is_current);
-            }
-            emit!(
-                Line::from(vec![
-                    Span::styled(
-                        format!(" ━━ {} ", heading),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    ),
-                    Span::styled(
-                        "━".repeat(pane_width.saturating_sub(heading.len() + 6).min(20)),
-                        Style::default().fg(Color::DarkGray)
-                    ),
-                ]),
-                raw_is_match,
-                raw_is_current
-            );
-            emit!(Line::from(""), raw_is_match, raw_is_current);
-            prev_was_empty = true;
-            continue;
-        }
-
-        // ── Bullet points ──
-        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            let text = &trimmed[2..];
-            let mut spans = vec![Span::styled("   • ", Style::default().fg(Color::Cyan))];
-            spans.extend(parse_inline_spans(text));
-            emit!(Line::from(spans), raw_is_match, raw_is_current);
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Numbered lists ──
-        if trimmed.len() > 2 && trimmed.as_bytes()[0].is_ascii_digit() {
-            if let Some(rest) = trimmed
-                .strip_prefix(|c: char| c.is_ascii_digit())
-                .and_then(|s| s.strip_prefix(". "))
-            {
-                let num_str: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
-                let mut spans = vec![Span::styled(
-                    format!("   {}. ", num_str),
-                    Style::default().fg(Color::Cyan),
-                )];
-                spans.extend(parse_inline_spans(rest));
-                emit!(Line::from(spans), raw_is_match, raw_is_current);
-                prev_was_empty = false;
-                continue;
-            }
-        }
-
-        // ── Blockquotes ──
-        if trimmed.starts_with("> ") {
-            let text = &trimmed[2..];
-            let mut spans = vec![Span::styled("  ▎ ", Style::default().fg(Color::Blue))];
-            for s in parse_inline_spans(text) {
-                spans.push(Span::styled(
-                    s.content.to_string(),
-                    s.style.add_modifier(Modifier::ITALIC),
-                ));
-            }
-            emit!(Line::from(spans), raw_is_match, raw_is_current);
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Horizontal rule ──
-        if (trimmed == "---" || trimmed == "***" || trimmed == "___")
-            || (trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == ' '))
-        {
-            emit!(
-                Line::from(Span::styled(
-                    format!("  {}", "─".repeat(pane_width.saturating_sub(4).min(50))),
-                    Style::default().fg(Color::Rgb(50, 50, 60)),
-                )),
-                raw_is_match,
-                raw_is_current
-            );
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Table rows ──
-        if trimmed.starts_with('|') && trimmed.ends_with('|') {
-            if trimmed
-                .chars()
-                .all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
-            {
-                emit!(
-                    Line::from(Span::styled(
-                        format!("   {}", "─".repeat(pane_width.saturating_sub(6).min(50))),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                    raw_is_match,
-                    raw_is_current
-                );
-            } else {
-                let cells: Vec<&str> = trimmed
-                    .split('|')
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.trim())
-                    .collect();
-                let mut spans = vec![Span::styled("   ", Style::default())];
-                for (i, cell) in cells.iter().enumerate() {
-                    if i > 0 {
-                        spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-                    }
-                    spans.extend(parse_inline_spans(cell));
-                }
-                emit!(Line::from(spans), raw_is_match, raw_is_current);
-            }
-            prev_was_empty = false;
-            continue;
-        }
-
-        // ── Empty line ──
-        if trimmed.is_empty() {
-            if in_turn_cell && !turn_has_body {
-                continue;
-            }
-            if !prev_was_empty {
-                emit!(Line::from(""), raw_is_match, raw_is_current);
-                prev_was_empty = true;
-            }
-            continue;
-        }
-
-        // ── Default paragraph text ──
-        turn_has_body |= in_turn_cell;
-        prev_was_empty = false;
-        emit!(style_paragraph_line(raw), raw_is_match, raw_is_current);
-    }
-
-    // Close last turn section
-    if in_turn_cell && turn_has_body {
-        all_lines.push(Line::from(""));
-    } else if in_turn_cell {
-        if let Some(start_idx) = turn_start_index {
-            all_lines.truncate(start_idx);
-        }
-    }
+    let mut all_lines = render_markdown_lines(
+        &state.content_lines,
+        &state.streaming_text,
+        pane_width,
+        &content_matches,
+        content_active_match,
+    );
 
     // Thinking indicator
     if all_lines.is_empty()
@@ -2792,6 +2448,712 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     }
 }
 
+pub(crate) fn render_markdown_lines(
+    committed_lines: &[String],
+    streaming_text: &str,
+    pane_width: usize,
+    content_matches: &[usize],
+    content_active_match: Option<usize>,
+) -> Vec<Line<'static>> {
+    let mut raw_lines: Vec<&str> = committed_lines.iter().map(String::as_str).collect();
+    if !streaming_text.is_empty() {
+        raw_lines.extend(streaming_text.lines());
+    }
+
+    let mut all_lines: Vec<Line> = Vec::new();
+    let mut in_code_block = false;
+    let mut in_diff_block = false;
+    let mut code_lang = String::new();
+    let mut code_highlighter: Option<syntect::easy::HighlightLines<'static>> = None;
+    let mut in_turn_cell = false;
+    let mut turn_has_body = false;
+    let mut turn_start_index: Option<usize> = None;
+    let mut prev_was_empty = false;
+
+    let mut raw_line_index = 0usize;
+    while raw_line_index < raw_lines.len() {
+        let raw = raw_lines[raw_line_index];
+        let trimmed = raw.trim();
+        let raw_is_match = content_matches.contains(&raw_line_index);
+        let raw_is_current = content_active_match == Some(raw_line_index);
+
+        if let Some(activity_text) = trimmed.strip_prefix("◈activity◈") {
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(Span::styled(
+                format!(" {}", activity_text.trim()),
+                Style::default().fg(Color::DarkGray),
+                )),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("```") {
+            if in_code_block {
+                in_code_block = false;
+                code_highlighter = None;
+                turn_has_body |= in_turn_cell;
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(Span::styled(
+                        format!("  └{}", "─".repeat(pane_width.saturating_sub(5).min(30))),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+                code_lang.clear();
+            } else {
+                in_code_block = true;
+                turn_has_body |= in_turn_cell;
+                code_lang = trimmed
+                    .trim_start_matches('`')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                code_highlighter = start_code_highlighter(&code_lang);
+                if !prev_was_empty {
+                    push_rendered_line(
+                        &mut all_lines,
+                        Line::from(""),
+                        raw_is_match,
+                        raw_is_current,
+                        in_turn_cell,
+                        in_code_block,
+                    );
+                }
+                let label = if code_lang.is_empty() {
+                    " code ".to_string()
+                } else {
+                    format!(" {} ", code_lang)
+                };
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(vec![
+                        Span::styled("  ┌", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            label,
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "─".repeat(pane_width.saturating_sub(6 + code_lang.len()).min(16)),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if in_code_block {
+            turn_has_body |= in_turn_cell;
+            let max_code_width = pane_width.saturating_sub(if in_turn_cell { 7 } else { 4 });
+            let highlighted = if let Some(highlighter) = code_highlighter.as_mut() {
+                highlight_code_line_with_state(highlighter, raw)
+            } else {
+                highlight_code_line(raw, &code_lang)
+            };
+            let fallback_style = highlighted
+                .first()
+                .map(|span| span.style)
+                .unwrap_or_else(|| Style::default().fg(Color::Green));
+            let code_spans = if highlighted.is_empty() {
+                truncate_spans_to_width(
+                    vec![Span::styled(raw.to_string(), Style::default().fg(Color::Green))],
+                    max_code_width,
+                    Style::default().fg(Color::Green),
+                )
+            } else {
+                truncate_spans_to_width(highlighted, max_code_width, fallback_style)
+            };
+
+            let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
+            spans.extend(code_spans);
+            if in_turn_cell {
+                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+                bordered.extend(spans);
+                all_lines.push(Line::from(bordered));
+            } else {
+                all_lines.push(Line::from(spans));
+            }
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if !in_diff_block && looks_like_diff_start(raw) {
+            in_diff_block = true;
+        }
+        if in_diff_block {
+            if raw.is_empty() || looks_like_diff_line(raw) {
+                turn_has_body |= in_turn_cell;
+                push_rendered_line(
+                    &mut all_lines,
+                    render_diff_line(raw),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+                prev_was_empty = raw.is_empty();
+                raw_line_index += 1;
+                continue;
+            }
+            in_diff_block = false;
+        }
+
+        if trimmed.starts_with("══ Turn ") && trimmed.ends_with(" ══") {
+            if in_turn_cell {
+                if turn_has_body {
+                    all_lines.push(Line::from(""));
+                } else if let Some(start_idx) = turn_start_index.take() {
+                    all_lines.truncate(start_idx);
+                }
+            }
+            let turn_label = trimmed.trim_start_matches("══ ").trim_end_matches(" ══");
+            turn_start_index = Some(all_lines.len());
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(vec![
+                Span::styled(" ╭─ ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    turn_label.to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        " {}",
+                        "─".repeat(pane_width.saturating_sub(turn_label.len() + 6).min(40))
+                    ),
+                    Style::default().fg(Color::Rgb(50, 50, 60)),
+                ),
+            ]));
+            in_turn_cell = true;
+            turn_has_body = false;
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("───") || trimmed.starts_with("═══") {
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(Span::styled(
+                    format!(" {}", trimmed),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if in_turn_cell && !trimmed.is_empty() {
+            turn_has_body = true;
+        }
+
+        if trimmed.starts_with("### ") {
+            if !prev_was_empty {
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(""),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(vec![
+                    Span::styled("   ", Style::default()),
+                    Span::styled(
+                        trimmed.trim_start_matches("### ").to_string(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(""),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = true;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("## ") {
+            if !prev_was_empty {
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(""),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(vec![
+                    Span::styled(" ◆ ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        trimmed.trim_start_matches("## ").to_string(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(""),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = true;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("# ") {
+            let heading = trimmed.trim_start_matches("# ");
+            if !prev_was_empty {
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(""),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(vec![
+                    Span::styled(
+                        format!(" ━━ {} ", heading),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "━".repeat(pane_width.saturating_sub(heading.len() + 6).min(20)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(""),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = true;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            let mut spans = vec![Span::styled("   • ", Style::default().fg(Color::Cyan))];
+            spans.extend(parse_inline_spans(&trimmed[2..]));
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(spans),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.len() > 2 && trimmed.as_bytes()[0].is_ascii_digit() {
+            if let Some(dot_pos) = trimmed.find(". ") {
+                let num_str = &trimmed[..dot_pos];
+                let rest = &trimmed[dot_pos + 2..];
+                if !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit()) {
+                    let mut spans = vec![Span::styled(
+                        format!("   {}. ", num_str),
+                        Style::default().fg(Color::Cyan),
+                    )];
+                    spans.extend(parse_inline_spans(rest));
+                    push_rendered_line(
+                        &mut all_lines,
+                        Line::from(spans),
+                        raw_is_match,
+                        raw_is_current,
+                        in_turn_cell,
+                        in_code_block,
+                    );
+                    prev_was_empty = false;
+                    raw_line_index += 1;
+                    continue;
+                }
+            }
+        }
+
+        if trimmed.starts_with("> ") {
+            let mut spans = vec![Span::styled("  ▎ ", Style::default().fg(Color::Blue))];
+            for span in parse_inline_spans(&trimmed[2..]) {
+                spans.push(Span::styled(
+                    span.content.to_string(),
+                    span.style.add_modifier(Modifier::ITALIC),
+                ));
+            }
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(spans),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if (trimmed == "---" || trimmed == "***" || trimmed == "___")
+            || (trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == ' '))
+        {
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(Span::styled(
+                    format!("  {}", "─".repeat(pane_width.saturating_sub(4).min(50))),
+                    Style::default().fg(Color::Rgb(50, 50, 60)),
+                )),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with('|') && trimmed.ends_with('|') {
+            let table_start = raw_line_index;
+            let mut table_end = raw_line_index;
+            while table_end < raw_lines.len() {
+                let candidate = raw_lines[table_end].trim();
+                if candidate.starts_with('|') && candidate.ends_with('|') {
+                    table_end += 1;
+                } else {
+                    break;
+                }
+            }
+            let table_lines = render_table_block(
+                &raw_lines[table_start..table_end],
+                table_start,
+                pane_width,
+                content_matches,
+                content_active_match,
+            );
+            for mut line in table_lines {
+            if in_turn_cell {
+                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+                bordered.extend(line.spans);
+                line = Line::from(bordered);
+            }
+                all_lines.push(line);
+            }
+            prev_was_empty = false;
+            raw_line_index = table_end;
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            if in_turn_cell && !turn_has_body {
+                raw_line_index += 1;
+                continue;
+            }
+            if !prev_was_empty {
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(""),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+                prev_was_empty = true;
+            }
+            raw_line_index += 1;
+            continue;
+        }
+
+        turn_has_body |= in_turn_cell;
+        prev_was_empty = false;
+        push_rendered_line(
+            &mut all_lines,
+            style_paragraph_line(raw),
+            raw_is_match,
+            raw_is_current,
+            in_turn_cell,
+            in_code_block,
+        );
+        raw_line_index += 1;
+    }
+
+    if in_turn_cell && turn_has_body {
+        all_lines.push(Line::from(""));
+    } else if in_turn_cell {
+        if let Some(start_idx) = turn_start_index {
+            all_lines.truncate(start_idx);
+        }
+    }
+
+    all_lines
+}
+
+fn push_rendered_line(
+    all_lines: &mut Vec<Line<'static>>,
+    mut line: Line<'static>,
+    is_match: bool,
+    is_current: bool,
+    in_turn_cell: bool,
+    in_code_block: bool,
+) {
+    if is_match {
+        apply_search_highlight(&mut line, is_current);
+    }
+    if in_turn_cell && !in_code_block {
+        let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+        bordered.extend(line.spans);
+        all_lines.push(Line::from(bordered));
+    } else {
+        all_lines.push(line);
+    }
+}
+
+fn start_code_highlighter(lang: &str) -> Option<syntect::easy::HighlightLines<'static>> {
+    use syntect::easy::HighlightLines;
+
+    if lang.is_empty() {
+        return None;
+    }
+
+    let ss = syntax_set();
+    let syntax = ss
+        .find_syntax_by_token(lang)
+        .or_else(|| ss.find_syntax_by_extension(lang))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    Some(HighlightLines::new(syntax, highlight_theme()))
+}
+
+fn highlight_code_line_with_state<'a>(
+    highlighter: &mut syntect::easy::HighlightLines<'static>,
+    line: &str,
+) -> Vec<Span<'a>> {
+    use syntect::highlighting::FontStyle;
+
+    let regions = match highlighter.highlight_line(line, syntax_set()) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    regions
+        .into_iter()
+        .map(|(style, text)| {
+            let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+            let mut ratatui_style = Style::default().fg(fg);
+            if style.font_style.contains(FontStyle::BOLD) {
+                ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
+            }
+            if style.font_style.contains(FontStyle::ITALIC) {
+                ratatui_style = ratatui_style.add_modifier(Modifier::ITALIC);
+            }
+            Span::styled(text.to_string(), ratatui_style)
+        })
+        .collect()
+}
+
+fn truncate_spans_to_width(
+    spans: Vec<Span<'static>>,
+    max_width: usize,
+    ellipsis_style: Style,
+) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return vec![Span::styled("…".to_string(), ellipsis_style)];
+    }
+
+    let total_width: usize = spans
+        .iter()
+        .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    if total_width <= max_width {
+        return spans;
+    }
+
+    let mut remaining = max_width.saturating_sub(1);
+    let mut out = Vec::new();
+    for span in spans {
+        if remaining == 0 {
+            break;
+        }
+        let mut kept = String::new();
+        let mut used = 0usize;
+        for ch in span.content.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + ch_width > remaining {
+                break;
+            }
+            kept.push(ch);
+            used += ch_width;
+        }
+        if !kept.is_empty() {
+            out.push(Span::styled(kept, span.style));
+            remaining = remaining.saturating_sub(used);
+        }
+    }
+    out.push(Span::styled("…".to_string(), ellipsis_style));
+    out
+}
+
+fn parse_table_cells(raw: &str) -> Vec<String> {
+    raw.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|s| s.trim().to_string())
+        .collect()
+}
+
+fn is_table_separator_row(raw: &str) -> bool {
+    raw.trim()
+        .chars()
+        .all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
+}
+
+fn render_table_block(
+    rows: &[&str],
+    start_index: usize,
+    pane_width: usize,
+    content_matches: &[usize],
+    content_active_match: Option<usize>,
+) -> Vec<Line<'static>> {
+    let parsed_rows: Vec<Vec<String>> = rows.iter().map(|row| parse_table_cells(row)).collect();
+    let col_count = parsed_rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0usize; col_count];
+
+    for (row, parsed) in rows.iter().zip(parsed_rows.iter()) {
+        if is_table_separator_row(row) {
+            continue;
+        }
+        for (idx, cell) in parsed.iter().enumerate() {
+            widths[idx] = widths[idx].max(unicode_width::UnicodeWidthStr::width(cell.as_str()));
+        }
+    }
+
+    let separator_width = if col_count > 1 { (col_count - 1) * 3 } else { 0 };
+    let available = pane_width.saturating_sub(3 + separator_width);
+    let total_width: usize = widths.iter().sum();
+    if total_width > available && total_width > 0 {
+        let scale = available as f64 / total_width as f64;
+        for width in &mut widths {
+            *width = ((*width as f64 * scale).floor() as usize).max(1);
+        }
+    }
+
+    let mut lines = Vec::new();
+    for (offset, (row, parsed)) in rows.iter().zip(parsed_rows.iter()).enumerate() {
+        let line_idx = start_index + offset;
+        let is_match = content_matches.contains(&line_idx);
+        let is_current = content_active_match == Some(line_idx);
+
+        let mut line = if is_table_separator_row(row) {
+            let mut spans = vec![Span::styled("   ", Style::default())];
+            for (idx, width) in widths.iter().enumerate() {
+                if idx > 0 {
+                    spans.push(Span::styled("─┼─", Style::default().fg(Color::DarkGray)));
+                }
+                spans.push(Span::styled(
+                    "─".repeat((*width).max(1)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            Line::from(spans)
+        } else {
+            let mut spans = vec![Span::styled("   ", Style::default())];
+            for (idx, width) in widths.iter().enumerate() {
+                if idx > 0 {
+                    spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+                }
+                let cell = parsed.get(idx).map(String::as_str).unwrap_or("");
+                let mut cell_spans = truncate_spans_to_width(
+                    parse_inline_spans(cell),
+                    (*width).max(1),
+                    Style::default().fg(Color::White),
+                );
+                let rendered_width: usize = cell_spans
+                    .iter()
+                    .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum();
+                spans.append(&mut cell_spans);
+                let padding = width.saturating_sub(rendered_width);
+                if padding > 0 {
+                    spans.push(Span::raw(" ".repeat(padding)));
+                }
+            }
+            Line::from(spans)
+        };
+
+        if is_match {
+            apply_search_highlight(&mut line, is_current);
+        }
+        lines.push(line);
+    }
+
+    lines
+}
+
 /// Style a paragraph line with inline markdown: `code`, **bold**, *italic*.
 fn style_paragraph_line(raw: &str) -> Line<'static> {
     let spans = parse_inline_spans(raw);
@@ -2810,8 +3172,12 @@ fn style_paragraph_line(raw: &str) -> Line<'static> {
 fn looks_like_diff_start(raw: &str) -> bool {
     raw.starts_with("diff --git ")
         || raw.starts_with("index ")
-        || raw.starts_with("--- ")
-        || raw.starts_with("+++ ")
+        || raw.starts_with("--- a/")
+        || raw.starts_with("--- b/")
+        || raw.starts_with("--- /dev/null")
+        || raw.starts_with("+++ a/")
+        || raw.starts_with("+++ b/")
+        || raw.starts_with("+++ /dev/null")
         || raw.starts_with("@@ ")
         || raw == "(new file)"
         || raw == "(deleted)"
@@ -2871,121 +3237,100 @@ fn apply_search_highlight(line: &mut Line<'static>, is_current: bool) {
 
 /// Parse inline markdown into styled spans: `code`, **bold**, *italic*.
 fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut chars = text.char_indices().peekable();
-    let mut buf = String::new();
+    #[derive(Default)]
+    struct InlineStyleState {
+        emphasis_depth: usize,
+        strong_depth: usize,
+        strikethrough_depth: usize,
+        link_depth: usize,
+    }
 
-    while let Some(&(_i, ch)) = chars.peek() {
-        match ch {
-            '`' => {
-                // Flush buffer
-                if !buf.is_empty() {
-                    spans.push(Span::styled(buf.clone(), Style::default().fg(Color::White)));
-                    buf.clear();
-                }
-                chars.next(); // consume `
-                let mut code = String::new();
-                while let Some(&(_, c)) = chars.peek() {
-                    if c == '`' {
-                        chars.next();
-                        break;
-                    }
-                    code.push(c);
-                    chars.next();
-                }
-                spans.push(Span::styled(
-                    code,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
+    impl InlineStyleState {
+        fn style(&self) -> Style {
+            let mut style = Style::default().fg(Color::White);
+            if self.strong_depth > 0 {
+                style = style.add_modifier(Modifier::BOLD);
             }
-            '*' => {
-                // Check for ** (bold) vs * (italic)
-                chars.next();
-                if chars.peek().map(|&(_, c)| c) == Some('*') {
-                    // **bold**
-                    chars.next();
-                    if !buf.is_empty() {
-                        spans.push(Span::styled(buf.clone(), Style::default().fg(Color::White)));
-                        buf.clear();
-                    }
-                    let mut bold = String::new();
-                    while let Some(&(_, c)) = chars.peek() {
-                        if c == '*' {
-                            chars.next();
-                            if chars.peek().map(|&(_, c)| c) == Some('*') {
-                                chars.next();
-                                break;
-                            }
-                            bold.push('*');
-                            continue;
-                        }
-                        bold.push(c);
-                        chars.next();
-                    }
-                    spans.push(Span::styled(
-                        bold,
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                } else {
-                    // *italic*
-                    if !buf.is_empty() {
-                        spans.push(Span::styled(buf.clone(), Style::default().fg(Color::White)));
-                        buf.clear();
-                    }
-                    let mut italic = String::new();
-                    while let Some(&(_, c)) = chars.peek() {
-                        if c == '*' {
-                            chars.next();
-                            break;
-                        }
-                        italic.push(c);
-                        chars.next();
-                    }
-                    spans.push(Span::styled(
-                        italic,
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::ITALIC),
-                    ));
-                }
+            if self.emphasis_depth > 0 {
+                style = style.add_modifier(Modifier::ITALIC);
             }
-            _ => {
-                buf.push(ch);
-                chars.next();
+            if self.strikethrough_depth > 0 {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
             }
+            if self.link_depth > 0 {
+                style = style.fg(Color::Blue).add_modifier(Modifier::UNDERLINED);
+            }
+            style
         }
     }
 
-    if !buf.is_empty() {
-        spans.push(Span::styled(buf, Style::default().fg(Color::White)));
+    let mut spans = Vec::new();
+    let mut state = InlineStyleState::default();
+    let parser = Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH);
+
+    for event in parser {
+        match event {
+            Event::Text(text) => spans.push(Span::styled(text.to_string(), state.style())),
+            Event::Code(code) => spans.push(Span::styled(
+                code.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Event::SoftBreak | Event::HardBreak => spans.push(Span::raw(" ")),
+            Event::Start(tag) => match tag {
+                Tag::Emphasis => state.emphasis_depth += 1,
+                Tag::Strong => state.strong_depth += 1,
+                Tag::Strikethrough => state.strikethrough_depth += 1,
+                Tag::Link { .. } => state.link_depth += 1,
+                _ => {}
+            },
+            Event::End(tag) => match tag {
+                TagEnd::Emphasis => state.emphasis_depth = state.emphasis_depth.saturating_sub(1),
+                TagEnd::Strong => state.strong_depth = state.strong_depth.saturating_sub(1),
+                TagEnd::Strikethrough => {
+                    state.strikethrough_depth = state.strikethrough_depth.saturating_sub(1)
+                }
+                TagEnd::Link => state.link_depth = state.link_depth.saturating_sub(1),
+                _ => {}
+            },
+            Event::InlineMath(math) | Event::DisplayMath(math) => {
+                spans.push(Span::styled(math.to_string(), state.style()))
+            }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                spans.push(Span::styled(html.to_string(), state.style()))
+            }
+            Event::FootnoteReference(reference) => {
+                spans.push(Span::styled(reference.to_string(), state.style()))
+            }
+            Event::Rule | Event::TaskListMarker(_) => {}
+        }
     }
 
     spans
 }
 
-/// Render inline markdown (simple version for list items).
-fn style_inline_markdown(text: &str) -> String {
-    // For list items, just return the text — the full span parsing
-    // is done at the Line level in style_paragraph_line.
-    text.to_string()
+fn format_token_count(tokens: u64) -> String {
+    match tokens {
+        0..=999 => tokens.to_string(),
+        1_000..=999_999 => format!("{:.0}k", tokens as f64 / 1_000.0),
+        _ => format!("{:.1}M", tokens as f64 / 1_000_000.0),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Overlay, PaneFocus, TabView, TuiState, handle_key, handle_mouse, looks_like_diff_line,
-        looks_like_diff_start, render_diff_line, scroll_target_for_mouse,
+        Overlay, PaneFocus, TabView, TuiState, format_token_count, handle_key, handle_mouse,
+        looks_like_diff_line, looks_like_diff_start, parse_inline_spans, render_diff_line,
+        scroll_target_for_mouse,
     };
     use crate::tui::StatusBarState;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use pipit_config::ApprovalMode;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
     use std::path::PathBuf;
 
     #[test]
@@ -2994,6 +3339,43 @@ mod tests {
         assert!(looks_like_diff_line("+use anyhow::Result;"));
         assert!(looks_like_diff_line("@@ -1,3 +1,4 @@"));
         assert!(!looks_like_diff_start("### Edited `src/lib.rs`"));
+        assert!(!looks_like_diff_start("--- Previous approach"));
+    }
+
+    #[test]
+    fn parses_extended_inline_markdown() {
+        let spans = parse_inline_spans("_italic_ __bold__ ~~gone~~ [docs](https://example.com)");
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::ITALIC))
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::BOLD))
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::CROSSED_OUT))
+        );
+        assert!(spans.iter().any(|span| span.style.fg == Some(Color::Blue)));
+    }
+
+    #[test]
+    fn unmatched_bold_marker_stays_literal() {
+        let spans = parse_inline_spans("The field is **required");
+        let rendered: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(rendered, "The field is **required");
+        assert!(!spans.iter().any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn formats_token_counts_compactly() {
+        assert_eq!(format_token_count(999), "999");
+        assert_eq!(format_token_count(42_000), "42k");
+        assert_eq!(format_token_count(1_250_000), "1.2M");
     }
 
     #[test]
