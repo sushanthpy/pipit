@@ -154,7 +154,7 @@ impl Default for ContextSettings {
             compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
             preserve_recent_messages: DEFAULT_PRESERVE_RECENT_MESSAGES,
             max_output_tokens: 16_384,
-            tool_result_max_chars: 32_000,
+            tool_result_max_chars: 131_072,
         }
     }
 }
@@ -271,10 +271,10 @@ impl ContextManager {
     ///   4. head_tail_split — smart truncation with error rescue
     ///   5. micro_compact — final head/tail split if still over threshold
     pub fn push_tool_result(&mut self, call_id: &str, content: &str, is_error: bool) {
-        const HEAD_TAIL_MAX_LINES: usize = 200;
-        const MICRO_COMPACT_THRESHOLD: usize = 2048; // 2KB
-        const KEEP_HEAD_LINES: usize = 50;
-        const KEEP_TAIL_LINES: usize = 50;
+        const HEAD_TAIL_MAX_LINES: usize = 2000;
+        const MICRO_COMPACT_THRESHOLD: usize = 65_536; // 64KB
+        const KEEP_HEAD_LINES: usize = 500;
+        const KEEP_TAIL_LINES: usize = 500;
 
         let max_chars = self.settings.tool_result_max_chars;
 
@@ -322,6 +322,41 @@ impl ContextManager {
         {
             self.messages.remove(pos);
         }
+    }
+
+    /// Strip the last assistant message AND all subsequent tool-result messages.
+    ///
+    /// Used for malformed-request recovery: when the provider rejects the
+    /// conversation because a tool-call or its results contain content the
+    /// API can't parse. Removes the entire corrupted turn so the next
+    /// completion request starts from a clean state.
+    ///
+    /// Returns the number of messages removed.
+    pub fn strip_last_assistant_turn(&mut self) -> usize {
+        let Some(pos) = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == pipit_provider::Role::Assistant)
+        else {
+            return 0;
+        };
+
+        // Remove the assistant message and all tool-result messages after it
+        let before_len = self.messages.len();
+        let mut i = self.messages.len();
+        while i > pos {
+            i -= 1;
+            let is_tool_result = matches!(
+                self.messages[i].role,
+                pipit_provider::Role::ToolResult { .. }
+            );
+            let is_assistant = self.messages[i].role == pipit_provider::Role::Assistant;
+            if is_tool_result || (is_assistant && i == pos) {
+                self.messages.remove(i);
+            }
+        }
+
+        before_len - self.messages.len()
     }
 
     pub fn system_prompt(&self) -> &str {

@@ -21,6 +21,10 @@
 //!   └──────────────────────────────────────────────────────┘
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use pipit_vim::VimEditor;
+
+// Re-export for consumers (e.g. tui.rs Esc handling)
+pub use pipit_vim::VimMode;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -47,6 +51,7 @@ pub struct Attachment {
 pub enum AttachmentKind {
     File,
     Image,
+    PastedText,
 }
 
 impl Attachment {
@@ -67,15 +72,19 @@ impl Attachment {
         match self.kind {
             AttachmentKind::File => "📎",
             AttachmentKind::Image => "🖼",
+            AttachmentKind::PastedText => "📋",
         }
     }
 
     /// Short display name: just the filename, not the full path.
     pub fn display_name(&self) -> &str {
-        Path::new(&self.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.path)
+        match self.kind {
+            AttachmentKind::PastedText => "pasted text",
+            _ => Path::new(&self.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&self.path),
+        }
     }
 }
 
@@ -196,6 +205,10 @@ pub struct Composer {
 
     /// When set, the composer has submitted and the consumer should drain this.
     pub submitted: Option<SubmittedInput>,
+
+    /// Optional Vim modal editing engine. When Some, keys are routed through
+    /// the Vim state machine before falling back to default behavior.
+    vim_editor: Option<VimEditor>,
 }
 
 /// What the composer produces on Enter.
@@ -221,6 +234,7 @@ impl Composer {
             slash_commands: default_slash_commands(),
             shell_history: Vec::new(),
             submitted: None,
+            vim_editor: None,
         }
     }
 
@@ -250,11 +264,60 @@ impl Composer {
         self.completion.clear();
         self.history_cursor = None;
         self.stashed_input = None;
+        if let Some(ref mut vim) = self.vim_editor {
+            vim.buffer.set_text("");
+            vim.parser.mode = VimMode::Insert;
+        }
+    }
+
+    /// Enable Vim modal editing.
+    pub fn enable_vim(&mut self) {
+        let mut vim = VimEditor::new();
+        let text = self.lines.join("\n");
+        vim.buffer.set_text(&text);
+        vim.buffer.set_cursor(self.cursor_row, self.cursor_col);
+        self.vim_editor = Some(vim);
+    }
+
+    /// Disable Vim modal editing, returning to default insert behavior.
+    pub fn disable_vim(&mut self) {
+        self.vim_editor = None;
+    }
+
+    /// Whether Vim mode is currently active.
+    pub fn vim_active(&self) -> bool {
+        self.vim_editor.is_some()
+    }
+
+    /// Current Vim mode (Insert/Normal), or None if Vim is disabled.
+    pub fn vim_mode(&self) -> Option<VimMode> {
+        self.vim_editor.as_ref().map(|v| v.mode())
+    }
+
+    /// Vim mode status text for the UI (e.g. "-- INSERT --"), or None.
+    pub fn vim_status(&self) -> Option<&'static str> {
+        self.vim_editor.as_ref().map(|v| v.mode_status())
+    }
+
+    /// Vim pending command display (e.g. "d", "2d"), or None.
+    pub fn vim_pending(&self) -> Option<String> {
+        self.vim_editor.as_ref().and_then(|v| v.pending_display())
     }
 
     /// Add a file attachment (from @mention or drag-drop).
     pub fn add_attachment(&mut self, path: &str) {
         let att = Attachment::from_path(path);
+        if !self.attachments.contains(&att) {
+            self.attachments.push(att);
+        }
+    }
+
+    /// Add a pasted-text attachment with a friendly display name.
+    pub fn add_pasted_text_attachment(&mut self, path: &str, char_count: usize) {
+        let att = Attachment {
+            path: path.to_string(),
+            kind: AttachmentKind::PastedText,
+        };
         if !self.attachments.contains(&att) {
             self.attachments.push(att);
         }
@@ -288,11 +351,68 @@ impl Composer {
             return false;
         }
 
+        // ── Vim modal routing ───────────────────────────────────────────
+        if let Some(ref mut vim) = self.vim_editor {
+            // In Vim Normal mode, intercept most keys via the Vim engine.
+            // In Insert mode, Vim handles Esc and passes through the rest.
+            let vim_mode = vim.mode();
+
+            // Always let Vim handle Esc (Normal: clear pending, Insert: → Normal).
+            // In Normal mode, route almost everything through Vim except:
+            //   - Ctrl combos that are TUI-level (Ctrl-C, Ctrl-D, Ctrl-J)
+            //   - Enter (submit) when in Insert mode — handled below
+            if vim_mode == VimMode::Normal {
+                // Enter in Normal mode: submit if non-empty.
+                if key.code == KeyCode::Enter {
+                    if self.lines.iter().all(|l| l.is_empty()) {
+                        return true;
+                    }
+                    self.extract_inline_attachments();
+                    self.push_to_history();
+                    self.submitted = Some(SubmittedInput {
+                        text: self.text(),
+                        attachments: self.attachments.clone(),
+                    });
+                    self.clear();
+                    return true;
+                }
+
+                // Ctrl combos pass through to parent in normal mode.
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return false;
+                }
+
+                let result = vim.handle_key(key);
+                if result.consumed {
+                    self.sync_from_vim();
+                    return true;
+                }
+                return false;
+            }
+
+            // Insert mode: Esc goes to Vim, everything else falls through
+            // to the normal composer handling.
+            if key.code == KeyCode::Esc {
+                let result = vim.handle_key(key);
+                if result.consumed {
+                    self.sync_from_vim();
+                    return true;
+                }
+            }
+
+            // In Insert mode, let Vim track insert session for dot-repeat,
+            // but use composer's own editing (for completion, history, etc.).
+            // We just need to keep the vim buffer in sync afterward.
+        }
+
+        // ── Normal composer handling (Insert mode or no Vim) ────────────
+
         // Completion popup active: intercept Tab, Up/Down, Esc, Enter
         if self.completion.active {
             match key.code {
                 KeyCode::Tab => {
                     self.accept_completion();
+                    self.sync_to_vim();
                     return true;
                 }
                 KeyCode::Enter => {
@@ -308,6 +428,7 @@ impl Composer {
                         });
                         self.clear();
                     }
+                    self.sync_to_vim();
                     return true;
                 }
                 KeyCode::Down => {
@@ -326,7 +447,7 @@ impl Composer {
             }
         }
 
-        match key.code {
+        let consumed = match key.code {
             // Submit
             KeyCode::Enter => {
                 if self.lines.iter().all(|l| l.is_empty()) {
@@ -345,6 +466,7 @@ impl Composer {
             // Newline (multiline mode)
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.insert_newline();
+                self.sync_to_vim();
                 return true;
             }
 
@@ -484,45 +606,51 @@ impl Composer {
             }
 
             _ => false,
+        };
+
+        // Keep vim buffer in sync when composer handles keys in insert mode.
+        if consumed {
+            self.sync_to_vim();
         }
+        consumed
     }
 
     /// Handle a bracketed paste event.
+    ///
+    /// Short pastes (≤100 chars, single line) are inserted inline.
+    /// Longer / multi-line pastes are saved to a temp file and attached,
+    /// keeping the input line clean and readable.
     pub fn handle_paste(&mut self, text: &str) {
         let paste_lines: Vec<&str> = text.lines().collect();
         if paste_lines.is_empty() {
             return;
         }
 
-        if paste_lines.len() == 1 {
-            let line = &mut self.lines[self.cursor_row];
-            let byte_pos = char_to_byte(line, self.cursor_col);
-            line.insert_str(byte_pos, paste_lines[0]);
-            self.cursor_col += paste_lines[0].chars().count();
-        } else {
-            let current_line = &self.lines[self.cursor_row];
-            let byte_pos = char_to_byte(current_line, self.cursor_col);
-            let after_cursor = current_line[byte_pos..].to_string();
-            let before_cursor = current_line[..byte_pos].to_string();
+        let is_long = text.len() > 100 || paste_lines.len() > 1;
 
-            self.lines[self.cursor_row] = format!("{}{}", before_cursor, paste_lines[0]);
-
-            for (i, &pasted_line) in paste_lines[1..paste_lines.len() - 1].iter().enumerate() {
-                self.lines
-                    .insert(self.cursor_row + 1 + i, pasted_line.to_string());
+        if is_long {
+            // Save to temp file and attach as a pasted-text attachment.
+            use std::io::Write;
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let tmp_path = format!("/tmp/pipit-paste-{}.txt", ts);
+            if let Ok(mut f) = std::fs::File::create(&tmp_path) {
+                let _ = f.write_all(text.as_bytes());
             }
-
-            let last_idx = paste_lines.len() - 1;
-            let last_line = format!("{}{}", paste_lines[last_idx], after_cursor);
-            if last_idx > 0 {
-                self.lines.insert(self.cursor_row + last_idx, last_line);
-            } else {
-                self.lines[self.cursor_row].push_str(&after_cursor);
-            }
-
-            self.cursor_row += last_idx;
-            self.cursor_col = paste_lines[last_idx].chars().count();
+            self.add_pasted_text_attachment(&tmp_path, text.len());
+            return;
         }
+
+        // Short single-line paste: insert inline.
+        let line = &mut self.lines[self.cursor_row];
+        let byte_pos = char_to_byte(line, self.cursor_col);
+        line.insert_str(byte_pos, paste_lines[0]);
+        self.cursor_col += paste_lines[0].chars().count();
+
+        // Auto-extract pasted image paths into attachment chips.
+        self.auto_extract_image_paths();
     }
 
     // ── Private editing operations ──────────────────────────────────────
@@ -865,6 +993,124 @@ impl Composer {
                 }
             }
         }
+        // Also extract any remaining bare image paths at submit time.
+        self.auto_extract_image_paths();
+    }
+
+    /// Scan the current text for bare image paths (paths ending in image
+    /// extensions) and move them into attachment chips, removing them from the
+    /// text buffer.  Called after paste and at submit time.
+    fn auto_extract_image_paths(&mut self) {
+        let text = self.text();
+        if text.is_empty() {
+            return;
+        }
+
+        let mut extractions: Vec<(usize, usize)> = Vec::new(); // (start, end) byte offsets
+
+        for ext in IMAGE_EXTENSIONS {
+            let mut search_from = 0;
+            while search_from < text.len() {
+                let haystack = &text[search_from..];
+                let Some(rel_pos) = haystack.find(ext) else {
+                    break;
+                };
+                let abs_end = search_from + rel_pos + ext.len();
+
+                // Must be at a word boundary (end-of-string or followed by
+                // whitespace) so we don't match partial filenames.
+                if abs_end < text.len() {
+                    if let Some(ch) = text[abs_end..].chars().next() {
+                        if !ch.is_whitespace() {
+                            search_from = abs_end;
+                            continue;
+                        }
+                    }
+                }
+
+                // Walk backwards to find where the path starts, respecting
+                // backslash-escaped spaces (e.g. `Screenshot\ 2025.png`).
+                let start = find_image_path_start(&text[..abs_end]);
+
+                let candidate = &text[start..abs_end];
+                // Must look like a real path AND actually exist on disk.
+                let clean = candidate.replace("\\ ", " ");
+                if (candidate.contains('/') || candidate.starts_with('.') || candidate.starts_with('~'))
+                    && std::path::Path::new(&clean).exists()
+                {
+                    extractions.push((start, abs_end));
+                }
+
+                search_from = abs_end;
+            }
+        }
+
+        if extractions.is_empty() {
+            return;
+        }
+
+        // De-duplicate overlapping ranges, keep longest, sort descending so
+        // we can remove from end-to-start without invalidating offsets.
+        extractions.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        extractions.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        let mut new_text = text.clone();
+        for &(start, end) in &extractions {
+            let path_str = &text[start..end];
+            // Unescape shell-style backslash-spaces for the attachment path.
+            let clean = path_str.replace("\\ ", " ");
+            self.add_attachment(&clean);
+            new_text = format!("{}{}", &new_text[..start], &new_text[end..]);
+        }
+
+        // Collapse any leftover double-spaces from removal and trim.
+        while new_text.contains("  ") {
+            new_text = new_text.replace("  ", " ");
+        }
+        let new_text = new_text.trim().to_string();
+
+        self.lines = if new_text.is_empty() {
+            vec![String::new()]
+        } else {
+            new_text.lines().map(|l| l.to_string()).collect()
+        };
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.cursor_row = self.lines.len().saturating_sub(1);
+        self.cursor_col = self.line_len_at(self.cursor_row);
+        self.sync_to_vim();
+    }
+
+    /// Copy composer lines/cursor → vim editor buffer.
+    fn sync_to_vim(&mut self) {
+        if let Some(ref mut vim) = self.vim_editor {
+            let text = self.lines.join("\n");
+            vim.buffer.set_text(&text);
+            vim.buffer.set_cursor(self.cursor_row, self.cursor_col);
+        }
+    }
+
+    /// Copy vim editor buffer → composer lines/cursor.
+    fn sync_from_vim(&mut self) {
+        if let Some(ref vim) = self.vim_editor {
+            let text = vim.buffer.text();
+            self.lines = if text.is_empty() {
+                vec![String::new()]
+            } else {
+                text.lines().map(|l| l.to_string()).collect()
+            };
+            if self.lines.is_empty() {
+                self.lines.push(String::new());
+            }
+            let (row, col) = vim.buffer.cursor();
+            self.cursor_row = row.min(self.lines.len().saturating_sub(1));
+            self.cursor_col = col.min(self.line_len_at(self.cursor_row));
+        }
+    }
+
+    fn line_len_at(&self, row: usize) -> usize {
+        self.lines.get(row).map(|l| l.chars().count()).unwrap_or(0)
     }
 }
 
@@ -887,6 +1133,7 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
             let chip_style = match att.kind {
                 AttachmentKind::File => Style::default().fg(Color::Cyan),
                 AttachmentKind::Image => Style::default().fg(Color::Magenta),
+                AttachmentKind::PastedText => Style::default().fg(Color::Yellow),
             };
             spans.push(Span::styled(
                 format!("{} {}", att.chip_icon(), att.display_name()),
@@ -904,12 +1151,18 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
     // Input box
     let input_rows = composer.lines.len().min(4) as u16;
     let input_area = Rect::new(area.x, y, area.width, input_rows + 2);
+
+    let (border_color, border_title) = match composer.vim_mode() {
+        Some(VimMode::Normal) => (Color::Yellow, " NORMAL "),
+        Some(VimMode::Insert) => (Color::Green, " INSERT "),
+        None => (Color::DarkGray, " input "),
+    };
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(border_color))
         .title(Span::styled(
-            " input ",
-            Style::default().fg(Color::DarkGray),
+            border_title,
+            Style::default().fg(border_color),
         ));
     let inner = input_block.inner(input_area);
     frame.render_widget(input_block, input_area);
@@ -951,10 +1204,19 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
             let display_col = char_to_display_col(line, composer.cursor_col);
             let cursor_x = inner.x + prompt_width as u16 + display_col as u16;
             let cursor_y = inner.y + row_idx as u16;
-            frame.set_cursor_position((
-                cursor_x.min(inner.x + inner.width.saturating_sub(1)),
-                cursor_y,
-            ));
+
+            // In Vim Normal mode, set a block cursor style.
+            if composer.vim_mode() == Some(VimMode::Normal) {
+                frame.set_cursor_position((
+                    cursor_x.min(inner.x + inner.width.saturating_sub(1)),
+                    cursor_y,
+                ));
+            } else {
+                frame.set_cursor_position((
+                    cursor_x.min(inner.x + inner.width.saturating_sub(1)),
+                    cursor_y,
+                ));
+            }
         }
 
         if row_idx as u16 + 1 >= inner.height {
@@ -964,12 +1226,25 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
 
     // Hint bar
     let hint_y = area.y + area.height - 1;
+    let vim_prefix = match composer.vim_mode() {
+        Some(VimMode::Normal) => "NORMAL ",
+        Some(VimMode::Insert) => "INSERT ",
+        None => "",
+    };
+    let vim_pending = composer.vim_pending().unwrap_or_default();
     let hint_text = if is_working {
-        " Esc stop · /help · Ctrl-C quit"
+        format!(" {}{}Esc stop · /help · Ctrl-C quit", vim_prefix, if vim_pending.is_empty() { String::new() } else { format!("[{}] ", vim_pending) })
+    } else if composer.vim_active() {
+        let mode_hint = if composer.vim_mode() == Some(VimMode::Normal) {
+            "i insert · Enter submit"
+        } else {
+            "Esc normal · Enter submit · Ctrl-J newline"
+        };
+        format!(" {}{}{} · /help · Ctrl-C quit", vim_prefix, if vim_pending.is_empty() { String::new() } else { format!("[{}] ", vim_pending) }, mode_hint)
     } else if composer.is_multiline() {
-        " Enter submit · Ctrl-J newline · /help · Esc cancel"
+        " Enter submit · Ctrl-J newline · /help · Esc cancel".to_string()
     } else {
-        " /help · @file · !shell · Ctrl-J newline · Esc cancel · Ctrl-C quit"
+        " /help · @file · !shell · Ctrl-J newline · Esc cancel · Ctrl-C quit".to_string()
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -1082,6 +1357,30 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+/// Walk backwards through `s` to find where a file path begins.
+/// Treats `\ ` (backslash-space) as an escaped space inside the path.
+fn find_image_path_start(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b' ' => {
+                // Backslash-escaped space → part of the path, skip both.
+                if i > 0 && bytes[i - 1] == b'\\' {
+                    i -= 1;
+                    continue;
+                }
+                // Unescaped space — path starts after this character.
+                return i + 1;
+            }
+            b'\n' | b'\t' => return i + 1,
+            _ => {}
+        }
+    }
+    0
+}
+
 fn format_file_size(path: &Path) -> String {
     match std::fs::metadata(path) {
         Ok(m) => {
@@ -1142,6 +1441,7 @@ fn default_slash_commands() -> Vec<(String, String)> {
         ("mesh".into(), "Distributed mesh management".into()),
         ("watch".into(), "Ambient file watcher".into()),
         ("deps".into(), "Dependency health scan".into()),
+        ("vim".into(), "Toggle Vim modal editing".into()),
     ]
 }
 

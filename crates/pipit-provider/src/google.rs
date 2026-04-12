@@ -477,7 +477,10 @@ fn parse_gemini_chunk(data: &str) -> (Vec<ContentEvent>, Option<UsageMetadata>) 
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let args = fc.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                            let args = crate::coerce_tool_args(
+                                &name,
+                                fc.get("args").cloned().unwrap_or(serde_json::Value::Null),
+                            );
                             events.push(ContentEvent::ToolCallComplete {
                                 call_id: name.clone(),
                                 tool_name: name,

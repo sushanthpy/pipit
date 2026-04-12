@@ -368,8 +368,10 @@ fn parse_google_cli_chunk(data: &str) -> (Vec<ContentEvent>, Option<UsageMetadat
                                     .and_then(|n| n.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let args =
-                                    fc.get("args").cloned().unwrap_or(serde_json::Value::Null);
+                                let args = crate::coerce_tool_args(
+                                    &name,
+                                    fc.get("args").cloned().unwrap_or(serde_json::Value::Null),
+                                );
                                 let call_id = fc
                                     .get("id")
                                     .and_then(|id| id.as_str())

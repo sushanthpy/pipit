@@ -428,3 +428,92 @@ pub struct CacheEditReceipt {
     /// Whether the cache is still warm (not fully invalidated).
     pub cache_warm: bool,
 }
+
+/// Safely parse tool-call arguments into a JSON Value.
+///
+/// Returns an empty object `{}` on failure rather than `Null`, so that
+/// downstream required-field checks can produce helpful error messages
+/// instead of silently passing through.
+///
+/// Includes repair heuristics for common streaming corruption:
+/// - Trailing extra `}` or `]}` characters (vLLM double-close)
+/// - Leading/trailing whitespace
+/// - Empty strings
+///
+/// All providers should use this instead of bare
+/// `serde_json::from_str(&args).unwrap_or(Value::Null)`.
+pub fn parse_tool_args(tool_name: &str, raw: &str) -> serde_json::Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        tracing::warn!(
+            tool = tool_name,
+            "Tool call arguments empty — returning empty object"
+        );
+        return serde_json::json!({});
+    }
+    // First attempt: direct parse
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if v.is_object() {
+            return v;
+        }
+        tracing::warn!(
+            tool = tool_name,
+            raw_args = %trimmed,
+            "Tool call arguments parsed but not a JSON object — returning empty object"
+        );
+        return serde_json::json!({});
+    }
+    // Repair: strip trailing extra braces/brackets one at a time.
+    // vLLM streaming sometimes appends an extra `}` to the accumulated args.
+    let mut repaired = trimmed.to_string();
+    for _ in 0..3 {
+        if repaired.ends_with("}}") || repaired.ends_with("]}") {
+            repaired.pop();
+        } else {
+            break;
+        }
+    }
+    if repaired != trimmed {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&repaired) {
+            if v.is_object() {
+                tracing::info!(
+                    tool = tool_name,
+                    original_len = trimmed.len(),
+                    repaired_len = repaired.len(),
+                    "Repaired tool call arguments by stripping trailing brace(s)"
+                );
+                return v;
+            }
+        }
+    }
+    tracing::warn!(
+        tool = tool_name,
+        raw_args = %trimmed,
+        "Failed to parse tool call arguments — returning empty object"
+    );
+    serde_json::json!({})
+}
+
+/// Safely coerce a JSON Value into an object suitable for tool call args.
+///
+/// Use this when the provider already gives you a parsed `Value`
+/// (e.g. Gemini returns args as a nested JSON object directly).
+/// Returns the value as-is if it's an object, otherwise returns `{}`.
+pub fn coerce_tool_args(tool_name: &str, value: serde_json::Value) -> serde_json::Value {
+    if value.is_object() {
+        value
+    } else if value.is_null() {
+        tracing::warn!(
+            tool = tool_name,
+            "Tool call args are null — returning empty object"
+        );
+        serde_json::json!({})
+    } else {
+        tracing::warn!(
+            tool = tool_name,
+            value = %value,
+            "Tool call args are not a JSON object — returning empty object"
+        );
+        serde_json::json!({})
+    }
+}

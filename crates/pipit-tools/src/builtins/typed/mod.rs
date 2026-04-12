@@ -10,11 +10,14 @@ pub mod plan_worktree;
 pub mod scaffold;
 pub mod schedule;
 pub mod task;
+pub mod todo;
 pub mod web;
 
 /// Register all typed tools into the registry.
 pub fn register_all_typed_tools(registry: &mut crate::ToolRegistry) {
-    // Phase 2: Task unification
+    // Phase 2: Task unification — TodoWrite replaces UnifiedTaskTool (Task 5)
+    crate::register_typed(registry, todo::TodoWriteTool);
+    // Legacy task tool kept for backward compat but TodoWrite is preferred
     crate::register_typed(registry, task::UnifiedTaskTool::new());
 
     // Phase 3: Agent interaction

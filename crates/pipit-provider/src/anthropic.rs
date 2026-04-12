@@ -448,9 +448,8 @@ impl AnthropicStreamParser {
                         if let Some((name, args_json)) = self.tool_arg_buffers.remove(&id) {
                             vec![ContentEvent::ToolCallComplete {
                                 call_id: id,
-                                tool_name: name,
-                                args: serde_json::from_str(&args_json)
-                                    .unwrap_or(serde_json::Value::Null),
+                                tool_name: name.clone(),
+                                args: crate::parse_tool_args(&name, &args_json),
                             }]
                         } else {
                             vec![]

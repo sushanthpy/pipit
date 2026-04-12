@@ -12,12 +12,14 @@ pub mod continuation;
 pub mod cost_oracle;
 pub mod delegation;
 pub mod deliberation;
+pub mod domain_architect;
 pub mod dx_surface;
 pub mod events;
 pub mod file_provenance;
 pub mod governor;
 pub mod hydration;
 pub mod integration_ports;
+pub mod integration_verifier;
 pub mod kernel;
 pub mod ledger;
 pub mod lineage;
@@ -90,12 +92,13 @@ pub use planner::{
 pub use planner_llm::LlmPlanner;
 pub use proof::{
     Assumption, ChangeClaim, ConfidenceReport, EvidenceArtifact, ImplementationTier, Objective,
-    PlanPivot, PolicyStage, ProofPacket, RealizedEdit, RollbackCheckpoint, SuccessCriterion,
-    VerificationKind, VerificationStep,
+    PlanPivot, PolicyStage, ProofPacket, RealizedEdit, RequirementCoverage, RollbackCheckpoint,
+    SuccessCriterion, VerificationKind, VerificationStep,
 };
 pub use verifier::{NullVerifier, Verifier};
 pub use verifier_llm::LlmVerifier;
 pub use worktree::WorktreeManager;
+pub use domain_architect::ArchitectureIR;
 
 // ── New public APIs ──
 pub use file_provenance::{FileAction, FileActivity, FileProvenance, ProvenanceSummary};

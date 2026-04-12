@@ -74,6 +74,8 @@ pub struct BuiltSession {
     pub prompt: AssembledPrompt,
     /// The Init event to emit as the first event in the stream.
     pub init_event: crate::sdk::EngineEvent,
+    /// True when a full system_prompt_override was used, bypassing the kernel.
+    pub prompt_is_override: bool,
 }
 
 impl SessionBuilder {
@@ -137,7 +139,29 @@ impl SessionBuilder {
         self
     }
 
+    /// Override the system prompt entirely (**unsafe bypass**).
+    ///
+    /// This skips:
+    /// - Section-level composition and typed `SectionId` structure
+    /// - Content-addressed cache invalidation
+    /// - XML sanitization of injected content (prompt injection risk)
+    ///
+    /// Prefer `.prompt_inputs()` with `override_sections` for surgical
+    /// replacements that preserve kernel guarantees. Use this only when
+    /// the entire prompt must come from an external source (e.g. testing,
+    /// benchmarks, or compatibility shims).
+    #[deprecated(note = "use .prompt_inputs() with override_sections for safe section replacement")]
+    pub fn system_prompt_override_unchecked(mut self, prompt: String) -> Self {
+        self.system_prompt_override = Some(prompt);
+        self
+    }
+
     /// Override the system prompt entirely (bypasses prompt kernel).
+    ///
+    /// **Deprecated:** renamed to `system_prompt_override_unchecked()` to
+    /// clarify that this is an unsafe bypass. Prefer `.prompt_inputs()` with
+    /// `override_sections` for safe section replacement.
+    #[deprecated(note = "renamed to system_prompt_override_unchecked(); prefer .prompt_inputs() with override_sections")]
     pub fn system_prompt(mut self, prompt: String) -> Self {
         self.system_prompt_override = Some(prompt);
         self
@@ -198,9 +222,17 @@ impl SessionBuilder {
         inputs.project_root = Some(self.project_root.clone());
 
         let prompt = prompt_kernel::assemble(&inputs);
+        let prompt_is_override = self.system_prompt_override.is_some();
         let system_prompt = self
             .system_prompt_override
             .unwrap_or_else(|| prompt.materialize());
+
+        if prompt_is_override {
+            tracing::warn!(
+                "system_prompt_override active — kernel section composition, \
+                 sanitization, and content-addressed caching are bypassed"
+            );
+        }
 
         let session_id = self
             .session_id
@@ -240,6 +272,7 @@ impl SessionBuilder {
             handle,
             prompt,
             init_event,
+            prompt_is_override,
         })
     }
 }

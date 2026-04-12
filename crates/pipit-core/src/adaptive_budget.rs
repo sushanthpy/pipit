@@ -452,6 +452,8 @@ struct AggregateSignals {
 /// Looks for phrases like "task is complete", "all done", "finished implementing".
 pub fn detect_completion_signal(response_text: &str) -> bool {
     let lower = response_text.to_lowercase();
+
+    // Exact substring phrases indicating the model considers work finished.
     let completion_phrases = [
         "task is complete",
         "task is done",
@@ -466,10 +468,118 @@ pub fn detect_completion_signal(response_text: &str) -> bool {
         "all changes have been made",
         "i have completed",
         "the work is done",
+        // ── broader patterns common with local/smaller models ──
+        "i've added",
+        "i've created",
+        "i've updated",
+        "i've implemented",
+        "i've fixed",
+        "i've made the",
+        "i've refactored",
+        "i've written",
+        "i've modified",
+        "changes were minimal",
+        "changes have been applied",
+        "here's the updated",
+        "here is the updated",
+        "the file now contains",
+        "the file has been",
+        "successfully added",
+        "successfully created",
+        "successfully updated",
+        "successfully implemented",
+        "successfully written",
+        "successfully modified",
+        "you're all set",
+        "that's it",
+        "no further changes",
+        "has been created",
+        "has been updated",
+        "has been written",
+        "has been fixed",
+        "has been modified",
+        "was created",
+        "was updated",
+        "was written",
+        "is now ready",
+        "is now available",
+        "is ready to use",
+        "let me know if",
+        "let me know when",
+        "feel free to",
     ];
-    completion_phrases
+
+    if completion_phrases
         .iter()
         .any(|phrase| lower.contains(phrase))
+    {
+        return true;
+    }
+
+    // Heuristic: if the response starts with common completion openers
+    // (after trimming whitespace), treat it as done.  This catches the very
+    // common "Done! …" / "Here's the updated …" patterns from local models
+    // that don't use the exact phrases above.
+    let trimmed = lower.trim_start();
+    let completion_prefixes = [
+        "done!",
+        "done.",
+        "done,",
+        "done -",
+        "done\n",
+        "file created",
+        "file updated",
+        "file written",
+        "created!",
+        "created.",
+        "created the",
+        "updated!",
+        "updated.",
+        "fixed!",
+        "fixed.",
+        "here's the updated",
+        "here's the new",
+        "here's the modified",
+        "here's the final",
+        "here is the updated",
+        "the changes ",
+        "the file ",
+        "the function ",
+        "the code ",
+        "i added ",
+        "i created ",
+        "i updated ",
+        "i wrote ",
+        "i fixed ",
+        "i modified ",
+        "i refactored ",
+        "all tests pass",
+        "tests pass",
+        "everything looks good",
+        "everything is working",
+        "looks good",
+    ];
+    if completion_prefixes
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+    {
+        return true;
+    }
+
+    // Very short responses that are single-word or near-single-word confirmations
+    // (e.g., "Done", "Created!", "4") should be treated as completion signals.
+    // This catches models that respond very tersely after tool work.
+    if trimmed.len() < 30 {
+        let short_done = [
+            "done", "created", "updated", "fixed", "written", "complete",
+            "ready", "finished", "success", "ok", "okay", "yes",
+        ];
+        if short_done.iter().any(|w| trimmed.starts_with(w)) {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

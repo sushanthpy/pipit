@@ -1,6 +1,7 @@
 pub mod credentials;
 pub mod feature_flags;
 pub mod model_routing;
+pub mod provider_roster;
 mod types;
 
 pub use credentials::{
@@ -44,12 +45,26 @@ pub fn resolve_config(
         config.merge(layer);
     }
 
-    // User config
+    // User config: check platform config dir first, then XDG fallback (~/.config)
+    let mut user_config_loaded = false;
     if let Some(config_dir) = dirs::config_dir() {
         let user_path = config_dir.join("pipit").join("config.toml");
         if user_path.exists() {
-            let layer: PipitConfigLayer = toml::from_str(&std::fs::read_to_string(&user_path)?)?;
+            let layer: PipitConfigLayer =
+                toml::from_str(&std::fs::read_to_string(&user_path)?)?;
             config.merge(layer);
+            user_config_loaded = true;
+        }
+    }
+    // XDG fallback: ~/.config/pipit/config.toml (common on macOS/Linux)
+    if !user_config_loaded {
+        if let Some(home) = dirs::home_dir() {
+            let xdg_path = home.join(".config").join("pipit").join("config.toml");
+            if xdg_path.exists() {
+                let layer: PipitConfigLayer =
+                    toml::from_str(&std::fs::read_to_string(&xdg_path)?)?;
+                config.merge(layer);
+            }
         }
     }
 
@@ -67,6 +82,16 @@ pub fn resolve_config(
 
     // CLI overrides (highest priority)
     apply_cli_overrides(&mut config, cli_overrides);
+
+    // Post-merge adjustment: when provider is openai_compatible and context_window
+    // was never explicitly set (still at 200K default), use a conservative default
+    // that activates compact-prompt mode.  Local models rarely have 200K context.
+    if config.provider.default == ProviderKind::OpenAiCompatible
+        && config.model.context_window == 200_000
+    {
+        config.model.context_window = 32_768;
+        config.context.model_context_window = 32_768;
+    }
 
     Ok(config)
 }
@@ -117,20 +142,37 @@ pub fn detect_project_root() -> Option<PathBuf> {
     let home = dirs::home_dir();
     let mut dir = cwd.as_path();
     loop {
-        // .git is always a valid project root marker
+        // .git is always a valid project root marker (supports monorepo walk-up)
         if dir.join(".git").exists() {
             return Some(dir.to_path_buf());
         }
-        // .pipit is a project root marker ONLY if this is not the home directory
-        // (because ~/.pipit is the global config directory, not a project)
-        if dir.join(".pipit").exists() {
+        // .pipit is a project root marker ONLY if:
+        // 1. This is the CWD itself (not a parent directory — parent .pipit/
+        //    is almost always stale session artifacts, not a real project marker)
+        // 2. This is not the home directory (~/.pipit is global config)
+        // 3. This is not a system temp directory
+        if dir == cwd.as_path() && dir.join(".pipit").exists() {
             let is_home = home.as_ref().map_or(false, |h| h.as_path() == dir);
-            if !is_home {
+            let is_temp = is_temp_directory(dir);
+            if !is_home && !is_temp {
                 return Some(dir.to_path_buf());
             }
         }
         dir = dir.parent()?;
     }
+}
+
+/// Check whether a directory is a well-known OS-level temp directory.
+/// On macOS `/tmp` is a symlink to `/private/tmp`, so both forms are checked.
+fn is_temp_directory(dir: &std::path::Path) -> bool {
+    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let check = |p: &std::path::Path| {
+        p == std::path::Path::new("/tmp")
+            || p == std::path::Path::new("/private/tmp")
+            || p == std::path::Path::new("/var/tmp")
+            || p == std::env::temp_dir().as_path()
+    };
+    check(dir) || check(&canonical)
 }
 
 /// Resolve API key for a provider. Priority:

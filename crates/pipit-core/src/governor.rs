@@ -162,3 +162,40 @@ fn classify_tool(call: &ToolCall) -> ActionClass {
         SemanticClass::Delegate { .. } | SemanticClass::External { .. } => ActionClass::HighRisk,
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task 6: Verification Nudge Predicate
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Determine whether a verification nudge should be fired at todo close-out.
+///
+/// Fires when:
+///   - All todos are completed
+///   - There are ≥3 items
+///   - None of them contain "verif" or "test" (case-insensitive)
+///   - The caller is the coordinator (not a subagent)
+///
+/// Complexity: O(n) in list size, runs once per TodoWrite call.
+pub fn should_nudge_verification(
+    todos: &[crate::ledger::TodoItem],
+    is_coordinator: bool,
+) -> bool {
+    if !is_coordinator || todos.len() < 3 {
+        return false;
+    }
+
+    let all_done = todos
+        .iter()
+        .all(|t| matches!(t.status, crate::ledger::TodoStatus::Completed));
+
+    if !all_done {
+        return false;
+    }
+
+    let has_verification = todos.iter().any(|t| {
+        let lower = t.content.to_ascii_lowercase();
+        lower.contains("verif") || lower.contains("test")
+    });
+
+    !has_verification
+}

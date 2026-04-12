@@ -21,6 +21,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 pub mod builtins;
+pub mod catalog;
+pub mod catalog_v2;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Agent Definition
@@ -293,12 +295,32 @@ pub fn load_custom_agents(agents_dir: &std::path::Path) -> Vec<AgentDefinition> 
 //  Get All Agents (built-in + custom)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Get all available agents: 5 built-in + custom loaded from disk.
+/// Get all available agents: built-in + TOML/JSON custom + markdown agents (Task 4).
+///
+/// Precedence: markdown project-scope > markdown user-scope > TOML/JSON custom > built-in.
+/// Duplicate names from higher-precedence sources override lower ones.
 pub fn all_agents(project_root: &std::path::Path) -> Vec<AgentDefinition> {
-    let mut agents = builtins::builtin_agents();
+    use std::collections::HashMap;
+
+    let mut by_name: HashMap<String, AgentDefinition> = HashMap::new();
+
+    // 1. Built-in agents (lowest precedence)
+    for agent in builtins::builtin_agents() {
+        by_name.insert(agent.name.clone(), agent);
+    }
+
+    // 2. TOML/JSON custom agents
     let custom_dir = project_root.join(".pipit").join("agents");
-    agents.extend(load_custom_agents(&custom_dir));
-    agents
+    for agent in load_custom_agents(&custom_dir) {
+        by_name.insert(agent.name.clone(), agent);
+    }
+
+    // 3. Markdown agents (highest precedence, with trust gate for project-scope)
+    for agent in catalog::load_markdown_agents(project_root) {
+        by_name.insert(agent.name.clone(), agent);
+    }
+
+    by_name.into_values().collect()
 }
 
 #[cfg(test)]

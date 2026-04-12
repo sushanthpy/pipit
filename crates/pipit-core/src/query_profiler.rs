@@ -304,7 +304,7 @@ impl TelemetryController {
             turn_latency_ema_ms: 0.0,
             tools_per_turn_ema: 0.0,
             alpha: 0.3, // 30% weight to new observation
-            ttft_compaction_threshold_ms: 5000.0,
+            ttft_compaction_threshold_ms: 30_000.0,
             turn_latency_threshold_ms: 30000.0,
             tool_amplification_threshold: 5.0,
             observation_count: 0,

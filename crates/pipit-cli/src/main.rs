@@ -124,6 +124,15 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     classic: bool,
 
+    /// Enable Vim modal editing in the input composer
+    #[arg(long, default_value_t = true)]
+    vim: bool,
+
+    /// Enable tmux bridge — bash commands run in a visible tmux pane.
+    /// Creates a tmux session with agent + shell panes. Requires tmux.
+    #[arg(long, default_value_t = false)]
+    tmux: bool,
+
     /// Output structured JSON (NDJSON events + final result). For CI/scripting.
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -298,15 +307,19 @@ fn env_var_for(provider: ProviderKind) -> &'static str {
 
 // ─── Subagent executor ─────────────────────────────────────────────────────
 //
-// Implements SubagentExecutor by spawning a child pipit process with
-// --max-turns and full_auto approval. This is the simplest correct approach:
-// - No circular dependency on pipit-core's AgentLoop
-// - Process isolation prevents tool/context leakage
-// - Child inherits the same provider/model/API-key env
-// - Bounded by --max-turns to prevent runaway subagents
+// ═══════════════════════════════════════════════════════════════════════════
+//  CliSubagentExecutor — Tasks 1, 2, 3
 //
-// The LLM sees a `subagent` tool it can call to delegate focused subtasks
-// (e.g., "write tests for module X" or "review security of auth.rs").
+//  Task 1: NDJSON streaming protocol replaces stdout-scrape.
+//          Child spawned with `--json` flag emits SubagentEvent per line.
+//          Parent reads BufReader::lines() in a Tokio task.
+//
+//  Task 2: Graceful termination (SIGTERM → 5s → SIGKILL).
+//          Bounded concurrency handled at SubagentTool level via Semaphore.
+//
+//  Task 3: --tools, --model, --no-session, --append-system-prompt honored.
+//          `_allowed_tools` is no longer dead code.
+// ═══════════════════════════════════════════════════════════════════════════
 
 struct CliSubagentExecutor;
 
@@ -315,11 +328,18 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
     async fn run_subagent(
         &self,
         task: String,
-        _context: String,
-        _allowed_tools: Vec<String>,
+        context: String,
+        options: pipit_tools::builtins::subagent::SubagentOptions,
         project_root: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
-    ) -> Result<String, String> {
+        update_tx: Option<tokio::sync::mpsc::Sender<pipit_tools::builtins::subagent::SubagentUpdate>>,
+    ) -> Result<pipit_tools::builtins::subagent::SubagentResult, String> {
+        use pipit_tools::builtins::subagent::{SubagentEvent, SubagentResult, SubagentUpdate};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let start = std::time::Instant::now();
+        let child_id = uuid::Uuid::new_v4().to_string();
+
         // Find the current executable path so we spawn the same binary
         let exe =
             std::env::current_exe().map_err(|e| format!("Cannot find pipit executable: {}", e))?;
@@ -329,19 +349,91 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
             .arg(project_root.display().to_string())
             .arg("-a")
             .arg("full_auto")
-            .arg("--max-turns")
-            .arg("15") // Bounded execution for subagents
-            .arg(&task)
+            // Task 1: Use --json mode for NDJSON event stream
+            .arg("--json")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            // Suppress the subagent's own MCP init to avoid port conflicts
             .env("PIPIT_SUBAGENT", "1");
+
+        // Task 3: Honor --max-turns
+        let max_turns = options.max_turns.unwrap_or(15);
+        cmd.arg("--max-turns").arg(max_turns.to_string());
+
+        // Task 3: Honor --model
+        if let Some(ref model) = options.model {
+            cmd.arg("--model").arg(model);
+        }
+
+        // Task 3: Honor --tools (enforce tool scoping)
+        if !options.allowed_tools.is_empty() {
+            // Pass tools as comma-separated env var — child filters at registry startup
+            cmd.env(
+                "PIPIT_ALLOWED_TOOLS",
+                options.allowed_tools.join(","),
+            );
+        }
+
+        // Task 3: Honor --no-session
+        if options.no_session {
+            cmd.env("PIPIT_NO_SESSION", "1");
+        }
+
+        // Task 3: Honor --append-system-prompt via temp file
+        // Write to a temp file with mode 0o600 for security, cleaned up on drop
+        let _prompt_tempfile = if let Some(ref prompt) = options.append_system_prompt {
+            let mut tmp = tempfile::NamedTempFile::new()
+                .map_err(|e| format!("Failed to create temp prompt file: {e}"))?;
+            std::io::Write::write_all(&mut tmp, prompt.as_bytes())
+                .map_err(|e| format!("Failed to write temp prompt file: {e}"))?;
+            cmd.env("PIPIT_APPEND_SYSTEM_PROMPT", tmp.path());
+            Some(tmp) // Keep alive until child exits, then auto-deleted
+        } else if !context.is_empty() {
+            // Inject context as appended system prompt
+            let mut tmp = tempfile::NamedTempFile::new()
+                .map_err(|e| format!("Failed to create temp context file: {e}"))?;
+            std::io::Write::write_all(&mut tmp, context.as_bytes())
+                .map_err(|e| format!("Failed to write temp context file: {e}"))?;
+            cmd.env("PIPIT_APPEND_SYSTEM_PROMPT", tmp.path());
+            Some(tmp)
+        } else {
+            None
+        };
+
+        // Task 7: Fork context via temp file
+        let _fork_tempfile = if let Some(ref fork_ctx) = options.fork_context {
+            let mut tmp = tempfile::NamedTempFile::new()
+                .map_err(|e| format!("Failed to create fork context file: {e}"))?;
+            let json = serde_json::to_string(fork_ctx)
+                .map_err(|e| format!("Failed to serialize fork context: {e}"))?;
+            std::io::Write::write_all(&mut tmp, json.as_bytes())
+                .map_err(|e| format!("Failed to write fork context file: {e}"))?;
+            cmd.env("PIPIT_FORK_FROM", tmp.path());
+            Some(tmp)
+        } else {
+            None
+        };
+
+        // Append the task as the prompt
+        cmd.arg(&task);
 
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn subagent: {}", e))?;
 
-        let mut stdout_pipe = child
+        // Notify parent of start
+        if let Some(ref tx) = update_tx {
+            let _ = tx
+                .send(SubagentUpdate {
+                    child_id: child_id.clone(),
+                    event: SubagentEvent::Started {
+                        child_id: child_id.clone(),
+                        task: task.clone(),
+                    },
+                })
+                .await;
+        }
+
+        let stdout_pipe = child
             .stdout
             .take()
             .ok_or_else(|| "Failed to capture subagent stdout".to_string())?;
@@ -350,18 +442,90 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
             .take()
             .ok_or_else(|| "Failed to capture subagent stderr".to_string())?;
 
+        // Task 1: Read NDJSON events line-by-line (not read_to_end!)
+        let tx_for_reader = update_tx.clone();
+        let cid = child_id.clone();
         let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            stdout_pipe
-                .read_to_end(&mut buf)
-                .await
-                .map(|_| buf)
-                .map_err(|e| format!("Failed to read subagent stdout: {}", e))
+            let reader = BufReader::new(stdout_pipe);
+            let mut lines = reader.lines();
+            let mut last_output = String::new();
+            let mut total_input_tokens = 0u64;
+            let mut total_output_tokens = 0u64;
+            let mut total_cost_usd = 0.0f64;
+            let mut total_turns = 0u32;
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                // Try to parse as SubagentEvent
+                match serde_json::from_str::<SubagentEvent>(&line) {
+                    Ok(event) => {
+                        match &event {
+                            SubagentEvent::Completed {
+                                output,
+                                total_turns: turns,
+                                total_input_tokens: inp,
+                                total_output_tokens: outp,
+                                total_cost_usd: cost,
+                                ..
+                            } => {
+                                last_output = output.clone();
+                                total_turns = *turns;
+                                total_input_tokens = *inp;
+                                total_output_tokens = *outp;
+                                total_cost_usd = *cost;
+                            }
+                            SubagentEvent::MessageEnd { text, turn } => {
+                                last_output = text.clone();
+                                total_turns = *turn;
+                            }
+                            SubagentEvent::Usage {
+                                input_tokens,
+                                output_tokens,
+                                cost_usd,
+                                ..
+                            } => {
+                                total_input_tokens += input_tokens;
+                                total_output_tokens += output_tokens;
+                                total_cost_usd += cost_usd;
+                            }
+                            SubagentEvent::Error { message, .. } => {
+                                if last_output.is_empty() {
+                                    last_output = format!("Error: {message}");
+                                }
+                            }
+                            _ => {}
+                        }
+                        // Forward to parent
+                        if let Some(ref tx) = tx_for_reader {
+                            let _ = tx
+                                .send(SubagentUpdate {
+                                    child_id: cid.clone(),
+                                    event,
+                                })
+                                .await;
+                        }
+                    }
+                    Err(_) => {
+                        // Not a JSON event — accumulate as raw output (fallback for
+                        // non-JSON mode children or intermixed text)
+                        if !line.is_empty() {
+                            if !last_output.is_empty() {
+                                last_output.push('\n');
+                            }
+                            last_output.push_str(&line);
+                        }
+                    }
+                }
+            }
+
+            (last_output, total_turns, total_input_tokens, total_output_tokens, total_cost_usd)
         });
+
         let stderr_handle = tokio::spawn(async move {
             let mut buf = Vec::new();
-            stderr_pipe
-                .read_to_end(&mut buf)
+            tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf)
                 .await
                 .map(|_| buf)
                 .map_err(|e| format!("Failed to read subagent stderr: {}", e))
@@ -373,44 +537,70 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
                 result.map_err(|e| format!("Subagent process error: {}", e))?
             }
             _ = cancel.cancelled() => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
+                // Task 2: Graceful termination — SIGTERM first, then SIGKILL
+                pipit_tools::builtins::subagent::supervisor::graceful_terminate(&mut child).await;
                 let _ = stdout_handle.await;
                 let _ = stderr_handle.await;
                 return Err("Subagent cancelled".to_string());
             }
         };
 
-        let stdout = stdout_handle
-            .await
-            .map_err(|e| format!("Subagent stdout task failed: {}", e))??;
+        let (output, total_turns, total_input_tokens, total_output_tokens, total_cost_usd) =
+            stdout_handle
+                .await
+                .map_err(|e| format!("Subagent stdout task failed: {}", e))?;
         let stderr = stderr_handle
             .await
             .map_err(|e| format!("Subagent stderr task failed: {}", e))??;
-
-        let stdout = String::from_utf8_lossy(&stdout);
         let stderr = String::from_utf8_lossy(&stderr);
 
-        if status.success() || !stdout.is_empty() {
-            // Extract the agent's final response (content between last "pipit›" markers)
-            let response = stdout
-                .lines()
-                .rev()
-                .take_while(|l| !l.starts_with("Proof packet") && !l.starts_with("Stopped:"))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-            if response.trim().is_empty() {
-                Ok(format!(
-                    "Subagent completed (exit {}). Output:\n{}",
-                    status, stdout
-                ))
-            } else {
-                Ok(response)
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        if status.success() || !output.is_empty() {
+            // Send completion event
+            if let Some(ref tx) = update_tx {
+                let _ = tx
+                    .send(SubagentUpdate {
+                        child_id: child_id.clone(),
+                        event: SubagentEvent::Completed {
+                            output: output.clone(),
+                            total_turns,
+                            total_input_tokens,
+                            total_output_tokens,
+                            total_cost_usd,
+                            duration_ms,
+                        },
+                    })
+                    .await;
             }
+
+            Ok(SubagentResult {
+                output: if output.trim().is_empty() {
+                    format!("Subagent completed (exit {status}).")
+                } else {
+                    output
+                },
+                total_turns,
+                total_input_tokens,
+                total_output_tokens,
+                total_cost_usd,
+                duration_ms,
+                model: options.model,
+            })
         } else {
+            // Send error event
+            if let Some(ref tx) = update_tx {
+                let _ = tx
+                    .send(SubagentUpdate {
+                        child_id: child_id.clone(),
+                        event: SubagentEvent::Error {
+                            message: format!("Exit {status}: {stderr}"),
+                            recoverable: false,
+                        },
+                    })
+                    .await;
+            }
+
             Err(format!(
                 "Subagent failed (exit {}). stderr:\n{}",
                 status, stderr
@@ -513,6 +703,14 @@ async fn main() -> Result<()> {
         .or_else(pipit_config::detect_project_root)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
+    // Canonicalize early so both the system prompt and tool context see the
+    // real path. On macOS /tmp is a symlink to /private/tmp — without this
+    // the model sees "/tmp/…" in the prompt but tools resolve to "/private/tmp/…",
+    // causing it to create files in the wrong directory.
+    let project_root = project_root
+        .canonicalize()
+        .unwrap_or(project_root);
+
     let overrides = CliOverrides {
         provider: cli_provider,
         model: cli.model.clone(),
@@ -530,14 +728,14 @@ async fn main() -> Result<()> {
     let mut config = pipit_config::resolve_config(Some(&project_root), overrides)
         .context("Config resolution failed")?;
 
-    let provider_kind = config.provider.default;
+    let mut provider_kind = config.provider.default;
     dbg_log(&format!(
         "[3/12] config resolved, provider={}",
         provider_kind
     ));
 
     // Resolve API key — offer interactive setup if missing
-    let api_key = match cli
+    let mut api_key = match cli
         .api_key
         .clone()
         .or_else(|| pipit_config::resolve_api_key(provider_kind))
@@ -581,7 +779,7 @@ async fn main() -> Result<()> {
     let mut model = cli.model.unwrap_or(config.model.default_model.clone());
 
     // Resolve base URL: CLI flag > config file
-    let base_url = cli.base_url.or(config.provider.custom_base_url.clone());
+    let mut base_url = cli.base_url.or(config.provider.custom_base_url.clone());
 
     // Create provider — on failure, offer interactive setup instead of dying
     let provider: Arc<dyn LlmProvider> = match pipit_provider::create_provider(
@@ -643,6 +841,18 @@ async fn main() -> Result<()> {
     dbg_log(&format!(
         "[5/12] provider created: {} / {} (max_output_tokens: {})",
         provider_kind, model, config.model.max_output_tokens
+    ));
+
+    // ── Provider Roster: auto-discover all available provider profiles ──
+    let mut provider_roster = pipit_config::provider_roster::ProviderRoster::discover(
+        provider_kind,
+        &model,
+        &api_key,
+        base_url.as_deref(),
+    );
+    dbg_log(&format!(
+        "[5.1/12] provider roster: {} profile(s) discovered",
+        provider_roster.len()
     ));
 
     // Build model router based on agent mode
@@ -805,16 +1015,23 @@ async fn main() -> Result<()> {
         skills.count()
     ));
 
-    // Build system prompt (with skill index injected as Tier 1)
+    // Build system prompt via the composable prompt kernel.
     // Boot listing is returned separately for turn-1 injection (keeps system prompt cache-stable).
-    let (system_prompt, boot_listing) = prompt_builder::build_system_prompt(
+    // Pass context_window so the kernel can emit compact guidelines for small models.
+    dbg_log(&format!(
+        "[7.5] context_window={}, model={}",
+        config.model.context_window, config.model.default_model
+    ));
+    let (assembled_prompt, boot_listing) = prompt_builder::build_composed_prompt_with_context(
         &project_root,
         &tools,
         config.approval,
         provider_kind,
         &skills,
         &workflow_assets,
+        Some(config.model.context_window),
     );
+    let system_prompt = assembled_prompt.materialize();
 
     // Build context manager
     let mut context = ContextManager::with_settings(
@@ -826,11 +1043,15 @@ async fn main() -> Result<()> {
             compression_threshold: config.context.compression_threshold,
             preserve_recent_messages: config.context.preserve_recent_messages,
             max_output_tokens: config.model.max_output_tokens,
-            tool_result_max_chars: 32_000,
+            tool_result_max_chars: 131_072,
         },
     );
 
-    dbg_log("[8/12] system_prompt + context_manager built");
+    dbg_log(&format!(
+        "[8/12] system_prompt + context_manager built (prompt={} chars, ~{} tokens)",
+        system_prompt.len(),
+        system_prompt.len() / 4,
+    ));
 
     // Build RepoMap — skip if project_root is not a git repo (e.g. user's home dir)
     // to avoid scanning millions of files and hanging forever.
@@ -847,8 +1068,11 @@ async fn main() -> Result<()> {
             "[8.5] building repomap for {}",
             project_root.display()
         ));
-        // Dynamic RepoMap budget: allocate 10% of context window, clamped to [1024, 8192].
-        let repo_map_budget = ((config.model.context_window as u64) / 10).clamp(1024, 8192);
+        // Dynamic RepoMap budget: allocate 10% of context window, capped.
+        // For small models (≤128K), cap aggressively to leave room for conversation.
+        // For large models (>128K), allow up to 8192 tokens.
+        let repo_map_cap: u64 = if config.model.context_window <= 131_072 { 2048 } else { 8192 };
+        let repo_map_budget = ((config.model.context_window as u64) / 10).clamp(1024, repo_map_cap);
         let root = project_root.clone();
         // RepoMap build is CPU-intensive (file scanning, tree-sitter parsing).
         // Run on the blocking threadpool to avoid starving the async runtime.
@@ -914,7 +1138,10 @@ async fn main() -> Result<()> {
         pev: pev_config,
         dry_run: cli.dry_run,
         cli_explicit_max_turns: cli.max_turns.is_some(),
-        boot_context: if boot_listing.is_empty() {
+        boot_context: if boot_listing.is_empty() || config.model.context_window <= 131_072 {
+            // For compact-context models (≤128K), skip boot listing injection.
+            // The project structure costs ~200-500 tokens in the first user message.
+            // The model can use list_directory on demand, which is cheaper overall.
             None
         } else {
             Some(format!(
@@ -1249,6 +1476,8 @@ async fn main() -> Result<()> {
             status,
             trace_ui,
             agent_mode,
+            cli.tmux,
+            cli.vim,
         )
         .await;
     }
@@ -2666,6 +2895,111 @@ async fn main() -> Result<()> {
                         }
                         continue;
                     }
+                    SlashCommand::Provider(ref arg) => {
+                        match arg.as_deref() {
+                            None | Some("") | Some("list") => {
+                                // Show all available provider profiles
+                                eprintln!("\x1b[1mProvider Roster\x1b[0m");
+                                eprintln!();
+                                eprint!("{}", provider_roster.render_list());
+                                eprintln!();
+                                eprintln!("\x1b[2mUsage: /provider <label|number|next|prev>\x1b[0m");
+                            }
+                            Some("next" | "n") => {
+                                let profile = provider_roster.next();
+                                match agent.set_model(
+                                    profile.kind,
+                                    &profile.model,
+                                    &profile.api_key,
+                                    profile.base_url.as_deref(),
+                                ) {
+                                    Ok(()) => {
+                                        provider_kind = profile.kind;
+                                        model = profile.model.clone();
+                                        api_key = profile.api_key.clone();
+                                        base_url = profile.base_url.clone();
+                                        ui.status_mut().model = provider_roster.status_label();
+                                        ui.status_mut().provider_kind = format!("{}", provider_kind);
+                                        eprintln!(
+                                            "\x1b[32mSwitched to: {}\x1b[0m",
+                                            provider_roster.status_label()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        // Revert roster to previous
+                                        provider_roster.prev();
+                                        eprintln!("\x1b[31m{}\x1b[0m", e);
+                                    }
+                                }
+                            }
+                            Some("prev" | "p") => {
+                                let profile = provider_roster.prev();
+                                match agent.set_model(
+                                    profile.kind,
+                                    &profile.model,
+                                    &profile.api_key,
+                                    profile.base_url.as_deref(),
+                                ) {
+                                    Ok(()) => {
+                                        provider_kind = profile.kind;
+                                        model = profile.model.clone();
+                                        api_key = profile.api_key.clone();
+                                        base_url = profile.base_url.clone();
+                                        ui.status_mut().model = provider_roster.status_label();
+                                        ui.status_mut().provider_kind = format!("{}", provider_kind);
+                                        eprintln!(
+                                            "\x1b[32mSwitched to: {}\x1b[0m",
+                                            provider_roster.status_label()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        provider_roster.next(); // Revert
+                                        eprintln!("\x1b[31m{}\x1b[0m", e);
+                                    }
+                                }
+                            }
+                            Some(query) => {
+                                // Try numeric index first, then label match
+                                let switch_result = if let Ok(idx) = query.parse::<usize>() {
+                                    provider_roster.switch_to_index(idx)
+                                } else {
+                                    provider_roster.switch_to(query)
+                                };
+                                match switch_result {
+                                    Ok(profile) => {
+                                        let profile = profile.clone();
+                                        match agent.set_model(
+                                            profile.kind,
+                                            &profile.model,
+                                            &profile.api_key,
+                                            profile.base_url.as_deref(),
+                                        ) {
+                                            Ok(()) => {
+                                                provider_kind = profile.kind;
+                                                model = profile.model.clone();
+                                                api_key = profile.api_key.clone();
+                                                base_url = profile.base_url.clone();
+                                                ui.status_mut().model = provider_roster.status_label();
+                                                ui.status_mut().provider_kind =
+                                                    format!("{}", provider_kind);
+                                                eprintln!(
+                                                    "\x1b[32mSwitched to: {}\x1b[0m",
+                                                    provider_roster.status_label()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                eprintln!("\x1b[31m{}\x1b[0m", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("\x1b[31m{}\x1b[0m", e);
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     SlashCommand::Branch(ref name) => {
                         if let Some(branch_name) = name {
                             // Route through VCS gateway — firewall-checked, ledger-logged
@@ -2859,6 +3193,10 @@ async fn main() -> Result<()> {
                         eprintln!();
                         continue;
                     }
+                    SlashCommand::Vim => {
+                        eprintln!("⌨ Vim mode is only available in TUI mode (remove --classic)");
+                        continue;
+                    }
                     SlashCommand::Unknown(cmd) => {
                         let args = input
                             .strip_prefix(&format!("/{}", cmd))
@@ -2990,7 +3328,14 @@ async fn main() -> Result<()> {
                 continue;
             }
             UserInput::PromptWithFiles { prompt, files } => {
-                // Add @file mentions to context, then run the prompt
+                // Show clean file indicators
+                for f in &files {
+                    let name = std::path::Path::new(f)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(f);
+                    eprintln!("\x1b[36m  📎 {}\x1b[0m", name);
+                }
                 let file_list = files.join(", ");
                 let enriched = format!("First read these files: {}. Then: {}", file_list, prompt);
                 let cancel = CancellationToken::new();
@@ -3013,12 +3358,22 @@ async fn main() -> Result<()> {
             } => {
                 // Read image files and send as vision prompt
                 let mut image_descriptions = Vec::new();
-                for img_path in &image_paths {
+                for (i, img_path) in image_paths.iter().enumerate() {
+                    let name = std::path::Path::new(img_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("image");
                     match pipit_io::input::read_image_file(img_path) {
                         Ok((media_type, data)) => {
                             let size_kb = data.len() / 1024;
+                            eprintln!(
+                                "\x1b[35m  🖼 Image #{}: {} ({}KB)\x1b[0m",
+                                i + 1,
+                                name,
+                                size_kb
+                            );
                             image_descriptions
-                                .push(format!("{} ({}KB, {})", img_path, size_kb, media_type));
+                                .push(format!("{} ({}KB, {})", name, size_kb, media_type));
                             // Inject the image into context as a user message with image content block
                             agent.inject_image(&media_type, data);
                         }

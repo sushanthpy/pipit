@@ -158,6 +158,28 @@ pub enum EvidenceArtifact {
         mutation_applied: bool,
         path: Option<String>,
     },
+    /// Task 9: Subagent execution evidence — first-class in the proof chain.
+    SubagentExecution {
+        /// Lineage branch ID of the child.
+        branch_id: String,
+        /// Task that was assigned.
+        task: String,
+        /// The child's verdict/summary.
+        verdict: String,
+        /// Confidence from the child's work.
+        confidence: f32,
+        /// Whether the child succeeded.
+        success: bool,
+        /// Token usage (input + output).
+        tokens_used: u64,
+        /// Cost in USD.
+        cost_usd: f64,
+    },
+    /// Task 11: Integration verification passed.
+    IntegrationVerified {
+        /// Number of cross-artifact checks that were run.
+        checks_run: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +235,185 @@ pub struct ProofPacket {
     /// Keys: "planner", "verifier", "governor".
     #[serde(default)]
     pub tiers: HashMap<String, ImplementationTier>,
+    /// Requirement-to-artifact traceability matrix.
+    /// Tracks which requirements were satisfied by which artifacts.
+    #[serde(default)]
+    pub requirement_coverage: RequirementCoverage,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Requirement-to-Artifact Traceability
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single requirement extracted from the user's objective.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Requirement {
+    /// Short identifier (e.g., "REQ-01", "entity:bookmarks", "endpoint:GET /bookmarks").
+    pub id: String,
+    /// Human-readable requirement description.
+    pub description: String,
+    /// The kind of requirement.
+    pub kind: RequirementKind,
+    /// Whether this requirement has been satisfied.
+    pub status: RequirementStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RequirementKind {
+    /// An entity/table that must exist.
+    Entity,
+    /// An API endpoint that must be implemented.
+    Endpoint,
+    /// A business rule or validation constraint.
+    BusinessRule,
+    /// A test that must pass.
+    Test,
+    /// A file that must be created.
+    Artifact,
+    /// A non-functional requirement.
+    NonFunctional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequirementStatus {
+    /// Not yet addressed.
+    Pending,
+    /// Partially implemented (some artifacts exist).
+    Partial,
+    /// Fully satisfied with evidence.
+    Satisfied,
+    /// Explicitly skipped or out of scope.
+    Skipped,
+}
+
+/// An implementation artifact that satisfies one or more requirements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceableArtifact {
+    /// File path or command output that constitutes evidence.
+    pub path: String,
+    /// What this artifact is (file, table, route, test).
+    pub kind: String,
+    /// Which requirement IDs this artifact satisfies.
+    pub satisfies: Vec<String>,
+}
+
+/// Bipartite graph tracking requirement → artifact coverage.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RequirementCoverage {
+    pub requirements: Vec<Requirement>,
+    pub artifacts: Vec<TraceableArtifact>,
+}
+
+impl RequirementCoverage {
+    /// Compute coverage ratio: satisfied / total requirements.
+    pub fn coverage_ratio(&self) -> f32 {
+        if self.requirements.is_empty() {
+            return 1.0;
+        }
+        let satisfied = self
+            .requirements
+            .iter()
+            .filter(|r| matches!(r.status, RequirementStatus::Satisfied))
+            .count() as f32;
+        satisfied / self.requirements.len() as f32
+    }
+
+    /// Get unsatisfied requirements.
+    pub fn unsatisfied(&self) -> Vec<&Requirement> {
+        self.requirements
+            .iter()
+            .filter(|r| matches!(r.status, RequirementStatus::Pending | RequirementStatus::Partial))
+            .collect()
+    }
+
+    /// Mark a requirement as satisfied by an artifact.
+    pub fn satisfy(&mut self, requirement_id: &str, artifact_path: &str, artifact_kind: &str) {
+        // Update requirement status
+        if let Some(req) = self.requirements.iter_mut().find(|r| r.id == requirement_id) {
+            req.status = RequirementStatus::Satisfied;
+        }
+        // Add or update artifact
+        if let Some(art) = self.artifacts.iter_mut().find(|a| a.path == artifact_path) {
+            if !art.satisfies.contains(&requirement_id.to_string()) {
+                art.satisfies.push(requirement_id.to_string());
+            }
+        } else {
+            self.artifacts.push(TraceableArtifact {
+                path: artifact_path.to_string(),
+                kind: artifact_kind.to_string(),
+                satisfies: vec![requirement_id.to_string()],
+            });
+        }
+    }
+
+    /// Populate requirements from a domain architecture IR.
+    pub fn from_architecture_ir(ir: &crate::domain_architect::ArchitectureIR) -> Self {
+        let mut requirements = Vec::new();
+
+        for entity in &ir.entities {
+            requirements.push(Requirement {
+                id: format!("entity:{}", entity.name),
+                description: format!("Entity '{}' must have a corresponding table/model", entity.name),
+                kind: RequirementKind::Entity,
+                status: RequirementStatus::Pending,
+            });
+        }
+
+        for iface in &ir.interfaces {
+            requirements.push(Requirement {
+                id: format!("endpoint:{} {}", iface.method, iface.path),
+                description: format!("{} {} — {}", iface.method, iface.path, iface.description),
+                kind: RequirementKind::Endpoint,
+                status: RequirementStatus::Pending,
+            });
+        }
+
+        for inv in &ir.invariants {
+            requirements.push(Requirement {
+                id: format!("invariant:{}", &inv.description[..inv.description.len().min(40)]),
+                description: inv.description.clone(),
+                kind: RequirementKind::BusinessRule,
+                status: RequirementStatus::Pending,
+            });
+        }
+
+        Self {
+            requirements,
+            artifacts: Vec::new(),
+        }
+    }
+
+    /// Render a coverage summary for display.
+    pub fn render_summary(&self) -> String {
+        if self.requirements.is_empty() {
+            return String::new();
+        }
+        let total = self.requirements.len();
+        let satisfied = self.requirements.iter()
+            .filter(|r| matches!(r.status, RequirementStatus::Satisfied))
+            .count();
+        let partial = self.requirements.iter()
+            .filter(|r| matches!(r.status, RequirementStatus::Partial))
+            .count();
+        let pending = self.requirements.iter()
+            .filter(|r| matches!(r.status, RequirementStatus::Pending))
+            .count();
+
+        let mut out = format!(
+            "## Requirement Coverage: {}/{} ({:.0}%)\n",
+            satisfied, total, self.coverage_ratio() * 100.0
+        );
+        if partial > 0 {
+            out.push_str(&format!("  Partial: {}\n", partial));
+        }
+        if pending > 0 {
+            out.push_str(&format!("  Pending: {}\n", pending));
+            for req in self.unsatisfied() {
+                out.push_str(&format!("  - [{}] {}\n", req.id, req.description));
+            }
+        }
+        out
+    }
 }
 
 impl ChangeClaim {

@@ -45,6 +45,8 @@ pub enum SectionId {
     Knowledge,
     /// Memory context.
     Memory,
+    /// Domain architecture analysis (synthesized from requirements).
+    DomainArchitecture,
     /// Custom section injected by an embedder or extension.
     Custom(String),
 }
@@ -66,6 +68,7 @@ impl fmt::Display for SectionId {
             Self::Skills => write!(f, "skills"),
             Self::Knowledge => write!(f, "knowledge"),
             Self::Memory => write!(f, "memory"),
+            Self::DomainArchitecture => write!(f, "domain_architecture"),
             Self::Custom(name) => write!(f, "custom:{}", name),
         }
     }
@@ -132,12 +135,18 @@ pub struct PromptInputs {
     pub knowledge_section: Option<String>,
     /// Memory context (pre-rendered).
     pub memory_section: Option<String>,
+    /// Domain architecture analysis (pre-rendered from ArchitectureIR).
+    pub domain_architecture_section: Option<String>,
     /// Custom appended sections from embedders.
     pub custom_sections: Vec<PromptSection>,
     /// Sections to explicitly exclude.
     pub exclude_sections: Vec<SectionId>,
     /// Override sections — replace the default content for a section ID.
     pub override_sections: HashMap<SectionId, String>,
+    /// Model context window in tokens. When ≤128K, the assembler emits a
+    /// compact fused prompt instead of verbose separate sections. This saves
+    /// ~3K tokens of system prompt overhead for smaller/local models.
+    pub context_window: Option<u64>,
 }
 
 /// A tool declaration for prompt rendering.
@@ -258,17 +267,45 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| ".".to_string());
 
-    // Section: Core identity
+    // ── Compact context detection ──
+    // When the model's context window is ≤128K, fuse the verbose guidance
+    // sections into one compact block. This trades redundant instruction
+    // tokens for more room for actual conversation and tool results.
+    let use_compact = inputs
+        .context_window
+        .map(|cw| cw <= COMPACT_CONTEXT_THRESHOLD)
+        .unwrap_or(false);
+
+    // Section: Core identity + Environment (always emitted, compact or not)
     if !excluded.contains(&SectionId::CoreIdentity) {
         let content = inputs
             .override_sections
             .get(&SectionId::CoreIdentity)
             .cloned()
             .unwrap_or_else(|| {
-                "You are Pipit, an expert AI coding agent working in the terminal.".to_string()
+                format!(
+                    "You are Pipit, an expert AI coding agent.\nWorking directory: {}\nProject: {}\nPlatform: {}",
+                    project_root_display,
+                    project_name,
+                    std::env::consts::OS,
+                )
             });
         sections.push(PromptSection::new(SectionId::CoreIdentity, content));
     }
+
+    if use_compact {
+        // ── COMPACT PATH: one fused section replaces 5 verbose ones ──
+        // Saves ~3K tokens of system prompt overhead.
+        if !excluded.contains(&SectionId::ToolGuide) {
+            let content = inputs
+                .override_sections
+                .get(&SectionId::ToolGuide)
+                .cloned()
+                .unwrap_or_else(default_compact_guidelines);
+            sections.push(PromptSection::new(SectionId::ToolGuide, content));
+        }
+    } else {
+        // ── VERBOSE PATH: full sections for large-context models ──
 
     // Section: Environment
     if !excluded.contains(&SectionId::Environment) {
@@ -327,6 +364,10 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
         sections.push(PromptSection::new(SectionId::BehavioralRules, content));
     }
 
+    } // ── end verbose path else block ──
+
+    // ── Shared sections (emitted for both compact and verbose paths) ──
+
     // Section: Project instructions (from PIPIT.md / CLAUDE.md)
     if !excluded.contains(&SectionId::ProjectInstructions) && !inputs.project_instructions.is_empty()
     {
@@ -353,7 +394,8 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
     // The Tool Selection Guide (above) already explains WHEN to use each
     // tool category, which is the important part.
 
-    // Section: Edit format
+    // Section: Edit format (verbose path only — compact already includes it)
+    if !use_compact {
     if !excluded.contains(&SectionId::EditFormat) {
         let content = inputs
             .override_sections
@@ -365,6 +407,7 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
                     .to_string()
             });
         sections.push(PromptSection::new(SectionId::EditFormat, content));
+    }
     }
 
     // Section: Provider hints
@@ -421,6 +464,15 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
         }
     }
 
+    // Section: Domain Architecture (synthesized from requirements)
+    if !excluded.contains(&SectionId::DomainArchitecture) {
+        if let Some(ref arch) = inputs.domain_architecture_section {
+            if !arch.is_empty() {
+                sections.push(PromptSection::new(SectionId::DomainArchitecture, arch.clone()));
+            }
+        }
+    }
+
     // Custom sections from embedders
     for custom in &inputs.custom_sections {
         if !excluded.contains(&custom.id) {
@@ -433,75 +485,67 @@ pub fn assemble(inputs: &PromptInputs) -> AssembledPrompt {
 
 // ── Default section content ─────────────────────────────────────────────
 
+/// Context window threshold below which the assembler emits the compact fused
+/// prompt. Models with ≤128K tokens benefit from a tighter system prompt because
+/// every byte of system prompt competes with conversation history and tool results.
+const COMPACT_CONTEXT_THRESHOLD: u64 = 131_072;
+
 fn default_tool_guide() -> String {
+    // Tool guide: describes what each tool does and key usage patterns.
+    // Operational misuse (e.g. using bash for grep) is also caught at runtime
+    // by validate_tool_semantics() — but the guide here helps the model pick
+    // the right tool on the first try, especially for smaller models.
     r#"
 ## Tool selection guide
 
 You have these tools. Choose the RIGHT one on the FIRST try:
 
 **Finding files by name or pattern → `glob`**
-  Use glob when you know part of the filename or extension.
-  Example: glob("**/*.rs"), glob("**/test_*.py"), glob(".pipit/plans/**")
-  NEVER use `bash find` or `bash ls | grep` for file discovery — glob is faster and respects .gitignore.
+  Example: glob("**/*.rs"), glob("**/test_*.py")
 
 **Finding files by content → `grep`**
-  Use grep when you need to find WHERE a string/symbol/function appears.
-  Example: grep("fn main"), grep("TODO"), grep("import pandas")
+  Example: grep("fn main"), grep("TODO")
   grep searches file contents. glob searches file names. Don't confuse them.
 
 **Understanding directory structure → `list_directory`**
   Use when you need to see what's in a specific directory.
-  You already have the project root listing above — don't re-list it.
 
 **Reading file contents → `read_file`**
-  Read the file ONCE before editing. Don't re-read files already in your context.
+  Read the file ONCE before editing. Don't re-read files already in context.
   Use line ranges for large files: read_file(path, start_line, end_line).
 
 **Editing existing files → `edit_file`**
-  For surgical changes. The search text must match exactly.
-  ALWAYS read the file first to get exact text to match against.
+  For surgical changes. Read the file first to get exact text to match.
   Prefer edit_file over write_file for existing files.
 
 **Creating new files → `write_file`**
-  Only for NEW files or complete rewrites. Never for small edits.
+  Only for NEW files or complete rewrites.
 
 **Running commands → `bash`**
-  For build, test, lint, git operations, or anything that needs a shell.
-  DO NOT use bash for: file discovery (use glob), reading files (use read_file),
-  listing directories (use list_directory), or searching content (use grep).
-  **`cd` persists across calls.** Run `cd /path` once and subsequent commands
-  run there. You do NOT need `cd /path && command` every time.
+  For build, test, lint, git operations.
+  `cd` persists across calls — you don't need `cd /path && command` every time.
 
 **Tracking multi-step work → `todo`**
-  Use todo for any task with multiple concrete steps, files, or verification tasks.
-  Create a short checklist as soon as the work stops being trivial.
-  Keep statuses accurate (`pending` → `in_progress` → `done`) as you progress.
-  Do NOT use todo for one-shot answers or single quick edits.
+  Use for tasks with multiple concrete steps.
 
 **Delegating independent work → `subagent`**
-  Use subagent only for bounded, parallelizable side tasks that do NOT block your
-  immediate next step. Good examples: isolated investigation, independent test
-  authoring, or reviewing a separate module while you continue locally.
-  Do NOT spawn a subagent just to do your first read, to replace normal tool use,
-  or when the very next action depends on its answer.
-  Prefer at most 1-2 active subagents at a time, and record delegated work in todo."#
+  For bounded, parallelizable subtasks only."#
         .to_string()
 }
 
 fn default_efficiency_rules() -> String {
+    // Slim version: only model-guidance that influences LLM decision-making.
+    // Runtime-enforced policies (turn limits, tool authorization, context budgets)
+    // are handled by PolicyKernel / TurnKernel / ContextManager and omitted here.
     r#"
 ## Efficiency rules
 
-1. **Minimize turns.** Each tool call costs a full round-trip. Accomplish the task in as few turns as possible.
-2. **Don't wander.** If you know the path, go directly. Don't list_directory then read_file — just read_file. Don't run `pwd` — you know the working directory from the environment section above.
+1. **Minimize turns.** Accomplish the task in as few tool calls as possible.
+2. **Don't wander.** If you know the path, go directly — don't list_directory then read_file.
 3. **Don't re-read.** Once a file's content is in your context, don't read it again unless it was modified.
-4. **Don't narrate tool calls.** Don't say "Let me search for the file" before searching. Just search. Don't explain what shell commands do. Just run them and interpret the output.
-5. **Don't apologize or hedge.** Don't say "I'll try to..." or "Let me attempt...". State what you're doing and do it.
-6. **Use the structure.** You have the project listing above. Use it to navigate directly instead of exploring blindly.
-7. **Batch when possible.** If you need to read multiple files, call read_file for each one in the same turn.
-8. **Don't verify cd.** After `cd /path`, don't run `pwd` to check — the tool confirms the directory change.
-9. **Track real work.** For non-trivial implementation tasks, use `todo` instead of keeping the plan implicit in prose.
-10. **Delegate surgically.** Spawn `subagent` only when the subtask is truly independent and worth parallelizing."#
+4. **Don't narrate.** Don't say "Let me search for the file" — just search.
+5. **Batch when possible.** Call multiple tools in the same turn when they are independent.
+6. **Use the structure.** Use the project listing to navigate directly instead of exploring blindly."#
         .to_string()
 }
 
@@ -523,17 +567,39 @@ Use markdown in your responses for readability:
 }
 
 fn default_behavioral_rules() -> String {
+    // Model-facing guidance only. Runtime enforcement (authorization, turn budget,
+    // verification gates) is handled by PolicyKernel / TurnKernel.
     r#"
 ## Behavioral rules
 
-1. Read before editing — always understand the full context before making changes.
+1. Read before editing — understand the full context before making changes.
 2. Make minimal, focused changes. Don't refactor code you weren't asked to change.
 3. Use edit_file for surgical edits, not write_file (which rewrites the whole file).
-4. If you encounter an error, analyze it and try a different approach.
-5. Prefer existing patterns and conventions found in the codebase.
-6. When asked a QUESTION (not a task), answer directly from what you know or can quickly look up. Don't create plans or strategies for Q&A.
-7. When the task spans several steps, create and maintain a `todo` list before diving into execution.
-8. Before delegating with `subagent`, verify that you can keep making progress locally while it runs."#
+4. Prefer existing patterns and conventions found in the codebase.
+5. When asked a QUESTION, answer directly. Don't create plans or strategies for Q&A."#
+        .to_string()
+}
+
+/// Compact fused guidelines — replaces ToolGuide + EfficiencyRules +
+/// ResponseFormatting + BehavioralRules + EditFormat for models with
+/// constrained context windows. ~950 chars vs ~4200 chars (77% reduction).
+///
+/// Design principle: every token in the system prompt must directly improve
+/// the model's next action. Verbose explanations that a 7B+ model already
+/// knows from pretraining are wasted context.
+fn default_compact_guidelines() -> String {
+    r#"
+## Guidelines
+
+- Be concise. Use markdown for formatting.
+- Read files before editing. Make minimal, focused changes.
+- Minimize tool calls — go directly to files if you know the path.
+- Don't re-read files already in context.
+- Use edit_file for surgical edits, write_file only for new files.
+- Prefer grep/find/ls tools over bash for file exploration.
+- Batch independent tool calls in a single response.
+- Answer questions directly — no plans or preamble for Q&A.
+- Show file paths clearly when referencing code."#
         .to_string()
 }
 
@@ -640,5 +706,137 @@ mod tests {
         let result = sanitize_injected_content("<script>alert(1)</script>", "test");
         assert!(result.contains("&lt;script&gt;"));
         assert!(!result.contains("<script>"));
+    }
+
+    // ── Section-level policy tests ──────────────────────────────────────
+
+    #[test]
+    fn behavioral_rules_inclusion_and_exclusion() {
+        // Default: BehavioralRules included
+        let default_prompt = assemble(&PromptInputs::default());
+        assert!(
+            default_prompt.section(SectionId::BehavioralRules).is_some(),
+            "BehavioralRules should be present by default"
+        );
+        let text = default_prompt.materialize();
+        assert!(text.contains("## Behavioral rules"));
+
+        // Excluded: BehavioralRules absent
+        let inputs = PromptInputs {
+            exclude_sections: vec![SectionId::BehavioralRules],
+            ..Default::default()
+        };
+        let excluded_prompt = assemble(&inputs);
+        assert!(
+            excluded_prompt.section(SectionId::BehavioralRules).is_none(),
+            "BehavioralRules should be absent when excluded"
+        );
+        assert!(!excluded_prompt.materialize().contains("## Behavioral rules"));
+    }
+
+    #[test]
+    fn provider_hint_composition() {
+        // With provider hint
+        let inputs = PromptInputs {
+            provider_hint: Some("You support parallel tool use.".to_string()),
+            ..Default::default()
+        };
+        let assembled = assemble(&inputs);
+        let text = assembled.materialize();
+        assert!(text.contains("## Model hints"));
+        assert!(text.contains("parallel tool use"));
+
+        // Without provider hint — no Model hints section
+        let inputs_no_hint = PromptInputs::default();
+        let assembled_no_hint = assemble(&inputs_no_hint);
+        assert!(
+            assembled_no_hint.section(SectionId::ProviderHints).is_none(),
+            "ProviderHints section should be absent when no hint is provided"
+        );
+    }
+
+    #[test]
+    fn project_instruction_truncation() {
+        // Instruction content exceeding 8000 chars should be truncated
+        let long_content = "x".repeat(10_000);
+        let inputs = PromptInputs {
+            project_instructions: vec![("PIPIT.md".to_string(), long_content.clone())],
+            ..Default::default()
+        };
+        let assembled = assemble(&inputs);
+        let section = assembled.section(SectionId::ProjectInstructions).unwrap();
+        // The raw content (10000 chars) should be truncated to 8000 within the section
+        assert!(
+            !section.content.contains(&"x".repeat(10_000)),
+            "Project instructions should be truncated at 8000 chars"
+        );
+        assert!(
+            section.content.contains(&"x".repeat(8000)),
+            "Truncated content should include up to 8000 chars"
+        );
+    }
+
+    #[test]
+    fn custom_override_takes_precedence() {
+        // Override CoreIdentity + add Custom section — both should appear
+        let mut overrides = HashMap::new();
+        overrides.insert(SectionId::CoreIdentity, "Custom identity.".to_string());
+        let inputs = PromptInputs {
+            override_sections: overrides,
+            custom_sections: vec![PromptSection::new(
+                SectionId::Custom("extra".to_string()),
+                "## Extra\nExtension content here.".to_string(),
+            )],
+            ..Default::default()
+        };
+        let assembled = assemble(&inputs);
+        let text = assembled.materialize();
+        assert!(text.contains("Custom identity."), "Override should replace default");
+        assert!(!text.contains("Pipit"), "Default identity should be gone");
+        assert!(text.contains("Extension content here."), "Custom section should appear");
+    }
+
+    #[test]
+    fn boot_context_not_in_system_prompt() {
+        // The prompt kernel should never include boot_context — it belongs in
+        // the turn-1 user message for cache stability. Verify there's no
+        // "Initial project structure" or boot listing in assembled output.
+        let inputs = PromptInputs {
+            project_root: Some(std::path::PathBuf::from("/tmp/test-project")),
+            ..Default::default()
+        };
+        let assembled = assemble(&inputs);
+        let text = assembled.materialize();
+        assert!(
+            !text.contains("Initial project structure"),
+            "Boot context must not appear in system prompt"
+        );
+    }
+
+    #[test]
+    fn efficiency_rules_are_model_guidance_only() {
+        // After slimming, efficiency rules should not contain runtime-enforced
+        // policies like "verify cd", "track real work", or "delegate surgically".
+        let inputs = PromptInputs::default();
+        let assembled = assemble(&inputs);
+        let section = assembled.section(SectionId::EfficiencyRules).unwrap();
+        assert!(!section.content.contains("Don't verify cd"),
+            "cd verification is a runtime guarantee, not model guidance");
+        assert!(!section.content.contains("Track real work"),
+            "todo tracking is tool-specific advice moved to ToolGuide");
+        assert!(!section.content.contains("Delegate surgically"),
+            "subagent policy is tool-specific advice moved to ToolGuide");
+    }
+
+    #[test]
+    fn behavioral_rules_are_model_guidance_only() {
+        // Behavioral rules should not include runtime-enforced policies.
+        let inputs = PromptInputs::default();
+        let assembled = assemble(&inputs);
+        let section = assembled.section(SectionId::BehavioralRules).unwrap();
+        assert!(!section.content.contains("analyze it and try a different approach"),
+            "Error recovery is handled by the agent loop, not prompt prose");
+        assert!(!section.content.contains("create and maintain a `todo` list"),
+            "todo management is tool-level guidance in ToolGuide");
     }
 }

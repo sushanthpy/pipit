@@ -107,6 +107,46 @@ pub enum SubagentStatus {
     Cancelled,
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  Tmux bridge state — tracked in the TUI for the Agents tab
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Tmux bridge integration state shown in the Agents tab.
+#[derive(Debug, Clone, Default)]
+pub struct TmuxBridgeState {
+    /// Whether tmux mode is active for this session.
+    pub enabled: bool,
+    /// Tmux session name.
+    pub session_name: Option<String>,
+    /// Snapshot of managed panes.
+    pub panes: Vec<TmuxPaneSnapshot>,
+    /// Recent shell commands executed via the tmux bridge.
+    pub recent_commands: Vec<TmuxCommandEntry>,
+    /// Whether tmux is available on this system.
+    pub tmux_available: bool,
+}
+
+/// Snapshot of a tmux pane for TUI rendering.
+#[derive(Debug, Clone)]
+pub struct TmuxPaneSnapshot {
+    pub pane_id: String,
+    pub role: String,
+    pub width: u16,
+    pub height: u16,
+    pub current_command: String,
+    pub current_path: String,
+    pub is_active: bool,
+}
+
+/// A command executed through the tmux bridge.
+#[derive(Debug, Clone)]
+pub struct TmuxCommandEntry {
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub pane_id: String,
+}
+
 /// UI mode — determines which screen is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
@@ -216,13 +256,13 @@ pub struct ActivityLine {
 
 /// Maximum content lines retained. Beyond this, oldest lines are evicted.
 /// Prevents unbounded memory growth during long sessions.
-const MAX_CONTENT_LINES: usize = 2000;
+const MAX_CONTENT_LINES: usize = 10_000;
 
 /// Maximum activity entries retained.
 const MAX_ACTIVITY_LINES: usize = 300;
 
 /// How many lines to evict when the cap is hit (batch eviction for efficiency).
-const CONTENT_EVICT_BATCH: usize = 500;
+const CONTENT_EVICT_BATCH: usize = 2000;
 const ACTIVITY_EVICT_BATCH: usize = 100;
 
 /// Maximum streaming text bytes before compaction.
@@ -304,6 +344,9 @@ pub struct TuiState {
     pub current_turn_had_tool_calls: bool,
     /// Insert the markdown separator lazily so tool-only turns do not leave empty rules behind.
     pending_turn_separator: bool,
+    /// When true, the user has scrolled up to read history — auto-scroll
+    /// is suppressed until they return to the bottom.
+    user_scrolled_content: bool,
     /// Total content lines ever produced (monotonic counter for tracking evictions).
     total_content_produced: u64,
     /// Last frame timestamp for frame-budget rendering.
@@ -317,6 +360,8 @@ pub struct TuiState {
     pub subagent_runs: Vec<SubagentRun>,
     /// Kill request raised from the Agents tab and consumed by the outer TUI loop.
     pub kill_active_subagents_requested: bool,
+    /// Tmux bridge state for the Agents tab.
+    pub tmux_state: TmuxBridgeState,
 }
 
 /// Prominent completion indicator shown after the agent finishes.
@@ -366,12 +411,14 @@ impl TuiState {
             current_turn_content_start: 0,
             current_turn_had_tool_calls: false,
             pending_turn_separator: false,
+            user_scrolled_content: false,
             total_content_produced: 0,
             last_frame_time: None,
             completion_status: None,
             side_tab_scroll_offset: 0,
             subagent_runs: Vec::new(),
             kill_active_subagents_requested: false,
+            tmux_state: TmuxBridgeState::default(),
         }
     }
 
@@ -417,7 +464,7 @@ impl TuiState {
 
     /// Flush any in-flight streaming text to content_lines.
     /// Called before injecting activity markers so they appear in the right order.
-    fn commit_streaming(&mut self) {
+    pub fn commit_streaming(&mut self) {
         if !self.streaming_text.is_empty() {
             let new_lines: Vec<String> = self
                 .streaming_text
@@ -431,7 +478,7 @@ impl TuiState {
     }
 
     /// Force the draw layer to re-parse content_lines on the next frame.
-    fn invalidate_content_cache(&mut self) {
+    pub fn invalidate_content_cache(&mut self) {
         self.cached_lines_count = 0;
         self.cached_parsed_lines.clear();
     }
@@ -520,6 +567,7 @@ impl TuiState {
         self.cached_lines_count = 0;
         self.content_scroll_offset = 0;
         self.scroll_offset = 0;
+        self.user_scrolled_content = false;
         self.focused_pane = PaneFocus::Input;
         self.search_query.clear();
         self.search_match_index = 0;
@@ -533,7 +581,11 @@ impl TuiState {
     }
 
     pub fn auto_scroll_content(&mut self) {
-        self.content_scroll_offset = 0;
+        // Only auto-scroll if the user hasn't manually scrolled up.
+        // This prevents yanking them away from history they're reading.
+        if !self.user_scrolled_content {
+            self.content_scroll_offset = 0;
+        }
     }
 
     pub fn cycle_focus(&mut self, forward: bool) {
@@ -572,11 +624,20 @@ impl TuiState {
     pub fn scroll_content_by(&mut self, delta: i16) {
         let max = (self.content_lines.len() + self.streaming_text.lines().count()) as u16;
         if delta >= 0 {
+            // Scrolling up (towards older content).
             self.content_scroll_offset = (self.content_scroll_offset + delta as u16).min(max);
+            if self.content_scroll_offset > 0 {
+                self.user_scrolled_content = true;
+            }
         } else {
+            // Scrolling down (towards newest content).
             self.content_scroll_offset = self
                 .content_scroll_offset
                 .saturating_sub(delta.unsigned_abs());
+            // If user scrolled back to the bottom, re-enable auto-scroll.
+            if self.content_scroll_offset == 0 {
+                self.user_scrolled_content = false;
+            }
         }
     }
 
@@ -799,7 +860,9 @@ impl TuiState {
             self.cached_parsed_lines.clear();
         }
         self.pending_turn_separator = !self.content_lines.is_empty();
-        self.content_scroll_offset = 0;
+        if !self.user_scrolled_content {
+            self.content_scroll_offset = 0;
+        }
     }
 
     /// Replace any content emitted in the current turn with finalized text.
@@ -814,7 +877,9 @@ impl TuiState {
         }
         self.cached_lines_count = 0;
         self.cached_parsed_lines.clear();
-        self.content_scroll_offset = 0;
+        if !self.user_scrolled_content {
+            self.content_scroll_offset = 0;
+        }
     }
 }
 
@@ -1224,6 +1289,144 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(""));
 
     // Delegation info
+    // ── Tmux Bridge ──
+
+    lines.push(Line::from(vec![Span::styled(
+        "  Tmux Bridge",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(""));
+
+    if state.tmux_state.enabled {
+        let session_name = state
+            .tmux_state
+            .session_name
+            .as_deref()
+            .unwrap_or("?");
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled("● ", Style::default().fg(Color::Green)),
+            Span::styled("Active", Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("  session: {}", session_name),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        // Show panes.
+        if !state.tmux_state.panes.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled("Panes:", Style::default().fg(Color::Gray)),
+            ]));
+            for pane in &state.tmux_state.panes {
+                let (icon, color) = match pane.role.as_str() {
+                    "agent" => ("◇", Color::Cyan),
+                    "shell" => ("▸", Color::Green),
+                    "user" => ("›", Color::Yellow),
+                    _ => ("·", Color::DarkGray),
+                };
+                let active_marker = if pane.is_active { " ◄" } else { "" };
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(format!("{} ", icon), Style::default().fg(color)),
+                    Span::styled(
+                        format!("{:<8}", pane.role),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" {}  {}×{}", pane.pane_id, pane.width, pane.height),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(active_marker, Style::default().fg(Color::Yellow)),
+                ]));
+                if !pane.current_command.is_empty()
+                    && !matches!(
+                        pane.current_command.as_str(),
+                        "zsh" | "bash" | "fish" | "sh"
+                    )
+                {
+                    lines.push(Line::from(vec![
+                        Span::raw("               "),
+                        Span::styled(
+                            format!("running: {}", truncate_str(&pane.current_command, 50)),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                    ]));
+                }
+                if !pane.current_path.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("               "),
+                        Span::styled(
+                            truncate_str(&pane.current_path, 60),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
+                }
+            }
+        }
+
+        lines.push(Line::from(""));
+
+        // Show recent commands.
+        if !state.tmux_state.recent_commands.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled("Recent commands:", Style::default().fg(Color::Gray)),
+            ]));
+            for entry in state.tmux_state.recent_commands.iter().rev().take(8) {
+                let (icon, color) = match entry.exit_code {
+                    Some(0) => ("✓", Color::Green),
+                    Some(_) => ("✗", Color::Red),
+                    None => ("…", Color::Yellow),
+                };
+                let dur = entry
+                    .duration_ms
+                    .map(|ms| format!(" {}ms", ms))
+                    .unwrap_or_default();
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(format!("{} ", icon), Style::default().fg(color)),
+                    Span::styled(
+                        truncate_str(&entry.command, 55),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(dur, Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+        }
+    } else if state.tmux_state.tmux_available {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "Tmux available — use ",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled("--tmux", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                " to enable visible shell panes.",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "Tmux not installed — install tmux for visible shell panes.",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // ── Delegation ──
+
     lines.push(Line::from(vec![Span::styled(
         "  Delegation",
         Style::default()
@@ -2115,12 +2318,13 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
         ));
     }
 
-    if state.current_turn > 0 {
-        spans.push(Span::styled(
-            format!("  turn {}/{}", state.current_turn, state.max_turns),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+    // Turn indicator hidden from normal UI — only useful for debugging.
+    // if state.current_turn > 0 {
+    //     spans.push(Span::styled(
+    //         format!("  turn {}/{}", state.current_turn, state.max_turns),
+    //         Style::default().fg(Color::DarkGray),
+    //     ));
+    // }
 
     if state.status.tokens_limit > 0 {
         let used = state.status.tokens_used;
@@ -2478,12 +2682,72 @@ pub(crate) fn render_markdown_lines(
         let raw_is_current = content_active_match == Some(raw_line_index);
 
         if let Some(activity_text) = trimmed.strip_prefix("◈activity◈") {
+            let activity_trimmed = activity_text.trim();
+            // Parse the icon to determine color, then render icon+text
+            let (icon_span, text_span) = if activity_trimmed.starts_with("● Ran") || activity_trimmed.starts_with("● $") {
+                // Bash commands — cyan bold icon, white text
+                let rest = activity_trimmed.strip_prefix("● ").unwrap_or(activity_trimmed);
+                (
+                    Span::styled(" ● ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(rest.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                )
+            } else if activity_trimmed.starts_with("● Edited") || activity_trimmed.starts_with("● Wrote")
+                || activity_trimmed.starts_with("+") || activity_trimmed.starts_with("~")
+            {
+                // Mutations — green/yellow bold
+                let color = if activity_trimmed.starts_with("~") || activity_trimmed.starts_with("● Edited") {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                };
+                let icon_char = &activity_trimmed[..activity_trimmed.find(' ').unwrap_or(1)];
+                let rest = activity_trimmed.get(icon_char.len()..).unwrap_or("").trim();
+                (
+                    Span::styled(format!(" {} ", icon_char), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                    Span::styled(rest.to_string(), Style::default().fg(color)),
+                )
+            } else if activity_trimmed.starts_with("└") || activity_trimmed.starts_with("├") {
+                // Tree connectors (results) — dim
+                (
+                    Span::styled("  ", Style::default()),
+                    Span::styled(activity_trimmed.to_string(), Style::default().fg(Color::DarkGray)),
+                )
+            } else if activity_trimmed.starts_with("✗") {
+                // Errors — red
+                (
+                    Span::styled(" ✗ ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        activity_trimmed.strip_prefix("✗").unwrap_or(activity_trimmed).trim().to_string(),
+                        Style::default().fg(Color::Red),
+                    ),
+                )
+            } else if activity_trimmed.starts_with("⚠") {
+                // Warnings — yellow
+                (
+                    Span::styled(" ⚠ ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        activity_trimmed.strip_prefix("⚠").unwrap_or(activity_trimmed).trim().to_string(),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                )
+            } else if activity_trimmed.starts_with("○") || activity_trimmed.starts_with("●") {
+                // Read/default tool calls — icon colored, text white bold
+                let icon_char = &activity_trimmed[..activity_trimmed.chars().next().map(|c| c.len_utf8()).unwrap_or(1)];
+                let rest = activity_trimmed.get(icon_char.len()..).unwrap_or("").trim();
+                (
+                    Span::styled(format!(" {} ", icon_char), Style::default().fg(Color::Cyan)),
+                    Span::styled(rest.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                )
+            } else {
+                // Fallback — dim
+                (
+                    Span::styled(" ", Style::default()),
+                    Span::styled(activity_trimmed.to_string(), Style::default().fg(Color::DarkGray)),
+                )
+            };
             push_rendered_line(
                 &mut all_lines,
-                Line::from(Span::styled(
-                format!(" {}", activity_text.trim()),
-                Style::default().fg(Color::DarkGray),
-                )),
+                Line::from(vec![icon_span, text_span]),
                 raw_is_match,
                 raw_is_current,
                 in_turn_cell,
@@ -2931,10 +3195,12 @@ pub(crate) fn render_markdown_lines(
         }
 
         turn_has_body |= in_turn_cell;
+        // Add ● bullet on the first line of a new paragraph
+        let is_paragraph_start = prev_was_empty;
         prev_was_empty = false;
         push_rendered_line(
             &mut all_lines,
-            style_paragraph_line(raw),
+            style_paragraph_line(raw, is_paragraph_start),
             raw_is_match,
             raw_is_current,
             in_turn_cell,
@@ -3155,15 +3421,35 @@ fn render_table_block(
 }
 
 /// Style a paragraph line with inline markdown: `code`, **bold**, *italic*.
-fn style_paragraph_line(raw: &str) -> Line<'static> {
+fn style_paragraph_line(raw: &str, is_paragraph_start: bool) -> Line<'static> {
+    let prefix = if is_paragraph_start { " ● " } else { "   " };
     let spans = parse_inline_spans(raw);
     if spans.len() == 1 {
-        Line::from(Span::styled(
-            format!("   {}", raw),
-            Style::default().fg(Color::White),
-        ))
+        let style = if is_paragraph_start {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        Line::from(vec![
+            Span::styled(
+                prefix.to_string(),
+                if is_paragraph_start {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            ),
+            Span::styled(raw.to_string(), style),
+        ])
     } else {
-        let mut result = vec![Span::raw("   ")];
+        let mut result = vec![Span::styled(
+            prefix.to_string(),
+            if is_paragraph_start {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            },
+        )];
         result.extend(spans);
         Line::from(result)
     }
@@ -3828,7 +4114,10 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
             match state.focused_pane {
                 PaneFocus::Input => {}
                 PaneFocus::Activity => state.jump_activity_to_oldest(),
-                PaneFocus::Response => state.jump_content_to_oldest(),
+                PaneFocus::Response => {
+                    state.jump_content_to_oldest();
+                    state.user_scrolled_content = true;
+                }
             }
             return true;
         }
@@ -3836,7 +4125,10 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
             match state.focused_pane {
                 PaneFocus::Input => {}
                 PaneFocus::Activity => state.scroll_offset = 0,
-                PaneFocus::Response => state.content_scroll_offset = 0,
+                PaneFocus::Response => {
+                    state.content_scroll_offset = 0;
+                    state.user_scrolled_content = false;
+                }
             }
             return true;
         }

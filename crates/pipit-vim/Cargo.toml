@@ -1,0 +1,8 @@
+[package]
+name = "pipit-vim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossterm = { workspace = true }
+serde = { workspace = true }

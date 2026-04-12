@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 pipit-core = { path = "../pipit-core" }
 pipit-config = { path = "../pipit-config" }
+pipit-tmux = { path = "../pipit-tmux" }
+pipit-vim = { path = "../pipit-vim" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }

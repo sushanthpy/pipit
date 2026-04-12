@@ -226,6 +226,8 @@ pub enum AgentEvent {
         call_id: String,
         name: String,
         result: ToolCallOutcome,
+        /// Wall-clock milliseconds the tool took to execute.
+        duration_ms: u64,
     },
     ToolApprovalNeeded {
         call_id: String,
@@ -535,6 +537,7 @@ impl RuntimeEvent {
                 call_id,
                 name,
                 result,
+                ..
             } => {
                 let (success, mutated, summary) = match result {
                     ToolCallOutcome::Success {

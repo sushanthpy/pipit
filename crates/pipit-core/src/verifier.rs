@@ -184,10 +184,36 @@ impl Verifier {
         assumptions: &[Assumption],
         evidence: &[EvidenceArtifact],
     ) -> Vec<Assumption> {
-        let has_runtime_evidence = evidence.iter().any(|artifact| {
+        // Typed evidence matching: each assumption is verified only by
+        // evidence that is semantically relevant, not any successful command.
+        let has_test_pass = evidence.iter().any(|artifact| {
             matches!(
                 artifact,
-                EvidenceArtifact::CommandResult { success: true, .. }
+                EvidenceArtifact::CommandResult {
+                    kind: crate::proof::VerificationKind::Test,
+                    success: true,
+                    ..
+                }
+            )
+        });
+        let has_build_pass = evidence.iter().any(|artifact| {
+            matches!(
+                artifact,
+                EvidenceArtifact::CommandResult {
+                    kind: crate::proof::VerificationKind::Build,
+                    success: true,
+                    ..
+                }
+            )
+        });
+        let has_runtime_check = evidence.iter().any(|artifact| {
+            matches!(
+                artifact,
+                EvidenceArtifact::CommandResult {
+                    kind: crate::proof::VerificationKind::RuntimeCheck,
+                    success: true,
+                    ..
+                }
             )
         });
 
@@ -195,7 +221,27 @@ impl Verifier {
             .iter()
             .cloned()
             .map(|mut assumption| {
-                if has_runtime_evidence {
+                let desc_lower = assumption.description.to_ascii_lowercase();
+                // Test-related assumptions need test evidence
+                if desc_lower.contains("test") || desc_lower.contains("verify") {
+                    if has_test_pass {
+                        assumption.verified = true;
+                    }
+                }
+                // Build-related assumptions need build evidence
+                else if desc_lower.contains("build") || desc_lower.contains("compile") {
+                    if has_build_pass {
+                        assumption.verified = true;
+                    }
+                }
+                // Runtime-related assumptions need runtime evidence
+                else if desc_lower.contains("run") || desc_lower.contains("output") || desc_lower.contains("behavior") {
+                    if has_runtime_check || has_test_pass {
+                        assumption.verified = true;
+                    }
+                }
+                // Generic assumptions: require test OR build + runtime
+                else if has_test_pass || (has_build_pass && has_runtime_check) {
                     assumption.verified = true;
                 }
                 assumption

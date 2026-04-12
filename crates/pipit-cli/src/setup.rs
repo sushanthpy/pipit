@@ -90,6 +90,21 @@ pub fn run() -> Result<()> {
         let existing = pipit_config::resolve_api_key(provider_kind);
         if existing.is_some() {
             println!("  \x1b[32m✓ Key already configured\x1b[0m (via env var or credentials)");
+            let update = prompt_input("  Update key? [y/N]: ")?;
+            if update.trim().eq_ignore_ascii_case("y") {
+                let key = prompt_input("  New API Key: ")?;
+                if !key.is_empty() {
+                    let mut store = pipit_config::CredentialStore::load();
+                    store.set(
+                        &provider_kind.to_string(),
+                        pipit_config::StoredCredential::ApiKey { api_key: key },
+                    );
+                    store
+                        .save()
+                        .map_err(|e| anyhow::anyhow!("Failed to save credentials: {}", e))?;
+                    println!("  \x1b[32m✓ Key updated in ~/.pipit/credentials.json\x1b[0m");
+                }
+            }
             println!();
         } else {
             println!("  \x1b[90mEnter key or leave blank to set later.\x1b[0m");

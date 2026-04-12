@@ -253,6 +253,9 @@ mod tests {
             checkpoints: Vec::new(),
             last_seq: 20,
             ended: false,
+            todos: Vec::new(),
+            verification_nudges_fired: 0,
+            subagent_transcripts: Vec::new(),
         }
     }
 

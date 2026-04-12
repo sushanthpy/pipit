@@ -113,6 +113,9 @@ fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
         Deps(None) => "deps".to_string(),
         Registry(Some(s)) => format!("registry {}", s),
         Registry(None) => "registry".to_string(),
+        Vim => "vim".to_string(),
+        Provider(Some(s)) => format!("provider {}", s),
+        Provider(None) => "provider".to_string(),
         Unknown(s) => s.clone(),
     }
 }
@@ -129,12 +132,46 @@ pub async fn run(
     status: StatusBarState,
     _trace_ui: bool,
     agent_mode: pipit_core::AgentMode,
+    tmux_enabled: bool,
+    vim_mode: bool,
 ) -> Result<()> {
     use crossterm::event::{self as crossterm_event, Event};
 
     dbg_log("[tui] entering tui::run()");
     let _ = extensions.on_session_start().await;
     dbg_log("[tui] on_session_start done");
+
+    // ── Tmux bridge initialization ──
+    let tmux_session = if tmux_enabled {
+        if !pipit_tmux::is_tmux_available() {
+            // Will show in the Agents tab as "not installed".
+            None
+        } else {
+            match pipit_tmux::TmuxSession::create(project_root, None) {
+                Ok(session) => {
+                    dbg_log(&format!("[tui] tmux session created: {}", session.name()));
+                    Some(session)
+                }
+                Err(e) => {
+                    dbg_log(&format!("[tui] tmux session creation failed: {}", e));
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Shared bridge for mirroring bash commands to the tmux shell pane.
+    let tmux_bridge: Option<Arc<std::sync::Mutex<pipit_tmux::TmuxBridge>>> =
+        if tmux_session.is_some() {
+            Some(Arc::new(std::sync::Mutex::new(pipit_tmux::TmuxBridge::new())))
+        } else {
+            None
+        };
+    let tmux_shell_pane_id: Option<String> = tmux_session
+        .as_ref()
+        .and_then(|s| s.shell_pane().map(|p| p.to_string()));
 
     let tui_state = Arc::new(std::sync::Mutex::new(TuiState::new(
         status,
@@ -144,10 +181,40 @@ pub async fn run(
     let mut terminal = app::init_terminal().context("Failed to init TUI")?;
     dbg_log("[tui] init_terminal OK (alternate screen active)");
 
-    // Set agent mode
+    // Set agent mode and tmux state
     {
         let mut state = tui_state.lock().unwrap();
         state.agent_mode = agent_mode.to_string();
+        if vim_mode {
+            state.composer.enable_vim();
+        }
+        state.tmux_state.tmux_available = pipit_tmux::is_tmux_available();
+        if let Some(ref session) = tmux_session {
+            state.tmux_state.enabled = true;
+            state.tmux_state.session_name = Some(session.name().to_string());
+            // Populate initial pane snapshots.
+            if let Ok(panes) = session.list_panes() {
+                state.tmux_state.panes = panes
+                    .into_iter()
+                    .map(|p| pipit_io::app::TmuxPaneSnapshot {
+                        pane_id: p.id,
+                        role: p.role.to_string(),
+                        width: p.width,
+                        height: p.height,
+                        current_command: p.current_command,
+                        current_path: p.current_path.to_string_lossy().to_string(),
+                        is_active: p.is_active,
+                    })
+                    .collect();
+            }
+        } else if tmux_enabled {
+            // --tmux was requested but session creation failed.
+            state.push_activity(
+                "⚠",
+                Color::Yellow,
+                "tmux session creation failed — running without tmux".to_string(),
+            );
+        }
     }
 
     // Bridge agent events into the main loop via an mpsc channel
@@ -189,15 +256,15 @@ pub async fn run(
                 s.run_finished = true;
                 s.finish_working();
                 match &outcome {
-                    AgentOutcome::Completed { turns, cost, .. } => {
+                    AgentOutcome::Completed { cost, .. } => {
                         s.push_activity(
                             "✓",
                             Color::Green,
-                            format!("Done — {} turns, ${:.4}", turns, cost),
+                            format!("Done — ${:.4}", cost),
                         );
                         s.completion_status = Some(pipit_io::app::CompletionBanner {
                             icon: "✓".to_string(),
-                            message: format!("Completed — {} turns, ${:.4}", turns, cost),
+                            message: format!("Completed — ${:.4}", cost),
                             color: Color::Green,
                         });
                     }
@@ -278,6 +345,12 @@ pub async fn run(
         // the "frozen" feeling when events pile up.
         let mut events_processed = 0u32;
         while let Ok(event) = agent_event_rx.try_recv() {
+            // Mirror bash commands to the tmux shell pane for live visibility.
+            if let Some(ref bridge) = tmux_bridge {
+                if let Some(ref pane_id) = tmux_shell_pane_id {
+                    mirror_to_tmux(&event, bridge, pane_id);
+                }
+            }
             let mut state = tui_state.lock().unwrap();
             apply_agent_event(&mut state, &event);
             events_processed += 1;
@@ -304,6 +377,10 @@ pub async fn run(
                 }
                 Event::Key(key) => {
                     let mut state = tui_state.lock().unwrap();
+                    // Track vim mode BEFORE handling key, so we can detect
+                    // Insert → Normal transitions from Esc.
+                    let vim_was_insert = state.composer.vim_active()
+                        && state.composer.vim_mode() == Some(pipit_io::composer::VimMode::Insert);
                     app::handle_key(&mut state, key);
 
                     if state.should_quit {
@@ -322,8 +399,13 @@ pub async fn run(
                         state.begin_working("Stopping subagents…");
                     }
 
-                    // Escape cancels the current agent run
-                    if key.code == crossterm::event::KeyCode::Esc && state.is_working {
+                    // Escape cancels the current agent run.
+                    // Exception: when vim was in Insert mode, Esc switches to
+                    // Normal mode — do NOT cancel the agent on that Esc press.
+                    if key.code == crossterm::event::KeyCode::Esc
+                        && state.is_working
+                        && !vim_was_insert
+                    {
                         let mut token = cancel_token.lock().unwrap();
                         token.cancel();
                         *token = CancellationToken::new();
@@ -337,26 +419,118 @@ pub async fn run(
 
                         // Update task label for every submission
                         state.has_received_input = true;
-                        state.task_label = if input.len() > 80 {
-                            format!("{}…", &input.chars().take(78).collect::<String>())
-                        } else {
-                            input.clone()
+
+                        let classified = pipit_io::input::classify_input(&input);
+
+                        // Build a clean display string that replaces raw paths
+                        // with short indicators like [Image #1] or [📎 file.rs]
+                        let (display, task_label) = match &classified {
+                            pipit_io::input::UserInput::PromptWithImages {
+                                prompt,
+                                image_paths,
+                            } => {
+                                let chips: Vec<String> = image_paths
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, p)| {
+                                        let name = std::path::Path::new(p)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("image");
+                                        format!("[🖼 #{} {}]", i + 1, name)
+                                    })
+                                    .collect();
+                                let chip_str = chips.join(" ");
+                                let display_text = if prompt.is_empty() {
+                                    chip_str.clone()
+                                } else {
+                                    let short_prompt = if prompt.len() > 80 {
+                                        format!(
+                                            "{}…",
+                                            &prompt.chars().take(78).collect::<String>()
+                                        )
+                                    } else {
+                                        prompt.clone()
+                                    };
+                                    format!("{} {}", chip_str, short_prompt)
+                                };
+                                let label = if prompt.is_empty() {
+                                    format!(
+                                        "{} image(s) attached",
+                                        image_paths.len()
+                                    )
+                                } else if prompt.len() > 80 {
+                                    format!(
+                                        "{}…",
+                                        &prompt.chars().take(78).collect::<String>()
+                                    )
+                                } else {
+                                    prompt.clone()
+                                };
+                                (display_text, label)
+                            }
+                            pipit_io::input::UserInput::PromptWithFiles {
+                                prompt,
+                                files,
+                            } => {
+                                let chips: Vec<String> = files
+                                    .iter()
+                                    .map(|p| {
+                                        let name = std::path::Path::new(p)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or(p);
+                                        format!("[📎 {}]", name)
+                                    })
+                                    .collect();
+                                let chip_str = chips.join(" ");
+                                let short_prompt = if prompt.len() > 80 {
+                                    format!(
+                                        "{}…",
+                                        &prompt.chars().take(78).collect::<String>()
+                                    )
+                                } else {
+                                    prompt.clone()
+                                };
+                                let display_text =
+                                    format!("{} {}", chip_str, short_prompt);
+                                let label = if prompt.len() > 80 {
+                                    format!(
+                                        "{}…",
+                                        &prompt.chars().take(78).collect::<String>()
+                                    )
+                                } else {
+                                    prompt.clone()
+                                };
+                                (display_text, label)
+                            }
+                            _ => {
+                                let display_text = if input.len() > 120 {
+                                    format!(
+                                        "{}… [{} chars]",
+                                        &input.chars().take(100).collect::<String>(),
+                                        input.chars().count()
+                                    )
+                                } else {
+                                    input.clone()
+                                };
+                                let label = if input.len() > 80 {
+                                    format!(
+                                        "{}…",
+                                        &input.chars().take(78).collect::<String>()
+                                    )
+                                } else {
+                                    input.clone()
+                                };
+                                (display_text, label)
+                            }
                         };
 
-                        let display = if input.len() > 120 {
-                            format!(
-                                "{}… [{} chars]",
-                                &input.chars().take(100).collect::<String>(),
-                                input.chars().count()
-                            )
-                        } else {
-                            input.clone()
-                        };
+                        state.task_label = task_label;
                         state.push_activity("›", Color::Green, display);
 
                         drop(state); // Release lock before async
 
-                        let classified = pipit_io::input::classify_input(&input);
                         match classified {
                             pipit_io::input::UserInput::Command(cmd) => {
                                 match cmd {
@@ -1015,6 +1189,16 @@ pub async fn run(
                                             ).await;
                                         }
                                     }
+                                    pipit_io::input::SlashCommand::Vim => {
+                                        let mut s = tui_state.lock().unwrap();
+                                        if s.composer.vim_active() {
+                                            s.composer.disable_vim();
+                                            s.push_activity("⌨", Color::Yellow, "Vim mode OFF".to_string());
+                                        } else {
+                                            s.composer.enable_vim();
+                                            s.push_activity("⌨", Color::Green, "Vim mode ON (Esc → Normal, i → Insert)".to_string());
+                                        }
+                                    }
                                     other => {
                                         let cmd_str = format!("/{}", slash_command_to_str(&other));
                                         let _ = prompt_tx.send(cmd_str).await;
@@ -1192,6 +1376,32 @@ pub async fn run(
                 needs_redraw = true;
             }
 
+            // Refresh tmux pane snapshots periodically when Agents tab is visible.
+            if state.tmux_state.enabled && state.active_tab == pipit_io::app::TabView::Agents {
+                if let Some(ref session) = tmux_session {
+                    // Refresh every ~2s (every 40 frames at 20fps).
+                    if state.spinner_frame % 40 == 0 {
+                        if let Ok(panes) = session.list_panes() {
+                            state.tmux_state.panes = panes
+                                .into_iter()
+                                .map(|p| pipit_io::app::TmuxPaneSnapshot {
+                                    pane_id: p.id,
+                                    role: p.role.to_string(),
+                                    width: p.width,
+                                    height: p.height,
+                                    current_command: p.current_command,
+                                    current_path: p.current_path
+                                        .to_string_lossy()
+                                        .to_string(),
+                                    is_active: p.is_active,
+                                })
+                                .collect();
+                            needs_redraw = true;
+                        }
+                    }
+                }
+            }
+
             if needs_redraw && state.should_redraw() {
                 state.spinner_frame = state.spinner_frame.wrapping_add(1);
                 terminal.draw(|f| app::draw(f, &state))?;
@@ -1223,6 +1433,18 @@ pub async fn run(
     drop(prompt_tx);
     let _ = agent_handle.await;
     let _ = extensions.on_session_end().await;
+
+    // Log tmux session info for the user to attach later.
+    if let Some(ref session) = tmux_session {
+        if session.is_alive() {
+            eprintln!(
+                "\x1b[2mpipit› tmux session '{}' preserved — attach with: tmux attach -t {}\x1b[0m",
+                session.name(),
+                session.name()
+            );
+        }
+    }
+
     app::restore_terminal(&mut terminal)?;
     Ok(())
 }
@@ -1435,6 +1657,56 @@ fn mutation_activity_summary(tool_name: &str, content: &str) -> String {
     first_line(content).chars().take(100).collect()
 }
 
+/// Mirror agent events to the tmux shell pane for live visibility.
+///
+/// When --tmux is active, bash commands are typed into the shell pane so
+/// the user can watch them execute. File operations and agent reasoning
+/// are echoed as comments so the pane shows a full activity timeline.
+fn mirror_to_tmux(
+    event: &pipit_core::AgentEvent,
+    bridge: &Arc<std::sync::Mutex<pipit_tmux::TmuxBridge>>,
+    shell_pane_id: &str,
+) {
+    use pipit_core::AgentEvent;
+    match event {
+        AgentEvent::ToolCallStart { name, args, .. } => {
+            let mut b = bridge.lock().unwrap();
+            match name.as_str() {
+                "bash" => {
+                    if let Some(cmd) = args["command"].as_str() {
+                        // Type the actual command into the tmux shell pane.
+                        let _ = b.type_and_enter(shell_pane_id, cmd);
+                    }
+                }
+                "write_file" | "edit_file" => {
+                    let path = args["path"].as_str().unwrap_or("?");
+                    let _ = b.type_and_enter(
+                        shell_pane_id,
+                        &format!("# pipit: {} {}", name, shorten_path(path)),
+                    );
+                }
+                "read_file" | "grep" | "glob" | "list_directory" => {
+                    // Skip read-only tools — too noisy.
+                }
+                _ => {
+                    let _ = b.type_and_enter(
+                        shell_pane_id,
+                        &format!("# pipit: {}", name),
+                    );
+                }
+            }
+        }
+        AgentEvent::TurnStart { turn_number } => {
+            let mut b = bridge.lock().unwrap();
+            let _ = b.type_and_enter(
+                shell_pane_id,
+                &format!("# ── turn {} ──", turn_number),
+            );
+        }
+        _ => {}
+    }
+}
+
 /// Pure function: map an AgentEvent to TuiState mutations.
 /// Extracted from the inline closure for testability.
 fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
@@ -1442,7 +1714,7 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
     match event {
         AgentEvent::TurnStart { turn_number } => {
             state.begin_turn(*turn_number);
-            state.begin_working(&format!("Turn {}", turn_number));
+            state.begin_working("Thinking");
         }
         AgentEvent::ContentDelta { text } => {
             // Handle <think> tags: toggle thinking mode, strip tags.
@@ -1512,8 +1784,9 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
         }
         AgentEvent::ContentComplete { full_text } => {
             state.tag_buffer.clear();
-            let cleaned = normalize_response_markdown(full_text);
-            state.replace_current_turn_content(&cleaned);
+            // Don't replace — this would wipe out interleaved tool activity.
+            // Just commit whatever streaming text is buffered.
+            state.commit_streaming();
             state.finish_working();
         }
         AgentEvent::ToolCallStart {
@@ -1524,7 +1797,8 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             state.finish_working();
             if !state.current_turn_had_tool_calls {
                 state.current_turn_had_tool_calls = true;
-                state.discard_current_turn_content();
+                // Keep planning text — it interleaves with tool actions
+                // like "I'm going to inspect..." before "● Ran ls"
             }
             if name == "subagent" {
                 let task = args["task"].as_str().unwrap_or("Subagent task").to_string();
@@ -1552,25 +1826,51 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                     }
                 }
                 "edit_file" => format!(
-                    "Edit {}",
+                    "Edited {}",
                     shorten_path(args["path"].as_str().unwrap_or("?"))
                 ),
                 "write_file" => {
                     let path = args["path"].as_str().unwrap_or("?");
                     let content = args["content"].as_str().unwrap_or("");
                     let lines = content.lines().count();
-                    format!("Write {} ({} lines)", shorten_path(path), lines)
+
+                    // Show the code being written in the content pane
+                    let ext = path
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("");
+                    state.ensure_turn_separator();
+                    state.content_lines.push(format!("### `{}`", shorten_path(path)));
+                    state.content_lines.push(String::new());
+                    state.content_lines.push(format!("```{}", ext));
+                    // Show up to 200 lines; truncate beyond that
+                    let content_lines_vec: Vec<&str> = content.lines().collect();
+                    let show_n = content_lines_vec.len().min(200);
+                    for line in &content_lines_vec[..show_n] {
+                        state.content_lines.push(line.to_string());
+                    }
+                    if content_lines_vec.len() > 200 {
+                        state.content_lines.push(format!(
+                            "... ({} more lines)",
+                            content_lines_vec.len() - 200
+                        ));
+                    }
+                    state.content_lines.push("```".to_string());
+                    state.content_lines.push(String::new());
+                    state.invalidate_content_cache();
+
+                    format!("Wrote {} ({} lines)", shorten_path(path), lines)
                 }
                 "multi_edit" => format!(
-                    "MultiEdit {}",
+                    "Edited {}",
                     shorten_path(args["path"].as_str().unwrap_or("?"))
                 ),
                 "bash" => {
                     let cmd = args["command"].as_str().unwrap_or("?");
-                    format!("$ {}", cmd.chars().take(72).collect::<String>())
+                    format!("Ran {}", cmd.chars().take(72).collect::<String>())
                 }
                 "grep" => format!(
-                    "Grep '{}'",
+                    "Searched '{}'",
                     args["pattern"]
                         .as_str()
                         .unwrap_or("?")
@@ -1588,12 +1888,12 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                         .collect::<String>()
                 ),
                 "list_directory" => {
-                    format!("ls {}", shorten_path(args["path"].as_str().unwrap_or(".")))
+                    format!("Listed {}", shorten_path(args["path"].as_str().unwrap_or(".")))
                 }
                 "scaffold_project" => {
                     let root = args["project_root"].as_str().unwrap_or("?");
                     let file_count = args["files"].as_array().map(|a| a.len()).unwrap_or(0);
-                    format!("Scaffold {} ({} files)", shorten_path(root), file_count)
+                    format!("Scaffolded {} ({} files)", shorten_path(root), file_count)
                 }
                 "subagent" => format!(
                     "Subagent {}",
@@ -1608,13 +1908,13 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
             };
             let icon = match name.as_str() {
                 "read_file" | "grep" | "glob" | "list_directory" => "○",
-                "edit_file" | "write_file" => "●",
-                "bash" => "▸",
+                "edit_file" | "write_file" | "multi_edit" => "●",
+                "bash" => "●",
                 "subagent" => "⇢",
                 _ => "·",
             };
             let color = match name.as_str() {
-                "edit_file" | "write_file" => Color::Green,
+                "edit_file" | "write_file" | "multi_edit" => Color::Green,
                 "bash" => Color::Cyan,
                 "subagent" => Color::Magenta,
                 _ => Color::DarkGray,
@@ -1625,24 +1925,79 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                 args_summary: summary,
                 started_at: std::time::Instant::now(),
             });
+
+            // Track bash commands in tmux state for the Agents tab.
+            if name == "bash" && state.tmux_state.enabled {
+                let cmd = args["command"].as_str().unwrap_or("?").to_string();
+                let pane_id = state
+                    .tmux_state
+                    .panes
+                    .iter()
+                    .find(|p| p.role == "shell")
+                    .map(|p| p.pane_id.clone())
+                    .unwrap_or_default();
+                state.tmux_state.recent_commands.push(
+                    pipit_io::app::TmuxCommandEntry {
+                        command: cmd,
+                        exit_code: None,
+                        duration_ms: None,
+                        pane_id,
+                    },
+                );
+                // Cap recent commands at 50.
+                if state.tmux_state.recent_commands.len() > 50 {
+                    state.tmux_state.recent_commands.remove(0);
+                }
+            }
+
             state.begin_working(&format!("Running {}…", name));
         }
         AgentEvent::ToolCallEnd {
             call_id,
             name,
             result,
+            ..
         } => {
             state.finish_working();
             let tool_name = name.clone();
             state.active_tool = None;
+
+            // Update tmux command tracking with exit code.
+            if tool_name == "bash" && state.tmux_state.enabled {
+                if let Some(entry) = state.tmux_state.recent_commands.last_mut() {
+                    let exit_code = match result {
+                        pipit_core::ToolCallOutcome::Success { .. } => Some(0),
+                        pipit_core::ToolCallOutcome::Error { .. } => Some(1),
+                        pipit_core::ToolCallOutcome::PolicyBlocked { .. } => Some(-1),
+                    };
+                    entry.exit_code = exit_code;
+                }
+            }
+
             match result {
                 pipit_core::ToolCallOutcome::Success {
                     content,
                     mutated: true,
                     ..
                 } => {
-                    // Show the file operation result in content pane
-                    // Distinguish Created vs Updated from the write_file result
+                    if tool_name == "edit_file" || tool_name == "multi_edit" {
+                        // For edits: show the diff in content, skip activity dupe
+                        if let Some((path, diff)) = parse_applied_edit_content(content) {
+                            state.push_activity(
+                                "~",
+                                Color::Yellow,
+                                format!("Edited {}", shorten_path(&path)),
+                            );
+                            state.ensure_turn_separator();
+                            state.content_lines.push(format!("### Edited `{}`", path));
+                            state.content_lines.push(String::new());
+                            push_content_block(&mut state.content_lines, diff);
+                            state.content_lines.push(String::new());
+                            return;
+                        }
+                    }
+
+                    // For write_file / scaffold: just push activity, no content dupe
                     let (icon, color) = if content.starts_with("Created") {
                         ("+", Color::Green)
                     } else if content.starts_with("Updated") {
@@ -1654,22 +2009,6 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                         icon,
                         color,
                         mutation_activity_summary(&tool_name, content),
-                    );
-                    state.ensure_turn_separator();
-
-                    if tool_name == "edit_file" {
-                        if let Some((path, diff)) = parse_applied_edit_content(content) {
-                            state.content_lines.push(format!("### Edited `{}`", path));
-                            state.content_lines.push(String::new());
-                            push_content_block(&mut state.content_lines, diff);
-                            state.content_lines.push(String::new());
-                            return;
-                        }
-                    }
-
-                    push_content_block(
-                        &mut state.content_lines,
-                        &format!("  {} {}", icon, content),
                     );
                 }
                 pipit_core::ToolCallOutcome::Success {
@@ -1689,9 +2028,59 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                             Color::Magenta,
                             format!("Subagent completed: {}", summary),
                         );
+                    } else if tool_name == "bash" {
+                        // Show inline bash output in content pane
+                        // Skip boilerplate "no output" messages
+                        let is_noise = content.trim().is_empty()
+                            || content.contains("Command completed successfully")
+                            || content.contains("(no output)");
+                        if !is_noise {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let show = lines.len().min(5);
+                            if show > 0 {
+                                state.ensure_turn_separator();
+                                for line in &lines[..show] {
+                                    let truncated: String =
+                                        line.chars().take(90).collect();
+                                    state
+                                        .content_lines
+                                        .push(format!("◈activity◈  └ {}", truncated));
+                                }
+                            }
+                            if lines.len() > show {
+                                state.content_lines.push(format!(
+                                    "◈activity◈  └ … {} more lines",
+                                    lines.len() - show
+                                ));
+                            }
+                            state.invalidate_content_cache();
+                        }
+                    } else if tool_name == "read_file"
+                        || tool_name == "grep"
+                        || tool_name == "list_directory"
+                    {
+                        // Show a compact preview of read results
+                        let lines: Vec<&str> = content.lines().collect();
+                        let show = lines.len().min(8);
+                        if show > 0 {
+                            for line in &lines[..show] {
+                                let truncated: String =
+                                    line.chars().take(90).collect();
+                                state
+                                    .content_lines
+                                    .push(format!("◈activity◈  └ {}", truncated));
+                            }
+                        }
+                        if lines.len() > show {
+                            state.content_lines.push(format!(
+                                "◈activity◈  └ … {} more lines",
+                                lines.len() - show
+                            ));
+                        }
+                        state.invalidate_content_cache();
                     }
-                    // Keep tool chatter in the activity stream so the response pane
-                    // can stay focused on the assistant's markdown answer.
+                    // Read/grep/glob/list results are already shown via the
+                    // ToolCallStart activity label — no separate result line needed.
                 }
                 pipit_core::ToolCallOutcome::Error { message } => {
                     let msg = if message.len() > 100 {
@@ -1797,11 +2186,9 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
         }
         AgentEvent::TurnEnd { turn_number, .. } => {
             state.finish_working();
-            state.push_activity(
-                "·",
-                Color::DarkGray,
-                format!("turn {} complete", turn_number),
-            );
+            // Turn transitions are intentionally silent in the UI.
+            // The spinner + status bar already show working state.
+            let _ = turn_number;
         }
         AgentEvent::BudgetExtended { new_approved } => {
             state.max_turns = *new_approved;
@@ -1867,7 +2254,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_turn_discards_planning_chatter_from_response_pane() {
+    fn tool_turn_keeps_planning_content_interleaved_with_actions() {
         let mut state = test_state();
 
         apply_agent_event(&mut state, &AgentEvent::TurnStart { turn_number: 1 });
@@ -1891,8 +2278,11 @@ mod tests {
         );
 
         assert!(state.streaming_text.is_empty());
-        // After merge, activity markers appear inline in content_lines
-        assert!(state.content_lines.iter().all(|l| l.starts_with("◈activity◈")));
+        // Planning text is now kept, interleaved with activity markers
+        let has_planning = state.content_lines.iter().any(|l| l.contains("check the package.json"));
+        let has_activity = state.content_lines.iter().any(|l| l.starts_with("◈activity◈"));
+        assert!(has_planning, "Planning content should be kept");
+        assert!(has_activity, "Activity markers should be present");
 
         apply_agent_event(
             &mut state,
@@ -1905,6 +2295,7 @@ mod tests {
                     artifacts: Vec::new(),
                     edits: Vec::new(),
                 },
+                duration_ms: 0,
             },
         );
         apply_agent_event(
@@ -1929,17 +2320,16 @@ mod tests {
             },
         );
 
-        // Turn 1 activity marker is preserved; turn 2 content follows separator
+        // Turn 1 planning content + activity both preserved; turn 2 content follows separator
         let response_lines: Vec<&str> = state
             .content_lines
             .iter()
             .filter(|l| !l.starts_with("◈activity◈"))
             .map(|l| l.as_str())
             .collect();
-        assert_eq!(
-            response_lines,
-            vec!["", "---", "", "Use `npm run dev` from `frontend`."]
-        );
+        // Planning text is now kept (first line), separator, then turn 2 response
+        assert!(response_lines.iter().any(|l| l.contains("check the package.json")));
+        assert!(response_lines.iter().any(|l| l.contains("npm run dev")));
     }
 
     #[test]
@@ -1993,6 +2383,7 @@ mod tests {
                     artifacts: Vec::new(),
                     edits: Vec::new(),
                 },
+                duration_ms: 0,
             },
         );
         apply_agent_event(
@@ -2024,10 +2415,10 @@ mod tests {
             .filter(|l| !l.starts_with("◈activity◈"))
             .map(|l| l.as_str())
             .collect();
-        assert_eq!(
-            response_lines,
-            vec!["First answer", "", "---", "", "Second answer"]
-        );
+        // Planning text from turn 2 is now kept alongside tool actions
+        assert!(response_lines.iter().any(|l| l.contains("First answer")));
+        assert!(response_lines.iter().any(|l| l.contains("inspect something")));
+        assert!(response_lines.iter().any(|l| l.contains("Second answer")));
     }
 
     #[test]
@@ -2046,7 +2437,7 @@ mod tests {
     }
 
     #[test]
-    fn content_complete_replaces_streamed_chatter_with_clean_markdown() {
+    fn content_complete_commits_streamed_content() {
         let mut state = test_state();
 
         apply_agent_event(&mut state, &AgentEvent::TurnStart { turn_number: 1 });
@@ -2063,16 +2454,8 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            state.content_lines,
-            vec![
-                "The backend schema details are present.".to_string(),
-                "".to_string(),
-                "## User Schema".to_string(),
-                "- id: string".to_string(),
-                "- email: string".to_string(),
-            ]
-        );
+        // Content is committed from streaming, not replaced with normalized full_text
+        assert!(state.content_lines.iter().any(|l| l.contains("schema details")));
     }
 
     #[test]
@@ -2106,6 +2489,7 @@ mod tests {
                     artifacts: Vec::new(),
                     edits: Vec::new(),
                 },
+                duration_ms: 0,
             },
         );
 

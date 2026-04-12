@@ -345,6 +345,49 @@ impl LlmProvider for OpenAiProvider {
     > {
         let body = self.build_request_body(&request);
 
+        // ── Request-level profiling ──
+        // When PIPIT_DUMP_REQUESTS is set, write the full request JSON to that
+        // directory.  This gives ground-truth token accounting without guessing.
+        if let Ok(dump_dir) = std::env::var("PIPIT_DUMP_REQUESTS") {
+            use std::io::Write;
+            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = format!("{}/req_{:04}.json", dump_dir, n);
+            if let Ok(mut f) = std::fs::File::create(&path) {
+                let _ = f.write_all(body.to_string().as_bytes());
+            }
+            // Also write a summary with component sizes
+            let messages = body["messages"].as_array();
+            let tools = body["tools"].as_array();
+            let mut summary = String::new();
+            summary.push_str(&format!("=== Request {} ===\n", n));
+            summary.push_str(&format!("Total body bytes: {}\n", body.to_string().len()));
+            if let Some(msgs) = messages {
+                for (i, msg) in msgs.iter().enumerate() {
+                    let role = msg["role"].as_str().unwrap_or("?");
+                    let content_len = msg["content"].to_string().len();
+                    let tc_len = msg.get("tool_calls").map(|t| t.to_string().len()).unwrap_or(0);
+                    summary.push_str(&format!(
+                        "  msg[{}] role={:<12} content={:>6} bytes  tool_calls={:>5} bytes\n",
+                        i, role, content_len, tc_len
+                    ));
+                }
+            }
+            if let Some(tl) = tools {
+                summary.push_str(&format!("Tools: {} definitions, {} bytes total\n",
+                    tl.len(), serde_json::to_string(tl).unwrap_or_default().len()));
+                for t in tl {
+                    let name = t["function"]["name"].as_str().unwrap_or("?");
+                    let sz = t.to_string().len();
+                    summary.push_str(&format!("  tool {:<20} {} bytes\n", name, sz));
+                }
+            }
+            let summary_path = format!("{}/req_{:04}_summary.txt", dump_dir, n);
+            if let Ok(mut f) = std::fs::File::create(&summary_path) {
+                let _ = f.write_all(summary.as_bytes());
+            }
+        }
+
         let request_builder = self
             .client
             .post(format!("{}{}", self.base_url, self.chat_path))
@@ -384,6 +427,21 @@ impl LlmProvider for OpenAiProvider {
                     || lower.contains("too many tokens")
             };
 
+            // Detect malformed request body (vLLM/Ollama reject corrupted tool JSON)
+            let is_malformed = !is_context_overflow && status.as_u16() == 400 && {
+                let lower = body_text.to_ascii_lowercase();
+                lower.contains("can only get item")
+                    || lower.contains("invalid tool")
+                    || lower.contains("invalid function")
+                    || lower.contains("invalid json")
+                    || lower.contains("could not parse")
+                    || lower.contains("malformed")
+                    || lower.contains("unexpected token")
+                    || lower.contains("is not valid json")
+                    || lower.contains("invalid value")
+                    || lower.contains("does not match")
+            };
+
             return match status.as_u16() {
                 401 => Err(ProviderError::AuthFailed { message: body_text }),
                 413 => Err(ProviderError::RequestTooLarge { message: body_text }),
@@ -392,6 +450,9 @@ impl LlmProvider for OpenAiProvider {
                 }),
                 400 if is_context_overflow => {
                     Err(ProviderError::ContextOverflow { used: 0, limit: 0 })
+                }
+                400 if is_malformed => {
+                    Err(ProviderError::MalformedRequest { message: body_text })
                 }
                 _ => Err(ProviderError::Other(format!(
                     "HTTP {}: {}",
@@ -480,7 +541,12 @@ impl OpenAiStreamParser {
             // Emit any pending tool calls, then finish
             let mut events = Vec::new();
             for (_idx, (id, name, args)) in self.tool_calls.drain() {
-                let parsed_args = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
+                // Skip ghost tool calls with empty name (vLLM streaming artifact)
+                if name.is_empty() {
+                    tracing::debug!("Skipping ghost tool call with empty name");
+                    continue;
+                }
+                let parsed_args = crate::parse_tool_args(&name, &args);
                 events.push(ContentEvent::ToolCallComplete {
                     call_id: id,
                     tool_name: name,
@@ -511,6 +577,15 @@ impl OpenAiStreamParser {
                     if !content.is_empty() {
                         events.push(ContentEvent::ContentDelta {
                             text: content.to_string(),
+                        });
+                    }
+                }
+
+                // Reasoning/thinking content (vLLM Qwen sends delta.reasoning)
+                if let Some(reasoning) = delta.get("reasoning").and_then(|r| r.as_str()) {
+                    if !reasoning.is_empty() {
+                        events.push(ContentEvent::ThinkingDelta {
+                            text: reasoning.to_string(),
                         });
                     }
                 }
@@ -549,7 +624,12 @@ impl OpenAiStreamParser {
 
                     // Emit pending tool calls
                     for (_idx, (id, name, args)) in self.tool_calls.drain() {
-                        let parsed = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
+                        // Skip ghost tool calls with empty name (vLLM streaming artifact)
+                        if name.is_empty() {
+                            tracing::debug!("Skipping ghost tool call with empty name");
+                            continue;
+                        }
+                        let parsed = crate::parse_tool_args(&name, &args);
                         events.push(ContentEvent::ToolCallComplete {
                             call_id: id,
                             tool_name: name,
@@ -931,16 +1011,48 @@ mod tests {
     // ── Contract: Malformed tool call args parse to Null ──
 
     #[test]
-    fn malformed_tool_args_parse_to_null() {
+    fn malformed_tool_args_parse_to_empty_object() {
         let mut parser = OpenAiStreamParser::new();
         parser.process_chunk(&tool_call_start_chunk(0, "c1", "bash"));
         parser.process_chunk(&tool_call_args_chunk(0, "not json at all"));
 
         let events = parser.process_chunk(&finish_chunk("tool_calls"));
         if let ContentEvent::ToolCallComplete { args, .. } = &events[0] {
-            assert!(args.is_null(), "Unparseable args should become Value::Null");
+            assert!(args.is_object(), "Unparseable args should become empty object {{}}");
+            assert_eq!(args.as_object().unwrap().len(), 0, "Should be empty object");
         } else {
             panic!("Expected ToolCallComplete");
+        }
+    }
+
+    #[test]
+    fn double_brace_args_are_repaired() {
+        let mut parser = OpenAiStreamParser::new();
+        parser.process_chunk(&tool_call_start_chunk(0, "c1", "read_file"));
+        parser.process_chunk(&tool_call_args_chunk(0, r#"{"path": "foo.rs"}}"#));
+
+        let events = parser.process_chunk(&finish_chunk("tool_calls"));
+        if let ContentEvent::ToolCallComplete { args, .. } = &events[0] {
+            assert!(args.is_object(), "Repaired args should be an object");
+            assert_eq!(args["path"], "foo.rs", "Repaired args should have path");
+        } else {
+            panic!("Expected ToolCallComplete");
+        }
+    }
+
+    #[test]
+    fn ghost_tool_calls_with_empty_name_are_filtered() {
+        let mut parser = OpenAiStreamParser::new();
+        // Simulate a ghost entry: index 1 with no name and no args
+        parser.tool_calls.insert(1, ("id1".to_string(), "".to_string(), "".to_string()));
+        // And a real entry
+        parser.tool_calls.insert(0, ("id0".to_string(), "bash".to_string(), r#"{"command":"ls"}"#.to_string()));
+
+        let events = parser.process_chunk(&finish_chunk("tool_calls"));
+        let tool_events: Vec<_> = events.iter().filter(|e| matches!(e, ContentEvent::ToolCallComplete { .. })).collect();
+        assert_eq!(tool_events.len(), 1, "Ghost tool call should be filtered out");
+        if let ContentEvent::ToolCallComplete { tool_name, .. } = &tool_events[0] {
+            assert_eq!(tool_name, "bash");
         }
     }
 

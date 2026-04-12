@@ -99,6 +99,9 @@ pub struct ToolContext {
     pub session_id: Option<String>,
     /// Lineage branch ID from the core lineage DAG.
     pub lineage_branch_id: Option<String>,
+    /// Contract excerpt to inject into subagent briefings.
+    /// This is a rendered slice of the session's ArchitectureIR.
+    pub architecture_contract_excerpt: Option<String>,
 }
 
 impl ToolContext {
@@ -115,6 +118,7 @@ impl ToolContext {
             approval_mode,
             session_id: None,
             lineage_branch_id: None,
+            architecture_contract_excerpt: None,
         }
     }
 

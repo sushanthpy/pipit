@@ -534,6 +534,14 @@ impl SessionKernel {
         self.ledger.append(SessionEvent::SubagentCompleted {
             child_id: branch_id.to_string(),
             success,
+            output: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+            duration_ms: 0,
+            total_turns: 0,
+            task: None,
+            model: None,
         })?;
         Ok(())
     }

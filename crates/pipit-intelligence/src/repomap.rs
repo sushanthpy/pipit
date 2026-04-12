@@ -203,8 +203,11 @@ impl RepoMap {
         let ranked = self.rank_files(context_files, &[]);
 
         let mut output = String::from("# Repository Structure\n\n");
-        /// Rough bytes-per-token ratio for English/code text (1 token ≈ 4 bytes on average).
-        const BYTES_PER_TOKEN: usize = 4;
+        /// Conservative bytes-per-token ratio for code-heavy text.
+        /// The repo map contains code fences, paths, and punctuation which
+        /// tokenize at ~3 chars/token.  Using 3 keeps the rendered output
+        /// within budget when measured by `estimate_text_tokens`.
+        const BYTES_PER_TOKEN: usize = 3;
 
         let mut estimated_tokens = output.len() / BYTES_PER_TOKEN;
 

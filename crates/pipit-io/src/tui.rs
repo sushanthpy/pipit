@@ -13,6 +13,7 @@ const YELLOW: &str = "\x1b[33m";
 const BLUE: &str = "\x1b[34m";
 const CYAN: &str = "\x1b[36m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
+#[allow(dead_code)]
 const BOLD_BLUE: &str = "\x1b[1;34m";
 const BOLD_GREEN: &str = "\x1b[1;32m";
 const BG_DARK: &str = "\x1b[48;5;236m";
@@ -309,6 +310,7 @@ impl PipitUi {
   /config              Show current configuration
   /setup               Run setup wizard
   /model <name>        Switch model at runtime
+  /provider [name]     Switch provider/model profile (or list all)
   /permissions <mode>  Switch approval mode (suggest/auto_edit/full_auto)
 
   {BOLD}Context{RESET}
@@ -491,11 +493,9 @@ impl PipitUi {
                 self.finish_inline_sections();
                 self.active_turn = Some(*turn_number);
                 self.tool_calls_this_turn = 0;
+                // Subtle separator between turns (skip turn 0)
                 if *turn_number > 0 {
                     eprintln!();
-                    eprintln!(
-                        "{BOLD_BLUE}── Turn {turn_number}{RESET} {DIM}planning + execution{RESET}"
-                    );
                 }
             }
             AgentEvent::ContentDelta { text } => {
@@ -506,12 +506,11 @@ impl PipitUi {
                 // Strip thinking tags that leak from some providers
                 let cleaned = text.replace("</think>", "").replace("<think>", "");
                 if cleaned.trim().is_empty() && text.contains("think>") {
-                    // Pure thinking tag, skip entirely
                     return;
                 }
                 if !self.in_content {
                     self.in_content = true;
-                    print!("{BOLD_CYAN}pipit›{RESET} ");
+                    eprint!("{BOLD_CYAN}●{RESET} ");
                 }
                 print!("{}", cleaned);
                 let _ = io::stdout().flush();
@@ -524,7 +523,7 @@ impl PipitUi {
                     }
                     if !self.in_thinking {
                         self.in_thinking = true;
-                        eprint!("{DIM}thinking› ");
+                        eprint!("{DIM}");
                     }
                     eprint!("{}", text);
                     let _ = io::stderr().flush();
@@ -549,24 +548,26 @@ impl PipitUi {
                 let kind = tool_activity_kind(name);
                 self.push_activity(kind, summary.clone());
 
-                if self.show_trace {
-                    eprintln!("{DIM}tool› {name} {}{RESET}", truncate(&summary, 96));
-                }
+                // Show tool invocation with a bold action label like Codex
+                let label = tool_action_label(name, args);
+                eprintln!("{CYAN}●{RESET} {BOLD}{}{RESET}", label);
             }
             AgentEvent::ToolCallEnd {
                 call_id: _,
                 name,
                 result,
+                duration_ms,
             } => {
                 self.finish_inline_sections();
                 self.in_tool = false;
+
+                let timing = format_duration(*duration_ms);
 
                 match result {
                     pipit_core::ToolCallOutcome::Success {
                         content, mutated, ..
                     } => {
                         if *mutated {
-                            // Distinguish Created (new file) vs Updated (existing file)
                             let (icon, color) = if content.starts_with("Created") {
                                 ("+", GREEN)
                             } else if content.starts_with("Updated") {
@@ -574,40 +575,57 @@ impl PipitUi {
                             } else {
                                 ("●", GREEN)
                             };
+                            let first_line = content.lines().next().unwrap_or(content);
                             self.push_activity(ActivityKind::Edit, content.clone());
-                            eprintln!("{color}  {icon} {content}{RESET}");
-                        } else {
-                            // Show brief result for read/query operations
-                            let line_count = content.lines().count();
-                            let preview = match name.as_str() {
-                                "bash" => {
-                                    let first: String =
-                                        content.lines().take(3).collect::<Vec<_>>().join(" | ");
-                                    if line_count > 3 {
-                                        format!(
-                                            "{} ({} lines total)",
-                                            truncate(&first, 80),
-                                            line_count
-                                        )
-                                    } else {
-                                        truncate(&first, 100).to_string()
-                                    }
-                                }
-                                "list_directory" => {
-                                    format!("{} entries", line_count)
-                                }
-                                "read_file" => {
-                                    format!("{} lines", line_count)
-                                }
-                                _ => truncate(content, 80).to_string(),
-                            };
-                            self.push_activity(
-                                ActivityKind::Read,
-                                format!("{} → {}", name, preview),
+                            eprintln!(
+                                "  {color}{icon} {}{RESET} {DIM}{timing}{RESET}",
+                                truncate(first_line, 80)
                             );
-                            if self.show_trace || matches!(name.as_str(), "bash" | "list_directory")
-                            {
-                                eprintln!("{DIM}  ○ {name} → {preview}{RESET}");
+                        } else {
+                            let line_count = content.lines().count();
+                            match name.as_str() {
+                                "bash" => {
+                                    // Inline output with tree connector
+                                    // Skip boilerplate "no output" messages
+                                    let is_noise = content.trim().is_empty()
+                                        || content.contains("Command completed successfully")
+                                        || content.contains("(no output)");
+                                    if !is_noise {
+                                        let lines: Vec<&str> = content.lines().collect();
+                                        let show = lines.len().min(5);
+                                        if show > 0 {
+                                            for (i, line) in lines[..show].iter().enumerate() {
+                                                let connector = if i == show - 1 && lines.len() <= show {
+                                                    "└"
+                                                } else {
+                                                    "├"
+                                                };
+                                                eprintln!(
+                                                    "{DIM}  {connector} {}{RESET}",
+                                                    truncate(line, 90)
+                                                );
+                                            }
+                                            if lines.len() > show {
+                                                eprintln!(
+                                                    "{DIM}  └ … {} more lines{RESET}",
+                                                    lines.len() - show
+                                                );
+                                            }
+                                        }
+                                    }
+                                    self.push_activity(
+                                        ActivityKind::Command,
+                                        format!("bash → {} lines", line_count),
+                                    );
+                                }
+                                _ => {
+                                    // Read/grep/glob/list — the ToolCallStart label
+                                    // already shows what happened; no extra output needed.
+                                    self.push_activity(
+                                        tool_activity_kind(name),
+                                        format!("{} → done", name),
+                                    );
+                                }
                             }
                         }
                     }
@@ -617,8 +635,8 @@ impl PipitUi {
                             format!("{} blocked: {}", name, truncate(message, 60)),
                         );
                         eprintln!(
-                            "{YELLOW}  ⚠ {name} blocked | {}{RESET}",
-                            truncate(message, 120)
+                            "{YELLOW}  └ blocked: {}{RESET}",
+                            truncate(message, 100)
                         );
                     }
                     pipit_core::ToolCallOutcome::Error { message } => {
@@ -626,7 +644,10 @@ impl PipitUi {
                             ActivityKind::Error,
                             format!("{} failed: {}", name, truncate(message, 60)),
                         );
-                        eprintln!("{RED}  ✗ {name} failed | {}{RESET}", truncate(message, 120));
+                        eprintln!(
+                            "{RED}  └ error: {}{RESET}",
+                            truncate(message, 100)
+                        );
                     }
                 }
             }
@@ -682,16 +703,13 @@ impl PipitUi {
                 pivoted,
                 candidate_plans: _,
             } => {
-                let prefix = if *pivoted { "Plan pivot" } else { "Plan" };
+                let prefix = if *pivoted { "Pivoting" } else { "Plan" };
                 self.push_activity(
                     ActivityKind::Plan,
                     format!("{}: {} — {}", prefix, strategy, rationale),
                 );
                 eprintln!(
-                    "{BOLD_BLUE}{} › {}{RESET} {DIM}{}{RESET}",
-                    prefix.to_lowercase(),
-                    strategy,
-                    rationale
+                    "{BLUE}●{RESET} {BOLD}{prefix}: {strategy}{RESET} {DIM}{rationale}{RESET}"
                 );
             }
             AgentEvent::ProviderError { error, will_retry } => {
@@ -734,7 +752,7 @@ impl PipitUi {
             }
             AgentEvent::PhaseTransition { from: _, to, mode } => {
                 self.finish_inline_sections();
-                eprintln!("{BOLD_BLUE}pipit›{RESET} {DIM}{mode}{RESET} · {to}");
+                eprintln!("{DIM}● {mode} · {to}{RESET}");
             }
             AgentEvent::VerifierVerdict {
                 verdict,
@@ -764,22 +782,31 @@ impl PipitUi {
                 eprintln!("{DIM}{label}{RESET}");
             }
             AgentEvent::TurnEnd {
-                turn_number,
+                turn_number: _,
                 reason,
             } => {
                 self.finish_inline_sections();
-                let reason_label = match reason {
-                    pipit_core::TurnEndReason::Complete => "done",
-                    pipit_core::TurnEndReason::ToolsExecuted => "tools executed",
-                    pipit_core::TurnEndReason::MaxTurns => "max turns",
-                    pipit_core::TurnEndReason::Error => "error",
-                    pipit_core::TurnEndReason::Cancelled => "cancelled",
-                };
-                let tools = self.tool_calls_this_turn;
-                eprintln!("{DIM}turn {turn_number} · {tools} tool(s) · {reason_label}{RESET}");
+                // Only show end-of-turn for noteworthy reasons
+                match reason {
+                    pipit_core::TurnEndReason::Complete => {
+                        // Silent — content already visible
+                    }
+                    pipit_core::TurnEndReason::ToolsExecuted => {
+                        // Silent — tool results already shown inline
+                    }
+                    pipit_core::TurnEndReason::MaxTurns => {
+                        eprintln!("{YELLOW}● Reached maximum turns{RESET}");
+                    }
+                    pipit_core::TurnEndReason::Error => {
+                        eprintln!("{RED}● Turn ended with error{RESET}");
+                    }
+                    pipit_core::TurnEndReason::Cancelled => {
+                        eprintln!("{DIM}● Cancelled{RESET}");
+                    }
+                }
             }
             AgentEvent::TurnPhaseEntered {
-                turn,
+                turn: _,
                 phase,
                 detail,
                 ..
@@ -839,15 +866,93 @@ fn truncate(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Format a duration in milliseconds for compact display.
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
 fn concise_provider_error(error: &str, will_retry: bool, show_trace: bool) -> String {
     if show_trace {
         return error.to_string();
     }
-    let first_line = error.lines().next().unwrap_or(error).trim();
+
+    // Extract a friendly message from common provider error patterns
+    let friendly = parse_friendly_error(error);
+
     if will_retry {
-        format!("{}; retrying", first_line)
+        format!("{}; retrying", friendly)
+    } else {
+        friendly
+    }
+}
+
+/// Parse JSON error bodies and HTTP error strings into user-friendly messages.
+fn parse_friendly_error(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+
+    // Try to extract JSON error message: {"error":{"message":"..."}}
+    if let Some(msg_start) = error.find("\"message\"") {
+        let after = &error[msg_start + 9..];
+        // Find the value after "message":"
+        if let Some(colon) = after.find(':') {
+            let value_part = after[colon + 1..].trim().trim_start_matches('"');
+            if let Some(end_quote) = value_part.find('"') {
+                let extracted = &value_part[..end_quote];
+                if !extracted.is_empty() {
+                    return format_error_category(extracted);
+                }
+            }
+        }
+    }
+
+    // Pattern-based friendly messages
+    if lower.contains("can only get item") || lower.contains("tool_call") {
+        return "Model returned malformed tool calls. This model may have limited tool-use support.".to_string();
+    }
+    if lower.contains("context length") || lower.contains("too many tokens") || lower.contains("too long") {
+        return "Request too large for model context window. Try a shorter prompt or smaller project.".to_string();
+    }
+    if lower.contains("rate limit") || lower.contains("429") {
+        return "Rate limited by provider. Will retry after cooldown.".to_string();
+    }
+    if lower.contains("authentication") || lower.contains("401") || lower.contains("api key") {
+        return "Authentication failed. Check your API key or credentials.".to_string();
+    }
+    if lower.contains("model not found") || lower.contains("404") {
+        return "Model not found. Check the model name and provider endpoint.".to_string();
+    }
+    if lower.contains("500") || lower.contains("internal server") {
+        return "Provider internal error (500). Will retry.".to_string();
+    }
+    if lower.contains("502") || lower.contains("bad gateway") {
+        return "Provider gateway error (502). Server may be restarting.".to_string();
+    }
+    if lower.contains("503") || lower.contains("service unavailable") {
+        return "Provider temporarily unavailable (503). Will retry.".to_string();
+    }
+
+    // Fallback: first line, capped at 120 chars
+    let first_line = error.lines().next().unwrap_or(error).trim();
+    if first_line.len() > 120 {
+        format!("{}…", &first_line[..120])
     } else {
         first_line.to_string()
+    }
+}
+
+fn format_error_category(msg: &str) -> String {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("can only get item") {
+        "Model returned malformed tool calls. This model may have limited tool-use support.".to_string()
+    } else if lower.contains("context") || lower.contains("token") {
+        format!("Context limit: {}", msg)
+    } else {
+        // Return extracted message as-is (already more helpful than raw JSON)
+        msg.to_string()
     }
 }
 
@@ -911,6 +1016,67 @@ fn tool_activity_kind(name: &str) -> ActivityKind {
         "edit_file" | "write_file" => ActivityKind::Edit,
         "bash" => ActivityKind::Command,
         _ => ActivityKind::Info,
+    }
+}
+
+/// Generate a Codex-style bold action label for tool invocations.
+/// e.g. "Ran pwd", "Read src/main.rs", "Searched 'pattern'"
+fn tool_action_label(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "bash" => {
+            let cmd = args["command"].as_str().unwrap_or("");
+            // Show just the command name/first word bold, rest normal
+            format!("Ran {}", truncate(cmd, 80))
+        }
+        "read_file" => {
+            let path = args["path"].as_str().unwrap_or("?");
+            let short = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            let start = args["start_line"].as_u64();
+            let end = args["end_line"].as_u64();
+            match (start, end) {
+                (Some(s), Some(e)) => format!("Read {} (lines {}-{})", short, s, e),
+                _ => format!("Read {}", short),
+            }
+        }
+        "write_file" => {
+            let path = args["path"].as_str().unwrap_or("?");
+            let short = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            format!("Wrote {}", short)
+        }
+        "edit_file" | "multi_edit" => {
+            let path = args["path"].as_str().unwrap_or("?");
+            let short = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            format!("Edited {}", short)
+        }
+        "grep" => {
+            let pattern = args["pattern"].as_str().unwrap_or("?");
+            format!("Searched '{}'", truncate(pattern, 40))
+        }
+        "glob" => {
+            let pattern = args["pattern"].as_str().unwrap_or("?");
+            format!("Glob '{}'", truncate(pattern, 40))
+        }
+        "list_directory" => {
+            let path = args["path"].as_str().unwrap_or(".");
+            format!("Listed {}", path)
+        }
+        "scaffold_project" => {
+            let root = args["project_root"].as_str().unwrap_or("?");
+            let file_count = args["files"].as_array().map(|a| a.len()).unwrap_or(0);
+            format!("Scaffolded {} ({} files)", root, file_count)
+        }
+        _ => {
+            format!("{}", name)
+        }
     }
 }
 
@@ -1112,11 +1278,21 @@ mod tests {
     #[test]
     fn concise_provider_error_hides_multiline_trace_in_compact_mode() {
         let rendered = concise_provider_error(
-            "Request too large\nPlease check this guide\nhttps://example.com",
+            "Something went wrong\nPlease check this guide\nhttps://example.com",
             true,
             false,
         );
-        assert_eq!(rendered, "Request too large; retrying");
+        assert_eq!(rendered, "Something went wrong; retrying");
+    }
+
+    #[test]
+    fn concise_provider_error_parses_tool_format_error() {
+        let rendered = concise_provider_error(
+            r#"HTTP 400: {"error":{"message":"Can only get item property"}}"#,
+            false,
+            false,
+        );
+        assert!(rendered.contains("malformed tool calls"));
     }
 
     #[test]

@@ -281,6 +281,12 @@ pub enum SlashCommand {
     /// Browse or search the plugin registry.
     Registry(Option<String>),
 
+    /// Toggle Vim modal editing in the composer.
+    Vim,
+
+    /// Switch provider/model profile or list available profiles.
+    Provider(Option<String>),
+
     Unknown(String),
 }
 
@@ -371,6 +377,8 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
         "watch" => SlashCommand::Watch(arg),
         "deps" | "dependencies" | "audit" => SlashCommand::Deps(arg),
         "registry" | "plugins" => SlashCommand::Registry(arg),
+        "vim" => SlashCommand::Vim,
+        "provider" | "prov" | "providers" => SlashCommand::Provider(arg),
 
         "doc" => SlashCommand::Unknown("doc".to_string()), // Reserved for future /doc [topic]
 

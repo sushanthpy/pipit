@@ -47,6 +47,13 @@ pub enum ProviderError {
     #[error("Request cancelled")]
     Cancelled,
 
+    /// The provider rejected the request body (HTTP 400) due to malformed
+    /// content — e.g. invalid tool-call JSON, unsupported message structure,
+    /// or conversation-history corruption. Recoverable by stripping the
+    /// offending messages and retrying.
+    #[error("Malformed request: {message}")]
+    MalformedRequest { message: String },
+
     #[error("Provider error: {0}")]
     Other(String),
 }
@@ -98,12 +105,34 @@ impl ProviderError {
         )
     }
 
+    /// Is this a malformed-request error (HTTP 400 from corrupted conversation)?
+    /// Recoverable by stripping the last assistant+tool messages and retrying.
+    pub fn is_malformed_request(&self) -> bool {
+        matches!(self, ProviderError::MalformedRequest { .. })
+            || matches!(self, ProviderError::Other(msg) if {
+                let lower = msg.to_ascii_lowercase();
+                // vLLM: "Can only get item ..." when tool call JSON is malformed
+                (lower.contains("400") && (
+                    lower.contains("can only get item")
+                    || lower.contains("invalid tool")
+                    || lower.contains("invalid function")
+                    || lower.contains("invalid json")
+                    || lower.contains("could not parse")
+                    || lower.contains("malformed")
+                    || lower.contains("unexpected token")
+                    || lower.contains("is not valid json")
+                ))
+            })
+    }
+
     /// Classification string for telemetry.
     pub fn classify(&self) -> &'static str {
         if self.is_transient() {
             "transient"
         } else if self.is_context_recoverable() {
             "context_overflow"
+        } else if self.is_malformed_request() {
+            "malformed_request"
         } else if self.is_permanent() {
             "permanent"
         } else {

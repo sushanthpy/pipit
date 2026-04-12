@@ -212,6 +212,9 @@ pub struct AgentLoop {
     memory_store: Option<Box<dyn pipit_context::MemoryStore>>,
     /// Derived session state for projection injection.
     session_state: Option<crate::ledger::SessionState>,
+    /// Cached ArchitectureIR synthesized from the first user message.
+    /// Populated once per session; stays stable across turns for prompt-cache hits.
+    architecture_ir: Option<crate::domain_architect::ArchitectureIR>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +305,7 @@ impl AgentLoop {
             session_id,
             memory_store: None,
             session_state: None,
+            architecture_ir: None,
         };
 
         (agent, event_rx, steering_tx)
@@ -323,6 +327,17 @@ impl AgentLoop {
     /// Enable session memory store for compaction summary persistence.
     pub fn enable_memory_store(&mut self, store: Box<dyn pipit_context::MemoryStore>) {
         self.memory_store = Some(store);
+    }
+
+    /// Set the cached ArchitectureIR for this session.
+    /// Called once after `build_composed_prompt_v2` synthesizes the IR.
+    pub fn set_architecture_ir(&mut self, ir: Option<crate::domain_architect::ArchitectureIR>) {
+        self.architecture_ir = ir;
+    }
+
+    /// Get the cached ArchitectureIR for this session.
+    pub fn architecture_ir(&self) -> Option<&crate::domain_architect::ArchitectureIR> {
+        self.architecture_ir.as_ref()
     }
 
     /// Record a session event to the ledger (if enabled). Non-blocking.
@@ -538,6 +553,7 @@ impl AgentLoop {
         };
 
         let objective = Objective::from_prompt(&processed);
+
         // Record user message to ledger
         self.record(SessionEvent::UserMessageAccepted {
             content: processed.clone(),
@@ -981,8 +997,10 @@ impl AgentLoop {
                         ttft_ema = self.telemetry_controller.ttft_ema_ms(),
                         "Telemetry controller: proactive compaction triggered"
                     );
-                    // Proactive eviction of stale results when TTFT is climbing
-                    let freed = self.context.evict_stale_tool_results(6);
+                    // Proactive eviction of stale results when TTFT is climbing.
+                    // Preserve the last 20 messages to avoid evicting tool results
+                    // the model is actively analyzing (e.g., file reads for code review).
+                    let freed = self.context.evict_stale_tool_results(20);
                     if freed > 0 {
                         self.emit(AgentEvent::Waiting {
                             label: format!("Proactive eviction: freed ~{} tokens", freed),
@@ -1070,7 +1088,34 @@ impl AgentLoop {
                     }
 
                     let had_recent_activity = adaptive_budget.had_recent_tool_activity(3);
+
+                    // After the model has already made file mutations, a text-only
+                    // response (no tool calls) is almost certainly a summary or
+                    // confirmation.  Treat it as done.
+                    //
+                    // For analysis/read-only tasks (no mutations), the model's
+                    // text-only response IS the deliverable — a bug report, an
+                    // explanation, etc.  We should NOT auto-continue past it.
+                    //
+                    // The key insight from pi's architecture: the model naturally
+                    // stops calling tools when done.  If it returns text without
+                    // tool calls, that IS the answer.  Nagging it to "use tools"
+                    // wastes context and produces worse results.
+                    let has_prior_mutations = unique_files.len() > 0;
+                    let response_looks_like_summary =
+                        has_prior_mutations && !response.text.trim().is_empty();
+
+                    // For read-only analysis tasks (no prior mutations), treat any
+                    // substantive text response (>200 chars) as the final answer.
+                    // Short responses (<200 chars) on turn 0 get one retry because
+                    // weaker models sometimes plan first, then act.
+                    let analysis_is_final = !has_prior_mutations
+                        && response.text.trim().len() > 200
+                        && turn > 0;
+
                     let should_auto_continue = !model_says_done
+                        && !response_looks_like_summary
+                        && !analysis_is_final
                         && !is_semantic_stall
                         && had_recent_activity
                         && end_turn_continuations < 2;
@@ -1104,13 +1149,7 @@ impl AgentLoop {
                         self.process_turn_outputs(&tk_outputs);
 
                         self.context.push_control_plane(
-                            "Your response ended without calling any tools. \
-                             The task may not be fully complete. Review your progress:\n\
-                             - Are all requested changes implemented?\n\
-                             - Have you run verification (tests, lint) if applicable?\n\
-                             - Is there anything remaining to finish the task?\n\n\
-                             If more work is needed, continue using tools. \
-                             If the task is truly complete, provide your final summary.",
+                            "Continue.",
                         );
                         continue;
                     }
@@ -2008,6 +2047,31 @@ impl AgentLoop {
                         will_retry: true,
                     });
                 }
+                // Malformed request (HTTP 400 from corrupted tool-call JSON, etc.)
+                // Strip the last assistant+tool-result messages that the provider
+                // choked on, then retry so the model gets a clean conversation.
+                Err(err)
+                    if err.is_malformed_request()
+                        && attempts < 2
+                        && self.telemetry.session_counters.can_retry() =>
+                {
+                    attempts += 1;
+                    self.telemetry.session_counters.record_retry();
+                    let stripped = self.context.strip_last_assistant_turn();
+                    self.emit(AgentEvent::ProviderError {
+                        error: format!(
+                            "{} — stripped {} corrupted messages, retrying (attempt {}/2)",
+                            err, stripped, attempts
+                        ),
+                        will_retry: true,
+                    });
+                    tracing::warn!(
+                        error = %err,
+                        stripped_messages = stripped,
+                        attempt = attempts,
+                        "Malformed request recovery: stripped last assistant turn"
+                    );
+                }
                 Err(err)
                     if err.is_transient()
                         && attempts < 3
@@ -2038,7 +2102,14 @@ impl AgentLoop {
     ) -> CompletionRequest {
         let mut request = self.context.build_request(tools, self.repo_map.as_deref());
 
-        // Always inject planning context for non-trivial tasks.
+        // ── Per-turn inflation budget ──
+        // For compact-context models (system prompt < 6K chars = compact path),
+        // skip planning/strategy injection entirely — it adds ~500-800 tokens
+        // of margin-negative noise that confuses smaller models.
+        // For large-context models, inject as before.
+        let is_compact = request.system.len() < 6000;
+
+        // Always inject planning context for non-trivial tasks on large models.
         // The plan strategy (MinimalPatch, CharacterizationFirst, etc.) guides
         // the model's approach — omitting it causes regressions in edit quality.
         // Only suppress for first-turn Q&A that hasn't done any tool calls.
@@ -2046,7 +2117,7 @@ impl AgentLoop {
             && selected_plan.strategy == crate::planner::StrategyKind::MinimalPatch
             && selected_plan.rationale == "Direct response.";
 
-        if !is_trivial_qa {
+        if !is_trivial_qa && !is_compact {
             request.system.push_str("\n\n");
             request.system.push_str(&claim.render_for_prompt());
             request.system.push_str("\n## Selected Execution Plan\n");
@@ -2061,6 +2132,9 @@ impl AgentLoop {
         // Skip on early turns with no mutations — the empty projection adds
         // noise that can confuse smaller models into producing text instead
         // of tool calls.
+        // Also skip entirely for compact models — they need every byte of
+        // context for the actual conversation.
+        if !is_compact {
         if let Some(ref state) = self.session_state {
             if !state.modified_files.is_empty() {
                 let proj = crate::projections::project_workspace(state);
@@ -2077,6 +2151,7 @@ impl AgentLoop {
                 }
                 request.system.push_str(&ctx_note);
             }
+        }
         }
 
         if let Ok(Some(modified_system)) = self.extensions.on_before_request(&request.system).await
@@ -2346,6 +2421,7 @@ impl AgentLoop {
                                 call_id: call.call_id.clone(),
                                 name: call.tool_name.clone(),
                                 result: outcome.clone(),
+                                duration_ms: 0,
                             });
                             results.push((call.call_id.clone(), outcome));
                             continue;
@@ -2358,6 +2434,7 @@ impl AgentLoop {
                         .telemetry
                         .start_span("tool.execute")
                         .attr("tool.name", SpanValue::String(call.tool_name.clone()));
+                    let tool_start = std::time::Instant::now();
                     let outcome = execute_single_tool(
                         &self.tools,
                         &modified_call,
@@ -2366,6 +2443,7 @@ impl AgentLoop {
                         self.config.dry_run,
                     )
                     .await;
+                    let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
                     let success = matches!(outcome, ToolCallOutcome::Success { .. });
                     tool_span.finish(if success {
                         SpanStatus::Ok
@@ -2416,6 +2494,7 @@ impl AgentLoop {
                         call_id: call.call_id.clone(),
                         name: call.tool_name.clone(),
                         result: outcome.clone(),
+                        duration_ms: tool_duration_ms,
                     });
                     results.push((call.call_id.clone(), outcome));
                 }
@@ -2447,23 +2526,26 @@ impl AgentLoop {
                                         ToolCallOutcome::Error {
                                             message: err.to_string(),
                                         },
+                                        0u64,
                                     );
                                 }
                             };
                             let mut modified_call = call.clone();
                             modified_call.args = modified_args;
+                            let tool_start = std::time::Instant::now();
                             let outcome =
                                 execute_single_tool(&tools, &modified_call, &ctx, cancel, dry_run)
                                     .await;
+                            let dur_ms = tool_start.elapsed().as_millis() as u64;
                             let outcome =
                                 apply_after_tool_hook(&*extensions, &call.tool_name, outcome).await;
-                            (call.call_id.clone(), call.tool_name.clone(), call.args.clone(), outcome)
+                            (call.call_id.clone(), call.tool_name.clone(), call.args.clone(), outcome, dur_ms)
                         }
                     })
                     .collect();
 
                 let batch_results = futures::future::join_all(concurrent_futures).await;
-                for (call_id, tool_name, args, outcome) in batch_results {
+                for (call_id, tool_name, args, outcome, dur_ms) in batch_results {
                     self.telemetry.session_counters.increment_tool_calls();
                     let mutation_applied =
                         matches!(outcome, ToolCallOutcome::Success { mutated: true, .. });
@@ -2506,6 +2588,7 @@ impl AgentLoop {
                         call_id: call_id.clone(),
                         name: tool_name,
                         result: outcome.clone(),
+                        duration_ms: dur_ms,
                     });
                     results.push((call_id, outcome));
                 }
@@ -2940,6 +3023,7 @@ fn finalize_proof(
         confidence,
         rollback_checkpoint,
         tiers,
+        requirement_coverage: Default::default(),
     }
 }
 
@@ -3003,6 +3087,9 @@ fn is_request_too_large_error(error: &pipit_provider::ProviderError) -> bool {
                 // Generic: "context length exceeded"
                 || lower.contains("context length exceeded")
                 || lower.contains("context_length_exceeded")
+                // llama.cpp / generic: "context size ... exceeded"
+                || (lower.contains("context size") && lower.contains("exceeded"))
+                || (lower.contains("context") && lower.contains("has been exceeded"))
                 // Ollama / llama.cpp
                 || (lower.contains("input") && lower.contains("too long"))
                 || (lower.contains("token") && lower.contains("limit"))
@@ -3350,6 +3437,12 @@ mod tests {
         assert!(!is_request_too_large_error(
             &pipit_provider::ProviderError::Other("HTTP 500 internal error".to_string(),)
         ));
+        // llama.cpp: "Context size has been exceeded"
+        assert!(is_request_too_large_error(
+            &pipit_provider::ProviderError::Other(
+                "Context size has been exceeded".to_string(),
+            )
+        ));
     }
 
     #[test]
@@ -3467,10 +3560,32 @@ pub(crate) async fn execute_single_tool(
         for field in required {
             if let Some(field_name) = field.as_str() {
                 if call.args.get(field_name).is_none() || call.args[field_name].is_null() {
+                    // Build a helpful error that shows the expected schema.
+                    // This helps models self-correct on the next turn.
+                    let prop_desc = schema
+                        .get("properties")
+                        .and_then(|p| p.get(field_name))
+                        .and_then(|v| v.get("description"))
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    let prop_type = schema
+                        .get("properties")
+                        .and_then(|p| p.get(field_name))
+                        .and_then(|v| v.get("type"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("string");
+                    tracing::warn!(
+                        tool = call.tool_name,
+                        field = field_name,
+                        received_args = %call.args,
+                        "Tool call missing required argument"
+                    );
                     return ToolCallOutcome::Error {
                         message: format!(
-                            "Missing required argument '{}' for tool '{}'",
-                            field_name, call.tool_name
+                            "Missing required argument '{}' (type: {}) for tool '{}'. {}. \
+                             You must provide '{}' in the tool call arguments. \
+                             Example: {{\"{}\":\"/path/to/file\"}}",
+                            field_name, prop_type, call.tool_name, prop_desc, field_name, field_name
                         ),
                     };
                 }

@@ -97,12 +97,14 @@ pub struct PipitConfigLayer {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfigLayer {
+    #[serde(alias = "name")]
     pub default: Option<ProviderKind>,
     pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelConfigLayer {
+    #[serde(alias = "name")]
     pub default_model: Option<String>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u32>,
@@ -147,8 +149,7 @@ impl Default for ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     AmazonBedrock,
     Anthropic,
@@ -194,9 +195,11 @@ impl FromStr for ProviderKind {
         match s.to_lowercase().as_str() {
             "amazon_bedrock" | "amazon-bedrock" | "bedrock" => Ok(Self::AmazonBedrock),
             "anthropic" | "claude" => Ok(Self::Anthropic),
-            "openai" | "gpt" => Ok(Self::OpenAi),
-            "openai_codex" | "openai-codex" | "cortex" | "codex" => Ok(Self::OpenAiCodex),
-            "deepseek" => Ok(Self::DeepSeek),
+            "openai" | "open_ai" | "gpt" => Ok(Self::OpenAi),
+            "openai_codex" | "openai-codex" | "open_ai_codex" | "cortex" | "codex" => {
+                Ok(Self::OpenAiCodex)
+            }
+            "deepseek" | "deep_seek" => Ok(Self::DeepSeek),
             "google" | "gemini" => Ok(Self::Google),
             "google_gemini_cli" | "google-gemini-cli" | "gemini_cli" | "gemini-cli" => {
                 Ok(Self::GoogleGeminiCli)
@@ -210,26 +213,45 @@ impl FromStr for ProviderKind {
             "vercel_ai_gateway" | "vercel-ai-gateway" | "vercel" | "ai_gateway" => {
                 Ok(Self::VercelAiGateway)
             }
-            "github_copilot" | "github-copilot" | "copilot" => Ok(Self::GitHubCopilot),
-            "xai" | "grok" => Ok(Self::XAi),
-            "zai" => Ok(Self::ZAi),
+            "github_copilot" | "github-copilot" | "git_hub_copilot" | "copilot" => {
+                Ok(Self::GitHubCopilot)
+            }
+            "xai" | "x_ai" | "grok" => Ok(Self::XAi),
+            "zai" | "z_ai" => Ok(Self::ZAi),
             "cerebras" => Ok(Self::Cerebras),
             "groq" => Ok(Self::Groq),
             "mistral" => Ok(Self::Mistral),
-            "huggingface" | "hf" => Ok(Self::HuggingFace),
-            "minimax" => Ok(Self::MiniMax),
-            "minimax_cn" | "minimax-cn" => Ok(Self::MiniMaxCn),
+            "huggingface" | "hugging_face" | "hf" => Ok(Self::HuggingFace),
+            "minimax" | "mini_max" => Ok(Self::MiniMax),
+            "minimax_cn" | "minimax-cn" | "mini_max_cn" => Ok(Self::MiniMaxCn),
             "opencode" => Ok(Self::Opencode),
             "opencode_go" | "opencode-go" => Ok(Self::OpencodeGo),
             "kimi_coding" | "kimi-coding" => Ok(Self::KimiCoding),
             "ollama" => Ok(Self::Ollama),
-            "openai_compatible" | "openai-compatible" | "custom" => Ok(Self::OpenAiCompatible),
-            "anthropic_compatible" | "anthropic-compatible" => Ok(Self::AnthropicCompatible),
+            "openai_compatible" | "openai-compatible" | "open_ai_compatible" | "custom" => {
+                Ok(Self::OpenAiCompatible)
+            }
+            "anthropic_compatible" | "anthropic-compatible" => {
+                Ok(Self::AnthropicCompatible)
+            }
             _ => Err(format!(
                 "Unknown provider: {}. Supported: amazon_bedrock, anthropic, openai, openai_codex, azure_openai, deepseek, google, google_gemini_cli, google_antigravity, vertex, openrouter, vercel_ai_gateway, github_copilot, xai, zai, cerebras, groq, mistral, huggingface, minimax, minimax_cn, opencode, opencode_go, kimi_coding, ollama, openai_compatible, anthropic_compatible",
                 s
             )),
         }
+    }
+}
+
+/// Custom Deserialize that routes through FromStr so that user-friendly aliases
+/// like `openai_compatible` (instead of serde's `open_ai_compatible`) work in
+/// config files.
+impl<'de> Deserialize<'de> for ProviderKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<ProviderKind>().map_err(serde::de::Error::custom)
     }
 }
 
@@ -271,6 +293,31 @@ impl std::fmt::Display for ProviderKind {
 mod tests {
     use super::ProviderKind;
     use std::str::FromStr;
+
+    #[test]
+    fn parses_config_toml_name_alias() {
+        use super::{PipitConfigLayer, ProviderKind};
+
+        let toml_str = r#"
+[provider]
+name = "openai_compatible"
+base_url = "http://192.168.1.198:8000"
+
+[model]
+name = "qwen"
+context_window = 65536
+max_output_tokens = 16384
+"#;
+        let layer: PipitConfigLayer = toml::from_str(toml_str).expect("parse failed");
+        let provider = layer.provider.unwrap();
+        assert_eq!(provider.default, Some(ProviderKind::OpenAiCompatible));
+        assert_eq!(provider.base_url, Some("http://192.168.1.198:8000".into()));
+
+        let model = layer.model.unwrap();
+        assert_eq!(model.default_model, Some("qwen".into()));
+        assert_eq!(model.context_window, Some(65536));
+        assert_eq!(model.max_output_tokens, Some(16384));
+    }
 
     #[test]
     fn parses_new_provider_aliases() {

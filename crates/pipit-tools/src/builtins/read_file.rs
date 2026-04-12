@@ -54,7 +54,7 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Supports optional line ranges."
+        "Read the contents of a file. Returns line-numbered output. For large files, output is capped and a continuation hint is shown. Use start_line/end_line for targeted reads."
     }
 
     async fn execute(
@@ -141,37 +141,68 @@ impl Tool for ReadFileTool {
         let start_line = args["start_line"].as_u64().map(|n| n as usize);
         let end_line = args["end_line"].as_u64().map(|n| n as usize);
 
-        let result = match (start_line, end_line) {
-            (Some(start), Some(end)) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start = start.saturating_sub(1); // 1-indexed to 0-indexed
-                let end = end.min(lines.len());
-                let selected: Vec<String> = lines[start..end]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| format!("{:>4} | {}", start + i + 1, line))
-                    .collect();
-                selected.join("\n")
-            }
-            (Some(start), None) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start = start.saturating_sub(1);
-                let selected: Vec<String> = lines[start..]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| format!("{:>4} | {}", start + i + 1, line))
-                    .collect();
-                selected.join("\n")
-            }
-            _ => {
-                let lines: Vec<String> = content
-                    .lines()
-                    .enumerate()
-                    .map(|(i, line)| format!("{:>4} | {}", i + 1, line))
-                    .collect();
-                lines.join("\n")
-            }
+        /// Maximum lines returned per read call.  Keeps each tool result
+        /// small enough that the model can read many files per turn without
+        /// overflowing context.  Mirrors pi's ~2000-line / 50 KB ceiling.
+        const MAX_READ_LINES: usize = 2000;
+        /// Hard byte ceiling — avoids one huge minified file blowing context.
+        const MAX_OUTPUT_BYTES: usize = 50 * 1024; // 50 KB
+
+        let all_lines: Vec<&str> = content.lines().collect();
+        let total_lines = all_lines.len();
+
+        let start_idx = match start_line {
+            Some(s) => s.saturating_sub(1).min(total_lines),
+            None => 0,
         };
+        let end_idx = match end_line {
+            Some(e) => e.min(total_lines),
+            None => total_lines,
+        };
+
+        // Enforce per-read line + byte limits
+        let mut capped_end = end_idx;
+        let mut byte_limited = false;
+        {
+            let mut bytes = 0usize;
+            for i in start_idx..end_idx {
+                if (i - start_idx) >= MAX_READ_LINES {
+                    capped_end = i;
+                    break;
+                }
+                bytes += all_lines[i].len() + 1; // +1 for newline
+                if bytes > MAX_OUTPUT_BYTES {
+                    capped_end = i + 1;
+                    byte_limited = true;
+                    break;
+                }
+            }
+        }
+
+        let selected: Vec<String> = all_lines[start_idx..capped_end]
+            .iter()
+            .enumerate()
+            .map(|(i, line)| format!("{:>4} | {}", start_idx + i + 1, line))
+            .collect();
+        let mut result = selected.join("\n");
+
+        // Append continuation hint when truncated
+        if capped_end < end_idx {
+            let shown_start = start_idx + 1;
+            let shown_end = capped_end;
+            let next_start = capped_end + 1;
+            if byte_limited {
+                result.push_str(&format!(
+                    "\n\n[Showing lines {}-{} of {} (50KB limit). Use start_line={} to continue.]",
+                    shown_start, shown_end, total_lines, next_start
+                ));
+            } else {
+                result.push_str(&format!(
+                    "\n\n[Showing lines {}-{} of {}. Use start_line={} to continue.]",
+                    shown_start, shown_end, total_lines, next_start
+                ));
+            }
+        }
 
         Ok(ToolResult::text(result))
     }

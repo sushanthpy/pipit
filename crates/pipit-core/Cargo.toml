@@ -33,6 +33,7 @@ pipit-hw-codesign = { path = "../pipit-hw-codesign", optional = true }
 pipit-agents = { path = "../pipit-agents", optional = true }
 pipit-bridge = { path = "../pipit-bridge", optional = true }
 pipit-permissions = { path = "../pipit-permissions", optional = true }
+regex = "1"
 
 [features]
 default = []
