@@ -114,6 +114,8 @@ main() {
     if [ -w "${INSTALL_DIR}" ]; then
         mkdir -p "${INSTALL_DIR}"
         mv "${binary_path}" "${INSTALL_DIR}/${BINARY}"
+    elif mkdir -p "${INSTALL_DIR}" 2>/dev/null; then
+        mv "${binary_path}" "${INSTALL_DIR}/${BINARY}"
     else
         info "Elevated permissions required to install to ${INSTALL_DIR}"
         sudo mkdir -p "${INSTALL_DIR}"
@@ -125,8 +127,13 @@ main() {
     info "Installed pipit to ${INSTALL_DIR}/${BINARY}"
     "${INSTALL_DIR}/${BINARY}" --version
 
+    # Check if install dir is in PATH; if not, advise the user.
     active_path="$(command -v "${BINARY}" 2>/dev/null || true)"
-    if [ -n "${active_path}" ] && [ "${active_path}" != "${INSTALL_DIR}/${BINARY}" ]; then
+    if [ -z "${active_path}" ]; then
+        warn "${INSTALL_DIR} is not in your PATH."
+        warn "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
+        warn "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+    elif [ "${active_path}" != "${INSTALL_DIR}/${BINARY}" ]; then
         warn "Your shell resolves ${BINARY} to ${active_path}, not ${INSTALL_DIR}/${BINARY}."
         warn "Either reorder PATH or rerun with PIPIT_INSTALL_DIR=$(dirname "${active_path}")"
     fi
@@ -144,7 +151,20 @@ resolve_install_dir() {
         return
     fi
 
-    printf '%s\n' "/usr/local/bin"
+    # Prefer ~/.local/bin (no sudo needed). Fall back to /usr/local/bin
+    # only if ~/.local/bin is not in PATH and /usr/local/bin is writable.
+    local_bin="${HOME}/.local/bin"
+    if echo "${PATH}" | grep -q "${local_bin}" 2>/dev/null; then
+        printf '%s\n' "${local_bin}"
+        return
+    fi
+
+    if [ -w "/usr/local/bin" ]; then
+        printf '%s\n' "/usr/local/bin"
+        return
+    fi
+
+    printf '%s\n' "${local_bin}"
 }
 
 get_latest_tag() {

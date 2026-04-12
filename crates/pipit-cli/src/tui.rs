@@ -373,7 +373,13 @@ pub async fn run(
             match event {
                 Event::Paste(text) => {
                     let mut state = tui_state.lock().unwrap();
-                    state.composer.handle_paste(&text);
+                    // Cap at 1MB to prevent OOM from huge pastes
+                    let capped = if text.len() > 1_048_576 {
+                        &text[..1_048_576]
+                    } else {
+                        &text
+                    };
+                    state.composer.handle_paste(capped);
                 }
                 Event::Key(key) => {
                     let mut state = tui_state.lock().unwrap();
@@ -415,7 +421,61 @@ pub async fn run(
 
                     // Check if composer submitted input
                     if let Some(submitted) = state.composer.submitted.take() {
-                        let input = submitted.text.clone();
+                        let mut input = submitted.text.clone();
+
+                        // Merge pasted-text attachments into the prompt by
+                        // reading their temp files and prepending to context.
+                        let mut pasted_context = String::new();
+                        let mut file_attachments: Vec<String> = Vec::new();
+                        let mut image_attachments: Vec<String> = Vec::new();
+                        for att in &submitted.attachments {
+                            match att.kind {
+                                pipit_io::composer::AttachmentKind::PastedText => {
+                                    if let Ok(content) = std::fs::read_to_string(&att.path) {
+                                        // Cap at 128KB per pasted attachment
+                                        let capped = if content.len() > 131_072 {
+                                            format!("{}…\n[truncated at 128KB]", &content[..131_072])
+                                        } else {
+                                            content
+                                        };
+                                        pasted_context.push_str(&format!(
+                                            "<pasted_text>\n{}\n</pasted_text>\n\n",
+                                            capped
+                                        ));
+                                    }
+                                    // Clean up temp file
+                                    let _ = std::fs::remove_file(&att.path);
+                                }
+                                pipit_io::composer::AttachmentKind::File => {
+                                    file_attachments.push(att.path.clone());
+                                }
+                                pipit_io::composer::AttachmentKind::Image => {
+                                    image_attachments.push(att.path.clone());
+                                }
+                            }
+                        }
+                        if !pasted_context.is_empty() {
+                            input = format!(
+                                "{}{}\n{}",
+                                pasted_context,
+                                if input.is_empty() { "Analyze the pasted text above." } else { "" },
+                                input
+                            );
+                        }
+                        if !file_attachments.is_empty() {
+                            input = format!(
+                                "First read these files: {}. Then: {}",
+                                file_attachments.join(", "),
+                                input
+                            );
+                        }
+                        if !image_attachments.is_empty() {
+                            input = format!(
+                                "Analyze these image files: {}. {}",
+                                image_attachments.join(", "),
+                                input
+                            );
+                        }
 
                         // Update task label for every submission
                         state.has_received_input = true;

@@ -620,13 +620,20 @@ impl Composer {
     /// Short pastes (≤100 chars, single line) are inserted inline.
     /// Longer / multi-line pastes are saved to a temp file and attached,
     /// keeping the input line clean and readable.
+    /// Pastes over 1MB are silently truncated to prevent OOM.
     pub fn handle_paste(&mut self, text: &str) {
-        let paste_lines: Vec<&str> = text.lines().collect();
-        if paste_lines.is_empty() {
+        if text.is_empty() {
             return;
         }
 
-        let is_long = text.len() > 100 || paste_lines.len() > 1;
+        // Hard cap: 1MB to prevent memory exhaustion from huge pastes.
+        let text = if text.len() > 1_048_576 {
+            &text[..1_048_576]
+        } else {
+            text
+        };
+
+        let is_long = text.len() > 100 || text.contains('\n');
 
         if is_long {
             // Save to temp file and attach as a pasted-text attachment.
@@ -646,8 +653,8 @@ impl Composer {
         // Short single-line paste: insert inline.
         let line = &mut self.lines[self.cursor_row];
         let byte_pos = char_to_byte(line, self.cursor_col);
-        line.insert_str(byte_pos, paste_lines[0]);
-        self.cursor_col += paste_lines[0].chars().count();
+        line.insert_str(byte_pos, text);
+        self.cursor_col += text.chars().count();
 
         // Auto-extract pasted image paths into attachment chips.
         self.auto_extract_image_paths();

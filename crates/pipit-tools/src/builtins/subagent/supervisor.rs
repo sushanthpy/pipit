@@ -4,7 +4,6 @@
 //! escalation, and real-time status aggregation.
 
 /// Maximum concurrent subagent processes. Protects provider quotas and
-/// local resources. Same order of magnitude as pi-mono's MAX_CONCURRENCY=4.
 pub const MAX_CONCURRENCY: usize = 4;
 
 /// Maximum parallel forks (slightly higher since forks share prefix cache).
