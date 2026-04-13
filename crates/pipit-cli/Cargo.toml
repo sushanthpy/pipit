@@ -53,7 +53,7 @@ uuid = { workspace = true }
 libc = "0.2"
 
 [features]
-default = ["voice", "mesh", "vim-input", "lsp"]
+default = ["mesh", "vim-input", "lsp"]
 voice = ["dep:pipit-voice"]
 mesh = ["dep:pipit-mesh"]
 vim-input = ["dep:pipit-vim"]
