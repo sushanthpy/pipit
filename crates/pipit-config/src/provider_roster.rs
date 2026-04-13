@@ -329,6 +329,10 @@ fn format_label(kind: ProviderKind, model: &str) -> String {
         ProviderKind::AzureOpenAi => "azure",
         ProviderKind::Vertex => "vertex",
         ProviderKind::AmazonBedrock => "bedrock",
+        ProviderKind::OpenAiResponses => "openai",
+        ProviderKind::CodexOAuth => "codex",
+        ProviderKind::CopilotOAuth => "copilot",
+        ProviderKind::Faux => "faux",
     };
     let short = short_model(model);
     format!("{}/{}", provider_name, short)

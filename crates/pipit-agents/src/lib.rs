@@ -421,4 +421,194 @@ mod tests {
         // Speedup = sum/max = 3000/2000 = 1.5
         assert!((merged.parallel_speedup - 1.5).abs() < 0.01);
     }
+
+    // ── Additional coordinator tests ──
+
+    #[test]
+    fn no_conflicts_when_agents_edit_different_files() {
+        let results = vec![
+            SubTaskResult {
+                task_id: "t1".into(),
+                agent_name: "agent_a".into(),
+                status: SubTaskStatus::Completed,
+                output: "done".into(),
+                memory_snapshot: AgentMemorySnapshot {
+                    parent_context: vec![],
+                    delta: vec![],
+                    modified_files: vec![PathBuf::from("src/lib.rs")],
+                    tool_calls: vec![],
+                },
+                duration_ms: 100,
+            },
+            SubTaskResult {
+                task_id: "t2".into(),
+                agent_name: "agent_b".into(),
+                status: SubTaskStatus::Completed,
+                output: "done".into(),
+                memory_snapshot: AgentMemorySnapshot {
+                    parent_context: vec![],
+                    delta: vec![],
+                    modified_files: vec![PathBuf::from("src/main.rs")],
+                    tool_calls: vec![],
+                },
+                duration_ms: 200,
+            },
+        ];
+
+        let conflicts = Coordinator::detect_conflicts(&results);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn three_agents_same_file_produces_multiple_conflicts() {
+        let results = vec![
+            SubTaskResult {
+                task_id: "t1".into(),
+                agent_name: "a".into(),
+                status: SubTaskStatus::Completed,
+                output: "".into(),
+                memory_snapshot: AgentMemorySnapshot {
+                    parent_context: vec![],
+                    delta: vec![],
+                    modified_files: vec![PathBuf::from("shared.rs")],
+                    tool_calls: vec![],
+                },
+                duration_ms: 100,
+            },
+            SubTaskResult {
+                task_id: "t2".into(),
+                agent_name: "b".into(),
+                status: SubTaskStatus::Completed,
+                output: "".into(),
+                memory_snapshot: AgentMemorySnapshot {
+                    parent_context: vec![],
+                    delta: vec![],
+                    modified_files: vec![PathBuf::from("shared.rs")],
+                    tool_calls: vec![],
+                },
+                duration_ms: 200,
+            },
+            SubTaskResult {
+                task_id: "t3".into(),
+                agent_name: "c".into(),
+                status: SubTaskStatus::Completed,
+                output: "".into(),
+                memory_snapshot: AgentMemorySnapshot {
+                    parent_context: vec![],
+                    delta: vec![],
+                    modified_files: vec![PathBuf::from("shared.rs")],
+                    tool_calls: vec![],
+                },
+                duration_ms: 300,
+            },
+        ];
+
+        let conflicts = Coordinator::detect_conflicts(&results);
+        // 3 agents on same file → at minimum 1 FileConflict
+        // (current impl reports first pair: a vs b)
+        assert!(!conflicts.is_empty());
+        assert_eq!(conflicts[0].file, PathBuf::from("shared.rs"));
+    }
+
+    #[test]
+    fn empty_results_no_conflicts() {
+        let conflicts = Coordinator::detect_conflicts(&[]);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn single_agent_no_conflicts() {
+        let results = vec![SubTaskResult {
+            task_id: "t1".into(),
+            agent_name: "a".into(),
+            status: SubTaskStatus::Completed,
+            output: "".into(),
+            memory_snapshot: AgentMemorySnapshot {
+                parent_context: vec![],
+                delta: vec![],
+                modified_files: vec![
+                    PathBuf::from("a.rs"),
+                    PathBuf::from("b.rs"),
+                ],
+                tool_calls: vec![],
+            },
+            duration_ms: 100,
+        }];
+
+        let conflicts = Coordinator::detect_conflicts(&results);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn merge_single_task_speedup_is_one() {
+        let coordinator = Coordinator::default();
+        let results = vec![SubTaskResult {
+            task_id: "t1".into(),
+            agent_name: "a".into(),
+            status: SubTaskStatus::Completed,
+            output: "result".into(),
+            memory_snapshot: AgentMemorySnapshot::new(vec![]),
+            duration_ms: 5000,
+        }];
+
+        let merged = coordinator.merge(results);
+        assert_eq!(merged.total_duration_ms, 5000);
+        assert!((merged.parallel_speedup - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn merge_empty_results() {
+        let coordinator = Coordinator::default();
+        let merged = coordinator.merge(vec![]);
+        assert_eq!(merged.total_duration_ms, 0);
+        assert!(merged.file_conflicts.is_empty());
+    }
+
+    #[test]
+    fn memory_snapshot_materialize() {
+        let snapshot = AgentMemorySnapshot {
+            parent_context: vec!["parent1".into(), "parent2".into()],
+            delta: vec!["delta1".into()],
+            modified_files: vec![],
+            tool_calls: vec![],
+        };
+        let materialized = snapshot.materialize();
+        assert_eq!(materialized, vec!["parent1", "parent2", "delta1"]);
+    }
+
+    #[test]
+    fn agent_tool_allowed_check() {
+        let agents = builtins::builtin_agents();
+        let general = agents.iter().find(|a| a.name == "general").unwrap();
+
+        // General agent has empty allowed_tools → all tools allowed
+        assert!(general.is_tool_allowed("bash"));
+        assert!(general.is_tool_allowed("write_file"));
+
+        // But denied tools should still be denied
+        let explore = agents.iter().find(|a| a.name == "explore").unwrap();
+        assert!(explore.denied_tools.contains("write_file"));
+        assert!(!explore.is_tool_allowed("write_file"));
+    }
+
+    #[test]
+    fn guide_agent_has_constraints() {
+        let agents = builtins::builtin_agents();
+        let guide = agents.iter().find(|a| a.name == "guide").unwrap();
+        assert!(!guide.can_write);
+        assert!(!guide.system_prompt.is_empty());
+    }
+
+    #[test]
+    fn custom_agents_from_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = load_custom_agents(dir.path());
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn custom_agents_from_nonexistent_dir() {
+        let agents = load_custom_agents(std::path::Path::new("/nonexistent/path"));
+        assert!(agents.is_empty());
+    }
 }

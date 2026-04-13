@@ -198,6 +198,14 @@ pub struct SkillManifest {
     pub policy: PolicyConstraints,
     #[serde(default)]
     pub test: Option<SkillTestSuite>,
+    /// If true, this skill is exposed as an executable tool in the tool registry.
+    /// The agent can invoke it via tool_call with inputs mapped to the schema.
+    #[serde(default)]
+    pub executable: bool,
+    /// Optional entry-point script for executable skills (relative to skill dir).
+    /// If not set, the skill body (SKILL.md) is used as the prompt template.
+    #[serde(default)]
+    pub entry_point: Option<String>,
 }
 
 /// The [package] section of Skill.toml.
@@ -328,6 +336,8 @@ impl SkillPackage {
             dependencies: HashMap::new(),
             policy,
             test: None,
+            executable: false,
+            entry_point: None,
         }
     }
 

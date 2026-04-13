@@ -1,6 +1,6 @@
 use crate::capability::{
     CapabilityRequest, CapabilitySet, ExecutionContext, ExecutionLineage, PolicyDecision,
-    PolicyKernel, ResourceScope,
+    PermissionGateway, ResourceScope,
 };
 use crate::events::{
     AgentEvent, AgentOutcome, ApprovalDecision, ApprovalHandler, ToolCallOutcome, TurnEndReason,
@@ -189,8 +189,9 @@ pub struct AgentLoop {
     planning_state: Option<PlanningState>,
     /// How many consecutive turns the loop detector has fired.
     consecutive_loop_hits: u32,
-    /// Centralized permission kernel — single authority for tool authorization.
-    policy_kernel: PolicyKernel,
+    /// Centralized permission gateway — single authority for tool authorization.
+    /// Wraps `pipit_permissions::PermissionEngine` with zone policy and daemon constraints.
+    permissions: PermissionGateway,
     /// Optional session ledger for durable event sourcing.
     session_ledger: Option<std::sync::Mutex<SessionLedger>>,
     /// Session kernel — single authority for all session state mutations.
@@ -215,6 +216,13 @@ pub struct AgentLoop {
     /// Cached ArchitectureIR synthesized from the first user message.
     /// Populated once per session; stays stable across turns for prompt-cache hits.
     architecture_ir: Option<crate::domain_architect::ArchitectureIR>,
+    /// Persistent agent memory — loaded at session start, updated via memory tool,
+    /// consolidated via auto-dream on session end.
+    #[cfg(feature = "pipit-memory")]
+    memory_manager: Option<std::sync::Arc<std::sync::Mutex<pipit_memory::MemoryManager>>>,
+    /// Environment fingerprint — collected at session start for error correlation.
+    #[cfg(feature = "pipit-env")]
+    env_fingerprint: Option<pipit_env::EnvironmentFingerprint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,7 +263,7 @@ impl AgentLoop {
 
         let tool_context = ToolContext::new(project_root.clone(), config.approval_mode);
 
-        let policy_kernel = PolicyKernel::from_approval_mode(config.approval_mode, project_root);
+        let permissions = PermissionGateway::from_approval_mode(config.approval_mode, project_root.clone());
 
         let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -294,7 +302,7 @@ impl AgentLoop {
             repo_map: None,
             planning_state: None,
             consecutive_loop_hits: 0,
-            policy_kernel,
+            permissions,
             session_ledger: None,
             session_kernel: None,
             turn_kernel: TurnKernel::new(max_turns),
@@ -306,6 +314,13 @@ impl AgentLoop {
             memory_store: None,
             session_state: None,
             architecture_ir: None,
+            #[cfg(feature = "pipit-memory")]
+            memory_manager: None,
+            #[cfg(feature = "pipit-env")]
+            env_fingerprint: {
+                tracing::info!("Collecting environment fingerprint...");
+                Some(pipit_env::collect_fingerprint())
+            },
         };
 
         (agent, event_rx, steering_tx)
@@ -497,16 +512,28 @@ impl AgentLoop {
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
         self.tool_context.approval_mode = mode;
         self.config.approval_mode = mode;
-        // Rebuild the policy kernel so the granted capability set matches the new mode.
-        self.policy_kernel =
-            PolicyKernel::from_approval_mode(mode, self.tool_context.project_root.clone());
+        // Rebuild the permission gateway so the granted capability set matches the new mode.
+        self.permissions =
+            PermissionGateway::from_approval_mode(mode, self.tool_context.project_root.clone());
     }
 
-    /// Get mutable access to the policy kernel for injecting project-level
+    /// Get mutable access to the permission gateway for injecting project-level
     /// constraints (daemon: protected paths, network block, write limits).
     /// All authorization goes through this single oracle.
-    pub fn policy_kernel_mut(&mut self) -> &mut PolicyKernel {
-        &mut self.policy_kernel
+    pub fn policy_kernel_mut(&mut self) -> &mut PermissionGateway {
+        &mut self.permissions
+    }
+
+    /// Get the shared memory manager (for MemoryTool registration).
+    #[cfg(feature = "pipit-memory")]
+    pub fn memory_manager_arc(&self) -> Option<std::sync::Arc<std::sync::Mutex<pipit_memory::MemoryManager>>> {
+        self.memory_manager.clone()
+    }
+
+    /// Set the shared memory manager (created externally for tool sharing).
+    #[cfg(feature = "pipit-memory")]
+    pub fn set_memory_manager(&mut self, mm: std::sync::Arc<std::sync::Mutex<pipit_memory::MemoryManager>>) {
+        self.memory_manager = Some(mm);
     }
 
     /// Inject an image into the conversation context as a user message.
@@ -614,13 +641,62 @@ impl AgentLoop {
         }
 
         // Add user message to context.
-        // On the first turn, prepend boot context (project structure) to the user
-        // message so the model gets orientation without polluting the system prompt.
+        // On the first turn, prepend boot context (project structure) + persistent
+        // memory to the user message so the model gets orientation.
         let message_with_context = if self.context.messages().is_empty() {
+            let mut parts = Vec::new();
             if let Some(ref boot) = self.config.boot_context {
-                format!("{}\n\n{}", boot, processed)
-            } else {
+                parts.push(boot.clone());
+            }
+            // Inject persistent memory (project + global + team) into first turn.
+            #[cfg(feature = "pipit-memory")]
+            if let Some(ref mm_arc) = self.memory_manager {
+                if let Ok(mut mm) = mm_arc.lock() {
+                    let mem_prompt = mm.build_prompt();
+                    if !mem_prompt.is_empty() {
+                        tracing::info!(
+                            tokens = mm.total_tokens(),
+                            "Injecting persistent memory into boot context"
+                        );
+                        parts.push(mem_prompt);
+                    }
+
+                    // Persist environment fingerprint to memory (once per session).
+                    // Skip if the environment section already exists (avoids duplicates).
+                    #[cfg(feature = "pipit-env")]
+                    if let Some(ref fp) = self.env_fingerprint {
+                        let existing_prompt = mm.build_prompt();
+                        let has_env_section = existing_prompt.contains("## environment");
+                        if !has_env_section {
+                            let toolchain_str: String = fp.toolchains.iter()
+                                .map(|(k, v)| format!("{}={}", k, v))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let fp_summary = format!(
+                                "OS: {} {} ({}), Toolchains: {}",
+                                fp.os.name, fp.os.version, fp.os.arch, toolchain_str
+                            );
+                            if let Err(e) = mm.append_memory(
+                                &fp_summary,
+                                "environment",
+                                "env_fingerprint",
+                                0.3, // Low salience — informational context
+                            ) {
+                                tracing::warn!("Failed to persist env fingerprint: {e}");
+                            } else if let Err(e) = mm.flush_pending() {
+                                tracing::warn!("Failed to flush env fingerprint: {e}");
+                            } else {
+                                tracing::debug!("Persisted environment fingerprint to memory");
+                            }
+                        }
+                    }
+                }
+            }
+            if parts.is_empty() {
                 processed.clone()
+            } else {
+                parts.push(processed.clone());
+                parts.join("\n\n")
             }
         } else {
             processed.clone()
@@ -1472,6 +1548,29 @@ impl AgentLoop {
                             content
                         };
 
+                        // ── Environment-aware error diagnosis ──
+                        // When a bash command fails, run the error content through the
+                        // env correlator to produce actionable diagnostics (missing
+                        // toolchain, library, etc.). Appended to the tool result.
+                        #[cfg(feature = "pipit-env")]
+                        let content = if call.tool_name == "bash" && is_error {
+                            let diagnoses = pipit_env::diagnose_error(&content);
+                            if let Some(d) = diagnoses.first() {
+                                if d.confidence != pipit_env::correlator::DiagnosisConfidence::Uncertain {
+                                    format!(
+                                        "{}\n\n[Environment diagnosis]\nLikely cause: {}\nSuggested fix: {}\nConfidence: {:?}",
+                                        content, d.likely_cause, d.suggested_fix, d.confidence
+                                    )
+                                } else {
+                                    content
+                                }
+                            } else {
+                                content
+                            }
+                        } else {
+                            content
+                        };
+
                         self.context
                             .push_tool_result(&call.call_id, &content, is_error);
                     }
@@ -2194,7 +2293,7 @@ impl AgentLoop {
     }
 
     /// Execute tool calls with concurrent read / sequential write.
-    /// Authorization is handled by the centralized PolicyKernel.
+    /// Authorization is handled by the centralized PermissionGateway.
     async fn execute_tools(
         &mut self,
         calls: &[pipit_provider::ToolCall],
@@ -2226,7 +2325,7 @@ impl AgentLoop {
             }
         }
 
-        // Build real execution lineage from session state so PolicyKernel
+        // Build real execution lineage from session state so PermissionGateway
         // can make provenance-aware authorization decisions.
         let lineage = ExecutionLineage {
             task_chain: vec![self.session_id.clone(), format!("turn-{}", turn)],
@@ -2246,7 +2345,7 @@ impl AgentLoop {
                 continue;
             };
 
-            // ── Semantic authorization via PolicyKernel (single oracle) ──
+            // ── Semantic authorization via PermissionGateway (single oracle) ──
             let semantics = builtin_semantics(&call.tool_name);
             let mut resource_scopes = Vec::new();
             if let Some(path) = call.args.get("path").and_then(|v| v.as_str()) {
@@ -2263,7 +2362,7 @@ impl AgentLoop {
             };
 
             let decision = self
-                .policy_kernel
+                .permissions
                 .evaluate(&call.tool_name, &cap_request, &lineage);
 
             match decision {
@@ -2765,7 +2864,52 @@ impl AgentLoop {
             }
         }
 
-        // 2. Export all buffered telemetry spans
+        // 2. Auto-dream: consolidate session transcript into persistent memory.
+        #[cfg(feature = "pipit-memory")]
+        {
+            // Build transcript from conversation messages for auto-dream.
+            let transcript: Vec<pipit_memory::auto_dream::TranscriptEntry> = self
+                .context
+                .messages()
+                .iter()
+                .map(|m| pipit_memory::auto_dream::TranscriptEntry {
+                    role: format!("{:?}", m.role).to_lowercase(),
+                    content: m
+                        .content
+                        .iter()
+                        .filter_map(|c| {
+                            if let pipit_provider::ContentBlock::Text(t) = c {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                })
+                .collect();
+
+            if !transcript.is_empty() {
+                if let Some(ref mm_arc) = self.memory_manager {
+                    if let Ok(mm) = mm_arc.lock() {
+                        if let Some(ref mem) = mm.project_memory_ref() {
+                            let config = pipit_memory::auto_dream::DreamConfig::default();
+                            let facts =
+                                pipit_memory::auto_dream::consolidate(&transcript, mem, &config);
+                            if !facts.is_empty() {
+                                tracing::info!(
+                                    facts = facts.len(),
+                                    "Auto-dream: extracted {} facts from session",
+                                    facts.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Export all buffered telemetry spans
         let spans_exported = self.telemetry.export().unwrap_or(0);
 
         // 3. Build summary
@@ -3718,7 +3862,7 @@ fn json_type_name(value: &serde_json::Value) -> &'static str {
 ///
 /// This layer proves *domain correctness*, complementing:
 ///   - Schema validator (structural correctness)
-///   - PolicyKernel capability checker (authorization)
+///   - PermissionGateway authorization (pipit-permissions engine)
 ///
 /// Cost: O(k) where k is the number of predicates for the given tool.
 fn validate_tool_semantics(

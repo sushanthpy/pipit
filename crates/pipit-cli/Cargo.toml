@@ -8,9 +8,9 @@ name = "pipit"
 path = "src/main.rs"
 
 [dependencies]
-pipit-core = { path = "../pipit-core" }
+pipit-core = { path = "../pipit-core", features = ["full"] }
 pipit-provider = { path = "../pipit-provider" }
-pipit-tools = { path = "../pipit-tools" }
+pipit-tools = { path = "../pipit-tools", features = ["memory", "agents"] }
 pipit-edit = { path = "../pipit-edit" }
 pipit-context = { path = "../pipit-context" }
 pipit-intelligence = { path = "../pipit-intelligence" }
@@ -24,8 +24,12 @@ pipit-bench = { path = "../pipit-bench" }
 pipit-browser = { path = "../pipit-browser" }
 pipit-tmux = { path = "../pipit-tmux" }
 pipit-deps = { path = "../pipit-deps" }
+pipit-agents = { path = "../pipit-agents" }
+pipit-memory = { path = "../pipit-memory" }
 pipit-voice = { path = "../pipit-voice", optional = true }
-pipit-mesh = { path = "../pipit-mesh" }
+pipit-mesh = { path = "../pipit-mesh", optional = true }
+pipit-vim = { path = "../pipit-vim", optional = true }
+pipit-lsp = { path = "../pipit-lsp", optional = true }
 clap = { workspace = true }
 clap_complete = "4"
 tokio = { workspace = true }
@@ -48,4 +52,14 @@ uuid = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[features]
+default = ["voice", "mesh", "vim-input", "lsp"]
+voice = ["dep:pipit-voice"]
+mesh = ["dep:pipit-mesh"]
+vim-input = ["dep:pipit-vim"]
+lsp = ["dep:pipit-lsp"]
+
 [dev-dependencies]
+
+[lints]
+workspace = true

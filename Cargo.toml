@@ -14,7 +14,15 @@ members = [
     "crates/pipit-skills",
     "crates/pipit-channel",
     "crates/pipit-daemon",
-    "crates/pipit-agent-mesh",
+    "crates/pipit-mcp",
+    "crates/pipit-bench",
+    "crates/pipit-browser",
+    "crates/pipit-deps",
+    "crates/pipit-lsp",
+    "crates/pipit-tmux",
+    "crates/pipit-agents",
+    "crates/pipit-vcs",
+    "crates/pipit-vim",
     "crates/pipit-spec",
     "crates/pipit-test-universe",
     "crates/pipit-compliance",
@@ -24,27 +32,21 @@ members = [
     "crates/pipit-hw-codesign",
     "crates/pipit-perf",
     "crates/pipit-env",
-    "crates/pipit-mcp",
-    "crates/pipit-bench",
-    "crates/pipit-browser",
-    "crates/pipit-deps",
     "crates/pipit-mesh",
-    "crates/pipit-lsp",
     "crates/pipit-bridge",
-    "crates/pipit-tmux",
     "crates/pipit-voice",
     "crates/pipit-permissions",
     "crates/pipit-memory",
-    "crates/pipit-agents",
-    "crates/pipit-vcs",
-    "crates/pipit-vim",
 ]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 license = "MIT"
 rust-version = "1.94"
+
+[workspace.lints.clippy]
+await_holding_lock = "deny"
 
 [workspace.dependencies]
 # Async runtime

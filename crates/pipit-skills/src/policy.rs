@@ -296,6 +296,8 @@ mod tests {
                     ..Default::default()
                 },
                 test: None,
+                executable: false,
+                entry_point: None,
             },
             manifest_source: ManifestSource::Explicit,
             skill_dir: PathBuf::from("/tmp"),

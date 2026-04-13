@@ -3,8 +3,9 @@
 //! Centralizes subagent lifecycle: bounded concurrency, SIGTERM→SIGKILL
 //! escalation, and real-time status aggregation.
 
-/// Maximum concurrent subagent processes. Protects provider quotas and
-pub const MAX_CONCURRENCY: usize = 4;
+/// Maximum concurrent subagent processes. Capped at 5 for safety per
+/// architecture review — prevents runaway resource consumption.
+pub const MAX_CONCURRENCY: usize = 5;
 
 /// Maximum parallel forks (slightly higher since forks share prefix cache).
 pub const MAX_PARALLEL_FORKS: usize = 8;

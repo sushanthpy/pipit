@@ -194,7 +194,7 @@ def test_agent_mesh():
     t0 = time.time()
 
     r = subprocess.run(
-        ["cargo", "test", "-p", "pipit-agent-mesh", "--", "--nocapture"],
+        ["cargo", "test", "-p", "pipit-mesh", "--", "--nocapture"],
         cwd=str(Path(__file__).parent.parent),
         capture_output=True, text=True, timeout=30)
 

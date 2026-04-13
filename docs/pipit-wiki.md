@@ -79,7 +79,7 @@ Pipit is a terminal-native AI coding agent. It coordinates LLM inference, tool e
 | **CLI** | pipit-cli | 5,492 | Argument parsing, REPL, slash commands, auth |
 | **Context** | pipit-context | 4,868 | Token budget, 6-stage compaction, dedup, utility scoring |
 | **Provider** | pipit-provider | 3,557 | LLM abstraction for 13 providers |
-| **Mesh** | pipit-agent-mesh | 2,608 | Agent discovery, capability negotiation |
+| **Mesh** | pipit-mesh | 3,400 | SWIM gossip, CRDT, phi-accrual, capability routing, agent discovery |
 | **Intelligence** | pipit-intelligence | 2,560 | RepoMap, semantic code analysis |
 | **Permissions** | pipit-permissions | 2,302 | Lattice classifiers, symlink detection |
 | **Extensions** | pipit-extensions | 2,133 | 5-variant hook system, bitmask events, WASM sandbox |
@@ -100,7 +100,6 @@ pipit-cli ──► pipit-core ──► pipit-provider
     │              ├──► pipit-context
     │              ├──► pipit-extensions
     │              ├──► pipit-intelligence
-    │              ├──► pipit-agent-mesh
     │              ├──► pipit-memory / verify / permissions / env / ...
     │
     ├──► pipit-io (TUI)
@@ -337,9 +336,7 @@ SubagentTool: in-process or worktree-isolated with merge contract validation.
 
 ## 12. Mesh Networking
 
-**pipit-mesh:** SWIM gossip, phi-accrual failure detection, CRDT state, mDNS discovery.
-
-**pipit-agent-mesh:** DashMap registry, cosine-similarity capability discovery, schema negotiation via lattice meet.
+**pipit-mesh:** SWIM gossip, phi-accrual failure detection, CRDT state, mDNS discovery, DashMap registry, cosine-similarity capability discovery, schema negotiation via lattice meet.
 
 MeshDelegation: affinity-based node selection, TCP task dispatch.
 

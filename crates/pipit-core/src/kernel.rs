@@ -70,6 +70,27 @@ pub trait ExtensionPort: Send + Sync {
     ) -> Result<Option<serde_json::Value>, String>;
     /// Post-tool hook.
     async fn on_after_tool(&self, name: &str, result: &str) -> Result<Option<String>, String>;
+
+    // ── Extended lifecycle hooks (Task 3) ──
+
+    /// Called when a new session starts.
+    async fn on_session_start(&self) -> Result<(), String> { Ok(()) }
+    /// Called when a session ends.
+    async fn on_session_end(&self) -> Result<(), String> { Ok(()) }
+    /// Called at the start of each agent turn.
+    async fn on_turn_start(&self, _turn: u32) -> Result<(), String> { Ok(()) }
+    /// Called at the end of each agent turn.
+    async fn on_turn_end(&self, _turn: u32, _modified_files: &[String]) -> Result<(), String> { Ok(()) }
+    /// Called when a tool execution fails.
+    async fn on_tool_failure(&self, _name: &str, _error: &str) -> Result<(), String> { Ok(()) }
+    /// Called before context compaction.
+    async fn on_pre_compact(&self) -> Result<(), String> { Ok(()) }
+    /// Called after context compaction.
+    async fn on_post_compact(&self, _messages_removed: usize, _tokens_freed: u64) -> Result<(), String> { Ok(()) }
+    /// Called on each agent event (observer pattern for all events).
+    async fn on_agent_event(&self, _event: &crate::events::AgentEvent) -> Result<(), String> { Ok(()) }
+    /// Shutdown hook — cleanup before process exit.
+    async fn on_shutdown(&self) -> Result<(), String> { Ok(()) }
 }
 
 /// Port: How the kernel interacts with the VCS (git).

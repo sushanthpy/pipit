@@ -1,10 +1,18 @@
 pub mod anthropic;
 pub mod azure_openai;
+pub mod bedrock;
 pub mod circuit_breaker;
+pub mod codex_oauth;
+pub mod copilot_oauth;
 pub mod fallback;
+pub mod faux;
 pub mod google;
 pub mod google_cli;
+pub mod mistral;
+pub mod oauth;
 pub mod openai;
+pub mod openai_responses;
+pub mod registry;
 pub mod resilience;
 pub mod retry;
 pub mod types;
@@ -203,10 +211,11 @@ pub fn create_provider(
     use pipit_config::ProviderKind as PK;
 
     match kind {
-        PK::AmazonBedrock => Err(ProviderError::Other(
-            "amazon_bedrock requires AWS Bedrock runtime support, which is not implemented in this build"
-                .into(),
-        )),
+        PK::AmazonBedrock => Ok(Box::new(bedrock::BedrockProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
 
         PK::Anthropic => Ok(Box::new(anthropic::AnthropicProvider::new(
             model.to_string(),
@@ -314,11 +323,10 @@ pub fn create_provider(
             ),
         )?)),
 
-        PK::Mistral => Ok(Box::new(openai::OpenAiProvider::with_id(
-            "mistral".to_string(),
+        PK::Mistral => Ok(Box::new(mistral::MistralProvider::new(
             model.to_string(),
             api_key.to_string(),
-            Some(base_url.unwrap_or("https://api.mistral.ai").to_string()),
+            base_url.map(|s| s.to_string()),
         )?)),
 
         PK::HuggingFace => Ok(Box::new(openai::OpenAiProvider::with_id(
@@ -403,6 +411,26 @@ pub fn create_provider(
             api_key.to_string(),
             base_url.map(|s| s.to_string()),
         )?)),
+
+        PK::OpenAiResponses => Ok(Box::new(openai_responses::OpenAiResponsesProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::CodexOAuth => Ok(Box::new(codex_oauth::CodexOAuthProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::CopilotOAuth => Ok(Box::new(copilot_oauth::CopilotOAuthProvider::new(
+            model.to_string(),
+            api_key.to_string(),
+            base_url.map(|s| s.to_string()),
+        )?)),
+
+        PK::Faux => Ok(Box::new(faux::FauxProvider::text("faux response"))),
 
         PK::Vertex => Ok(Box::new(vertex::VertexProvider::new(
             model.to_string(),

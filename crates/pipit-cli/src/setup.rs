@@ -218,6 +218,10 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::KimiCoding => "kimi-k2-thinking",
         ProviderKind::Ollama => "qwen2.5-coder:14b",
         ProviderKind::OpenAiCompatible => "default",
+        ProviderKind::OpenAiResponses => "gpt-4o",
+        ProviderKind::CodexOAuth => "gpt-5.3-codex",
+        ProviderKind::CopilotOAuth => "gpt-4o",
+        ProviderKind::Faux => "faux-model",
     }
 }
 
@@ -293,5 +297,8 @@ fn env_var_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Opencode | ProviderKind::OpencodeGo => "OPENCODE_API_KEY",
         ProviderKind::KimiCoding => "KIMI_API_KEY",
         ProviderKind::Ollama => "OLLAMA_API_KEY",
+        ProviderKind::OpenAiResponses | ProviderKind::CodexOAuth => "OPENAI_API_KEY",
+        ProviderKind::CopilotOAuth => "COPILOT_GITHUB_TOKEN",
+        ProviderKind::Faux => "FAUX_API_KEY",
     }
 }

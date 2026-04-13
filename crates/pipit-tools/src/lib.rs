@@ -6,6 +6,7 @@ pub mod registry;
 pub mod tool_semantics_bridge;
 pub mod typed_output;
 pub mod typed_tool;
+pub mod wrapper;
 
 pub use mcp::{McpClient, McpConfig, McpManager, load_mcp_config};
 pub use registry::*;

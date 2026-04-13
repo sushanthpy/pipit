@@ -342,6 +342,11 @@ impl MemoryManager {
         self.project_memory.as_mut().unwrap()
     }
 
+    /// Get an immutable reference to the project memory document, if loaded.
+    pub fn project_memory_ref(&self) -> Option<&MemoryDocument> {
+        self.project_memory.as_ref()
+    }
+
     /// Save all modified memory documents.
     pub fn save_all(&self) -> Result<(), MemoryError> {
         if let Some(ref mem) = self.project_memory {

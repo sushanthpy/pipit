@@ -183,6 +183,14 @@ pub enum ProviderKind {
     AzureOpenAi,
     /// Google Vertex AI (uses OAuth2/gcloud auth instead of API key)
     Vertex,
+    /// OpenAI Responses API (newer inference endpoint for o-series/GPT-4o)
+    OpenAiResponses,
+    /// OpenAI Codex with OAuth/PKCE authentication
+    CodexOAuth,
+    /// GitHub Copilot with device-flow OAuth
+    CopilotOAuth,
+    /// Faux (mock) provider for testing
+    Faux,
     /// Generic OpenAI-compatible endpoint (set --base-url)
     OpenAiCompatible,
     /// Generic Anthropic-compatible endpoint (set --base-url)
@@ -234,8 +242,18 @@ impl FromStr for ProviderKind {
             "anthropic_compatible" | "anthropic-compatible" => {
                 Ok(Self::AnthropicCompatible)
             }
+            "openai_responses" | "openai-responses" | "responses" => {
+                Ok(Self::OpenAiResponses)
+            }
+            "codex_oauth" | "codex-oauth" | "openai_codex_oauth" => {
+                Ok(Self::CodexOAuth)
+            }
+            "copilot_oauth" | "copilot-oauth" | "github_copilot_oauth" => {
+                Ok(Self::CopilotOAuth)
+            }
+            "faux" | "mock" | "fake" | "test" => Ok(Self::Faux),
             _ => Err(format!(
-                "Unknown provider: {}. Supported: amazon_bedrock, anthropic, openai, openai_codex, azure_openai, deepseek, google, google_gemini_cli, google_antigravity, vertex, openrouter, vercel_ai_gateway, github_copilot, xai, zai, cerebras, groq, mistral, huggingface, minimax, minimax_cn, opencode, opencode_go, kimi_coding, ollama, openai_compatible, anthropic_compatible",
+                "Unknown provider: {}. Supported: amazon_bedrock, anthropic, openai, openai_codex, openai_responses, codex_oauth, copilot_oauth, azure_openai, deepseek, google, google_gemini_cli, google_antigravity, vertex, openrouter, vercel_ai_gateway, github_copilot, xai, zai, cerebras, groq, mistral, huggingface, minimax, minimax_cn, opencode, opencode_go, kimi_coding, ollama, faux, openai_compatible, anthropic_compatible",
                 s
             )),
         }
@@ -283,6 +301,10 @@ impl std::fmt::Display for ProviderKind {
             Self::OpencodeGo => write!(f, "opencode_go"),
             Self::KimiCoding => write!(f, "kimi_coding"),
             Self::Ollama => write!(f, "ollama"),
+            Self::OpenAiResponses => write!(f, "openai_responses"),
+            Self::CodexOAuth => write!(f, "codex_oauth"),
+            Self::CopilotOAuth => write!(f, "copilot_oauth"),
+            Self::Faux => write!(f, "faux"),
             Self::OpenAiCompatible => write!(f, "openai_compatible"),
             Self::AnthropicCompatible => write!(f, "anthropic_compatible"),
         }

@@ -1223,6 +1223,11 @@ impl ApprovalHandler for InteractiveApprovalHandler {
         let decision = tokio::task::spawn_blocking(|| {
             let mut input = String::new();
             match std::io::stdin().read_line(&mut input) {
+                Ok(0) => {
+                    // EOF (stdin closed / /dev/null) — deny to prevent
+                    // unattended approval in non-interactive contexts.
+                    ApprovalDecision::Deny
+                }
                 Ok(_) => {
                     let trimmed = input.trim().to_lowercase();
                     match trimmed.as_str() {

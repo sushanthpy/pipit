@@ -1617,9 +1617,9 @@ mod tests {
     fn paste_multiline() {
         let mut c = make_composer();
         c.handle_paste("line one\nline two\nline three");
-        assert_eq!(c.lines.len(), 3);
-        assert_eq!(c.lines[0], "line one");
-        assert_eq!(c.lines[2], "line three");
-        assert_eq!(c.cursor_row, 2);
+        // Multiline paste becomes an attachment (paste-as-attachment feature).
+        assert_eq!(c.lines.len(), 1); // editor untouched
+        assert_eq!(c.attachments.len(), 1);
+        assert!(matches!(c.attachments[0].kind, AttachmentKind::PastedText));
     }
 }

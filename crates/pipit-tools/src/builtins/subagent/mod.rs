@@ -226,6 +226,10 @@ pub struct SubagentOptions {
     pub max_turns: Option<u32>,
     /// Fork context for prefix-sharing (Task 7).
     pub fork_context: Option<ForkContext>,
+    /// Named agent from the built-in catalog (Explore, Plan, Verify, General, Guide).
+    /// When set, the executor looks up the AgentDefinition and applies its
+    /// system prompt, tool whitelist, and constraints.
+    pub agent_name: Option<String>,
 }
 
 /// Callback for subagent execution, provided by the application layer
@@ -348,6 +352,10 @@ impl Tool for SubagentTool {
                     "type": "boolean",
                     "description": "Run in an isolated git worktree. Changes won't affect the main branch until explicitly merged. Use for risky modifications or parallel work."
                 },
+                "agent_name": {
+                    "type": "string",
+                    "description": "Named agent from the catalog: Explore (read-only analysis), Plan (strategic planning), Verify (adversarial testing), General (full capability), Guide (documentation). When specified, the agent's system prompt, tool restrictions, and turn cap are applied automatically."
+                },
                 "tasks": {
                     "type": "array",
                     "items": {
@@ -456,11 +464,13 @@ impl SubagentTool {
 
         let model = args["model"].as_str().map(|s| s.to_string());
         let isolated = args["isolated"].as_bool().unwrap_or(false);
+        let agent_name = args["agent_name"].as_str().map(|s| s.to_string());
 
         let options = SubagentOptions {
             allowed_tools: allowed_tools.clone(),
             model: model.clone(),
             no_session: true, // One-shot tasks don't need session artifacts
+            agent_name,
             ..Default::default()
         };
 
@@ -718,6 +728,48 @@ impl SubagentTool {
         }
         for (i, err) in &errors {
             output.push_str(&format!("### Task {} FAILED:\n{}\n\n", i + 1, err));
+        }
+
+        // Coordinator conflict detection — check for file conflicts across parallel tasks.
+        #[cfg(feature = "agents")]
+        {
+            use pipit_agents::{AgentMemorySnapshot, Coordinator, SubTaskResult, SubTaskStatus};
+            let sub_results: Vec<SubTaskResult> = results
+                .iter()
+                .enumerate()
+                .map(|(_, (i, r))| SubTaskResult {
+                    task_id: format!("task-{}", i),
+                    agent_name: format!("parallel-{}", i),
+                    status: SubTaskStatus::Completed,
+                    output: r.output.clone(),
+                    memory_snapshot: AgentMemorySnapshot::new(vec![]),
+                    duration_ms: r.duration_ms,
+                })
+                .collect();
+            let conflicts = Coordinator::detect_conflicts(&sub_results);
+            if !conflicts.is_empty() {
+                output.push_str("### ⚠ File conflicts detected:\n");
+                for conflict in &conflicts {
+                    output.push_str(&format!(
+                        "- {} modified by both '{}' and '{}'\n",
+                        conflict.file.display(),
+                        conflict.agent_a,
+                        conflict.agent_b,
+                    ));
+                }
+                output.push('\n');
+            }
+            // Compute parallel speedup
+            let total_duration: u64 = results.iter().map(|(_, r)| r.duration_ms).sum();
+            let max_duration = results.iter().map(|(_, r)| r.duration_ms).max().unwrap_or(1);
+            if max_duration > 0 && results.len() > 1 {
+                let speedup = total_duration as f64 / max_duration as f64;
+                output.push_str(&format!(
+                    "Parallel speedup: {:.1}× (Amdahl ceiling for k={})\n",
+                    speedup,
+                    results.len()
+                ));
+            }
         }
 
         Ok(ToolResult::text(output))

@@ -6,7 +6,7 @@
 //!
 //! Cost-benefit: E[V_delegate] > E[V_local] + λ·L_d
 
-use pipit_agent_mesh::{AgentCapability, AgentDescriptor, MeshRegistry};
+use pipit_mesh::{AgentCapability, AgentDescriptor, MeshRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Arc;

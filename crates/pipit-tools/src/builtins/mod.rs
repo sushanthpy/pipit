@@ -5,6 +5,8 @@ pub mod extended;
 mod glob;
 mod grep;
 mod list_directory;
+#[cfg(feature = "memory")]
+pub mod memory;
 mod multi_edit;
 mod read_file;
 pub mod sandbox;
@@ -19,6 +21,8 @@ pub use edit_file::EditFileTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use list_directory::ListDirectoryTool;
+#[cfg(feature = "memory")]
+pub use memory::MemoryTool;
 pub use multi_edit::MultiEditTool;
 pub use read_file::ReadFileTool;
 pub use structured_output::StructuredOutputTool;

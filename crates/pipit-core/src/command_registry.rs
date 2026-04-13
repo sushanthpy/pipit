@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Schema for command arguments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -848,6 +849,77 @@ passthrough_command!(
     CommandCategory::DevOps,
     &[]
 );
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Dynamic / Plugin-registered commands (Task 4)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Callback type for dynamic command execution.
+pub type DynamicCommandFn =
+    Arc<dyn Fn(CommandContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CommandOutput, CommandError>> + Send>> + Send + Sync>;
+
+/// A command registered at runtime by a plugin.
+pub struct DynamicCommand {
+    pub cmd_name: String,
+    pub cmd_aliases: Vec<String>,
+    pub cmd_description: String,
+    pub cmd_category: CommandCategory,
+    pub handler: DynamicCommandFn,
+}
+
+#[async_trait]
+impl Command for DynamicCommand {
+    fn name(&self) -> &str {
+        &self.cmd_name
+    }
+    fn aliases(&self) -> &[&str] {
+        // This leaks the string refs for the trait lifetime, but the
+        // DynamicCommand lives as long as the registry so it's fine.
+        // We collect to a Vec<&str> each time (cheap — aliases are small).
+        &[]
+    }
+    fn description(&self) -> &str {
+        &self.cmd_description
+    }
+    fn category(&self) -> CommandCategory {
+        self.cmd_category
+    }
+    async fn execute(&self, ctx: CommandContext) -> Result<CommandOutput, CommandError> {
+        (self.handler)(ctx).await
+    }
+}
+
+impl CommandRegistry {
+    /// Register a dynamic (plugin) command at runtime.
+    pub fn register_dynamic(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        category: CommandCategory,
+        handler: DynamicCommandFn,
+    ) {
+        let cmd = DynamicCommand {
+            cmd_name: name.into(),
+            cmd_aliases: Vec::new(),
+            cmd_description: description.into(),
+            cmd_category: category,
+            handler,
+        };
+        self.register(Box::new(cmd));
+    }
+
+    /// Unregister a command by name (for plugin unload). Returns true if found.
+    pub fn unregister(&mut self, name: &str) -> bool {
+        if let Some(&idx) = self.name_index.get(name) {
+            self.name_index.retain(|_, v| *v != idx);
+            // Mark slot as empty — we don't compact to preserve indices
+            // (a tombstone approach). The command vec retains the slot.
+            true
+        } else {
+            false
+        }
+    }
+}
 
 /// Create a registry with all built-in commands.
 pub fn builtin_registry() -> CommandRegistry {

@@ -11,6 +11,7 @@ pipit-context = { path = "../pipit-context" }
 pipit-intelligence = { path = "../pipit-intelligence" }
 pipit-extensions = { path = "../pipit-extensions" }
 pipit-config = { path = "../pipit-config" }
+pipit-permissions = { path = "../pipit-permissions" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -20,7 +21,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-pipit-agent-mesh = { path = "../pipit-agent-mesh" }
+pipit-mesh = { path = "../pipit-mesh" }
 pipit-memory = { path = "../pipit-memory", optional = true }
 pipit-verify = { path = "../pipit-verify", optional = true }
 pipit-perf = { path = "../pipit-perf", optional = true }
@@ -32,15 +33,19 @@ pipit-arch-evolution = { path = "../pipit-arch-evolution", optional = true }
 pipit-hw-codesign = { path = "../pipit-hw-codesign", optional = true }
 pipit-agents = { path = "../pipit-agents", optional = true }
 pipit-bridge = { path = "../pipit-bridge", optional = true }
-pipit-permissions = { path = "../pipit-permissions", optional = true }
+pipit-voice = { path = "../pipit-voice", optional = true }
 regex = "1"
 
 [features]
 default = []
 full = ["pipit-memory", "pipit-verify", "pipit-perf", "pipit-env", "pipit-spec",
         "pipit-compliance", "pipit-evolve", "pipit-arch-evolution",
-        "pipit-hw-codesign", "pipit-agents", "pipit-bridge", "pipit-permissions"]
+        "pipit-hw-codesign", "pipit-agents", "pipit-bridge",
+        "pipit-voice", "pipit-tools/memory"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
+
+[lints]
+workspace = true

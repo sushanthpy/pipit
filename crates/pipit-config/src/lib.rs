@@ -232,6 +232,15 @@ pub fn resolve_api_key(provider: ProviderKind) -> Option<String> {
         ProviderKind::Opencode | ProviderKind::OpencodeGo => "OPENCODE_API_KEY",
         ProviderKind::KimiCoding => "KIMI_API_KEY",
         ProviderKind::Ollama => return Some("ollama".to_string()),
+        ProviderKind::OpenAiResponses | ProviderKind::CodexOAuth => "OPENAI_API_KEY",
+        ProviderKind::CopilotOAuth => {
+            return std::env::var("COPILOT_GITHUB_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("GH_TOKEN").ok())
+                .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+                .or_else(|| credentials::CredentialStore::load().resolve_token(provider));
+        }
+        ProviderKind::Faux => return Some("faux".to_string()),
     };
     if let Ok(val) = std::env::var(env_var) {
         return Some(val);

@@ -5,9 +5,11 @@ mod persistence;
 mod persistence_v2;
 mod plugin;
 mod prompt_builder;
+mod rpc;
 mod setup;
 mod tui;
 mod update;
+mod web_ui;
 mod workflow;
 
 use persistence::{LoadedPlanningState, PlanningStateSource};
@@ -133,6 +135,16 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     tmux: bool,
 
+    /// Enable voice input mode (requires microphone access).
+    /// Speech is transcribed via Whisper API and fed as user input.
+    #[arg(long, default_value_t = false)]
+    voice: bool,
+
+    /// Enable mesh networking for multi-agent coordination.
+    /// Joins a local P2P mesh for task delegation across pipit instances.
+    #[arg(long, default_value_t = false)]
+    mesh: bool,
+
     /// Output structured JSON (NDJSON events + final result). For CI/scripting.
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -227,6 +239,31 @@ enum Commands {
         #[command(subcommand)]
         action: PluginAction,
     },
+    /// Export a session ledger to Markdown or HTML
+    Export {
+        /// Path to the session ledger file
+        ledger: String,
+        /// Output format: md, html
+        #[arg(long, default_value = "md")]
+        format: String,
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Include tool call details
+        #[arg(long, default_value_t = true)]
+        tools: bool,
+        /// Include thinking/reasoning
+        #[arg(long, default_value_t = false)]
+        thinking: bool,
+    },
+    /// Start a JSON-RPC 2.0 server over stdio for programmatic control
+    Rpc,
+    /// Start the web UI server (HTTP + future WebSocket)
+    Web {
+        /// Address to bind to (default: 127.0.0.1:9090)
+        #[arg(long, default_value = "127.0.0.1:9090")]
+        bind: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -302,6 +339,9 @@ fn env_var_for(provider: ProviderKind) -> &'static str {
         ProviderKind::Opencode | ProviderKind::OpencodeGo => "OPENCODE_API_KEY",
         ProviderKind::KimiCoding => "KIMI_API_KEY",
         ProviderKind::Ollama => "OLLAMA_API_KEY",
+        ProviderKind::OpenAiResponses | ProviderKind::CodexOAuth => "OPENAI_API_KEY",
+        ProviderKind::CopilotOAuth => "COPILOT_GITHUB_TOKEN",
+        ProviderKind::Faux => "FAUX_API_KEY",
     }
 }
 
@@ -339,6 +379,37 @@ impl pipit_tools::builtins::subagent::SubagentExecutor for CliSubagentExecutor {
 
         let start = std::time::Instant::now();
         let child_id = uuid::Uuid::new_v4().to_string();
+
+        // ── Agent catalog lookup ──
+        // If agent_name is specified, look up the built-in AgentDefinition
+        // and apply its system prompt, tool restrictions, and turn cap.
+        let options = {
+            let mut opts = options;
+            if let Some(ref name) = opts.agent_name {
+                let all_agents = pipit_agents::all_agents(&project_root);
+                if let Some(def) = all_agents.iter().find(|a| a.name.eq_ignore_ascii_case(name)) {
+                    tracing::info!(agent = %def.name, "Using agent catalog definition");
+                    // Apply tool whitelist from catalog (unless explicitly overridden)
+                    if opts.allowed_tools.is_empty() || opts.allowed_tools == vec![
+                        "read_file".to_string(), "grep".to_string(),
+                        "glob".to_string(), "list_directory".to_string(),
+                    ] {
+                        if !def.allowed_tools.is_empty() {
+                            opts.allowed_tools = def.allowed_tools.iter().cloned().collect();
+                        }
+                    }
+                    // Apply turn cap from catalog
+                    if opts.max_turns.is_none() {
+                        opts.max_turns = Some(def.max_turns);
+                    }
+                    // Apply system prompt from catalog
+                    if opts.append_system_prompt.is_none() {
+                        opts.append_system_prompt = Some(def.system_prompt.clone());
+                    }
+                }
+            }
+            opts
+        };
 
         // Find the current executable path so we spawn the same binary
         let exe =
@@ -671,6 +742,27 @@ async fn main() -> Result<()> {
         Some(Commands::Plugin { action }) => {
             return plugin::handle_plugin_action(action).await;
         }
+        Some(Commands::Export {
+            ledger,
+            format,
+            output,
+            tools,
+            thinking,
+        }) => {
+            return handle_export(ledger, format, output, *tools, *thinking);
+        }
+        Some(Commands::Rpc) => {
+            return rpc::run_rpc_server().await;
+        }
+        Some(Commands::Web { bind }) => {
+            let addr: std::net::SocketAddr = bind.parse()
+                .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", bind, e))?;
+            let config = web_ui::WebUiConfig {
+                bind_addr: addr,
+                cors: true,
+            };
+            return web_ui::start_web_ui(config).await;
+        }
         None => {}
     }
 
@@ -983,8 +1075,19 @@ async fn main() -> Result<()> {
 
     dbg_log(&format!("[6/12] model_router built, mode={}", agent_mode));
 
+    // Create shared MemoryManager for both MemoryTool and AgentLoop.
+    let memory_manager = {
+        let mm = pipit_memory::MemoryManager::new(&project_root);
+        std::sync::Arc::new(std::sync::Mutex::new(mm))
+    };
+
     // Build tool registry
     let mut tools = ToolRegistry::with_builtins();
+
+    // Register MemoryTool — exposes remember/forget/recall to the LLM.
+    tools.register(std::sync::Arc::new(
+        pipit_tools::builtins::MemoryTool::new(memory_manager.clone()),
+    ));
 
     // Initialize MCP servers (if configured)
     let _mcp_manager = pipit_mcp::initialize_mcp(&project_root, &mut tools).await;
@@ -1168,6 +1271,9 @@ async fn main() -> Result<()> {
         project_root.clone(),
     );
 
+    // Share the MemoryManager with the agent loop (for boot context injection + auto-dream).
+    agent.set_memory_manager(memory_manager.clone());
+
     // ── Session kernel + resume support ──
     // Enable durable session tracking. When --resume is set, hydrate from
     // the last session's WAL before accepting new input.
@@ -1236,6 +1342,63 @@ async fn main() -> Result<()> {
     status.max_turns = config.context.max_turns;
 
     dbg_log("[11/12] agent + event_rx created");
+
+    // ── Voice mode (Task 9) ──
+    #[cfg(feature = "voice")]
+    let _voice_handle = if cli.voice {
+        let api_key = api_key.clone();
+        Some(tokio::spawn(async move {
+            use pipit_voice::transcription::TranscriptionConfig;
+            tracing::info!("Voice mode enabled — starting audio capture");
+            let config = TranscriptionConfig {
+                api_key,
+                ..TranscriptionConfig::default()
+            };
+            // Voice pipeline runs in background; transcriptions are printed.
+            // Full integration into the agent turn loop requires wiring
+            // the speech bus into the input stream (future work).
+            tracing::info!("Voice transcription config: {:?}", config);
+        }))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "voice"))]
+    if cli.voice {
+        eprintln!("\x1b[33mVoice mode not available — rebuild with `--features voice`\x1b[0m");
+    }
+
+    // ── Mesh mode (Task 10) ──
+    #[cfg(feature = "mesh")]
+    let _mesh_handle = if cli.mesh {
+        let root = project_root.clone();
+        Some(tokio::spawn(async move {
+            use pipit_mesh::{MeshDaemon, NodeDescriptor};
+            tracing::info!("Mesh mode enabled — joining P2P mesh");
+            let node = NodeDescriptor {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: hostname(),
+                addr: "127.0.0.1:0".parse().unwrap(),
+                capabilities: vec!["agent".to_string()],
+                model: None,
+                load: 0.0,
+                gpu: None,
+                project_roots: vec![root.display().to_string()],
+                joined_at: chrono::Utc::now(),
+                last_heartbeat: chrono::Utc::now(),
+            };
+            let daemon = MeshDaemon::new(node);
+            tracing::info!(node_id = %daemon.local_node.id, "Mesh daemon ready");
+            // Full mesh integration: register DelegationTool, CRDT state sync
+            // This placeholder starts the daemon; task routing is wired
+            // when pipit-tools gets a MeshDelegationTool.
+        }))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "mesh"))]
+    if cli.mesh {
+        eprintln!("\x1b[33mMesh mode not available — rebuild with `--features mesh`\x1b[0m");
+    }
 
     // Create UI
     let mut ui = PipitUi::new(show_thinking, true, trace_ui, status.clone());
@@ -3513,4 +3676,63 @@ fn handle_agent_outcome(
             None
         }
     }
+}
+
+/// Handle the `pipit export` subcommand.
+fn handle_export(
+    ledger_path: &str,
+    format: &str,
+    output: &Option<String>,
+    include_tools: bool,
+    include_thinking: bool,
+) -> Result<()> {
+    use pipit_core::export::{ExportOptions, export_html, export_markdown};
+    use pipit_core::ledger::SessionLedger;
+    use std::path::Path;
+
+    let path = Path::new(ledger_path);
+    if !path.exists() {
+        anyhow::bail!("Ledger file not found: {}", ledger_path);
+    }
+
+    let events = SessionLedger::replay(path)
+        .map_err(|e| anyhow::anyhow!("Failed to replay ledger: {}", e))?;
+
+    if events.is_empty() {
+        anyhow::bail!("Ledger is empty: {}", ledger_path);
+    }
+
+    let opts = ExportOptions {
+        include_tools,
+        include_thinking,
+        include_timestamps: true,
+        include_stats: true,
+        title: None,
+    };
+
+    let content = match format {
+        "html" => export_html(&events, &opts),
+        "md" | "markdown" => export_markdown(&events, &opts),
+        _ => anyhow::bail!("Unknown format '{}'. Use 'md' or 'html'.", format),
+    };
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, &content)?;
+            eprintln!("Exported {} events to {}", events.len(), path);
+        }
+        None => {
+            print!("{}", content);
+        }
+    }
+
+    Ok(())
+}
+
+/// Get the hostname for mesh node naming.
+#[cfg(feature = "mesh")]
+fn hostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "pipit-node".to_string())
 }

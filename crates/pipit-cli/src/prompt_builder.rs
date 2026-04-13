@@ -502,6 +502,14 @@ fn provider_hint_text(provider: ProviderKind) -> Option<&'static str> {
             "When using your thinking capability, plan your tool calls before executing. \
              Prefer a single well-chosen tool over a sequence of exploratory ones.",
         ),
+        ProviderKind::OpenAiResponses
+        | ProviderKind::CodexOAuth => Some(
+            "You support parallel function calling. Use it to batch reads and searches.",
+        ),
+        ProviderKind::CopilotOAuth => Some(
+            "You support parallel function calling. Use it to batch reads and searches.",
+        ),
+        ProviderKind::Faux => None,
     }
 }
 

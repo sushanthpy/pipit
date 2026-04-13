@@ -30,70 +30,6 @@ Most coding agents stop at code generation. Pipit keeps going into execution, mo
 
 ---
 
-## What it does
-
-| Capability | What Pipit does |
-|---|---|
-| **Code** | Read, edit, refactor, and generate code across any language |
-| **Execute** | Run shell commands, build projects, execute tests — with conflict-aware concurrent scheduling |
-| **Plan** | Complexity-driven plan gates with expected-cost model; explicit Plan/Execute/Verify phases |
-| **Monitor** | Watch files for changes, auto-run tests, detect dependency drift |
-| **Secure** | Capability-lattice permissions, taint analysis, vulnerability scanning, signed plugin manifests |
-| **Verify** | Cost-gated verification surface, proof packets, confidence scoring, automated repair loops |
-| **Comply** | Generate GDPR deletion handlers, audit logging, encryption, consent enforcement |
-| **Test** | Headless browser QA: screenshots, console errors, accessibility audits, visual regression |
-| **Benchmark** | Compare models, prompts, and tools with checkpoint telemetry and latency budgets |
-| **Delegate** | Subagent lineage DAG with merge contracts, capability inheritance, and hard-gate predicates |
-| **Evolve** | NSGA-II architecture evolution, Pareto-optimal candidate scoring, scaffold generation |
-| **Integrate** | GitHub PRs, Slack/Discord messaging, MCP servers, IDE bridge with session teleportation |
-| **Learn** | Event-sourced session ledger, adaptive 4-tier context memory, cross-repo federated knowledge |
-
----
-
-## Use cases
-
-### Autonomous repo maintainer
-
-Keep a repo healthy without waiting for a human to remember. Fix failing builds incrementally, run verification loops before commit, watch for dependency and security issues, and background long tasks with `/bg`.
-
-### Background engineering teammate
-
-Queue backlog work: "clean up warnings across the repo," "add tests around this module," "refactor these three services in the background," "prepare a code review summary while I work on something else." Pipit supports background execution, loops, saved sessions, checkpoints, and persistent memory.
-
-### Frontend QA and browser testing
-
-Open a staging URL, take screenshots, collect console errors, detect failed network requests, click through flows, type into forms, run accessibility audits, and diff screenshots for visual regressions. Pipit functions as a lightweight web QA agent.
-
-### Dependency hygiene and supply-chain risk
-
-Scan Cargo, npm, Python, and Go manifests. Query OSV for known vulnerabilities. Catch stale or risky dependencies during maintenance windows. Turn dependency health into a recurring workflow via watch mode.
-
-### Compliance implementation
-
-Turn compliance requirements into actual code changes: deletion handlers for personal data, audit logging injection, encryption before storage, retention rules, consent checks before collection. This is compliance-to-change-plan automation.
-
-### Verification for critical paths
-
-For auth logic, payment flows, migration safety, and infrastructure automation. Pipit stores machine-checkable proof artifacts and invalidates them when the code hash changes. Failed verification feeds back into context so the agent can repair the issue.
-
-### Benchmarking agent quality
-
-Compare models, prompting strategies, and tool configurations over repeatable task suites. Track history, measure turns by latency, tokens, tools used, and cost, with productivity scoring.
-
-### Distributed specialist-agent workflows
-
-Route a Rust perf task to the Rust/performance agent. Route a Python test problem to the Python/pytest agent. Route a security task to the node tagged for security audit. The mesh discovers agents by capability and ranks them by similarity.
-
-### Architecture exploration
-
-During monolith-to-microservices planning or early in a project, generate candidate architectures, evaluate them against latency/cost/reliability targets, explore Pareto-optimal options, and scaffold the chosen design.
-
-### Cross-project knowledge reuse
-
-Use `/memory` for persistent local learnings. The federated knowledge store reuses patterns across repos without sharing raw code — only TF-IDF vectors are shared, with configurable privacy policies that block secrets, tokens, and keys.
-
----
-
 ## Quick start
 
 ```sh
@@ -214,6 +150,70 @@ Or use environment variables:
 export ANTHROPIC_API_KEY=sk-...
 pipit
 ```
+
+---
+
+## What it does
+
+| Capability | What Pipit does |
+|---|---|
+| **Code** | Read, edit, refactor, and generate code across any language |
+| **Execute** | Run shell commands, build projects, execute tests — with conflict-aware concurrent scheduling |
+| **Plan** | Complexity-driven plan gates with expected-cost model; explicit Plan/Execute/Verify phases |
+| **Monitor** | Watch files for changes, auto-run tests, detect dependency drift |
+| **Secure** | Capability-lattice permissions, taint analysis, vulnerability scanning, signed plugin manifests |
+| **Verify** | Cost-gated verification surface, proof packets, confidence scoring, automated repair loops |
+| **Comply** | Generate GDPR deletion handlers, audit logging, encryption, consent enforcement |
+| **Test** | Headless browser QA: screenshots, console errors, accessibility audits, visual regression |
+| **Benchmark** | Compare models, prompts, and tools with checkpoint telemetry and latency budgets |
+| **Delegate** | Subagent lineage DAG with merge contracts, capability inheritance, and hard-gate predicates |
+| **Evolve** | NSGA-II architecture evolution, Pareto-optimal candidate scoring, scaffold generation |
+| **Integrate** | GitHub PRs, Slack/Discord messaging, MCP servers, IDE bridge with session teleportation |
+| **Learn** | Event-sourced session ledger, adaptive 4-tier context memory, cross-repo federated knowledge |
+
+---
+
+## Use cases
+
+### Autonomous repo maintainer
+
+Keep a repo healthy without waiting for a human to remember. Fix failing builds incrementally, run verification loops before commit, watch for dependency and security issues, and background long tasks with `/bg`.
+
+### Background engineering teammate
+
+Queue backlog work: "clean up warnings across the repo," "add tests around this module," "refactor these three services in the background," "prepare a code review summary while I work on something else." Pipit supports background execution, loops, saved sessions, checkpoints, and persistent memory.
+
+### Frontend QA and browser testing
+
+Open a staging URL, take screenshots, collect console errors, detect failed network requests, click through flows, type into forms, run accessibility audits, and diff screenshots for visual regressions. Pipit functions as a lightweight web QA agent.
+
+### Dependency hygiene and supply-chain risk
+
+Scan Cargo, npm, Python, and Go manifests. Query OSV for known vulnerabilities. Catch stale or risky dependencies during maintenance windows. Turn dependency health into a recurring workflow via watch mode.
+
+### Compliance implementation
+
+Turn compliance requirements into actual code changes: deletion handlers for personal data, audit logging injection, encryption before storage, retention rules, consent checks before collection. This is compliance-to-change-plan automation.
+
+### Verification for critical paths
+
+For auth logic, payment flows, migration safety, and infrastructure automation. Pipit stores machine-checkable proof artifacts and invalidates them when the code hash changes. Failed verification feeds back into context so the agent can repair the issue.
+
+### Benchmarking agent quality
+
+Compare models, prompting strategies, and tool configurations over repeatable task suites. Track history, measure turns by latency, tokens, tools used, and cost, with productivity scoring.
+
+### Distributed specialist-agent workflows
+
+Route a Rust perf task to the Rust/performance agent. Route a Python test problem to the Python/pytest agent. Route a security task to the node tagged for security audit. The mesh discovers agents by capability and ranks them by similarity.
+
+### Architecture exploration
+
+During monolith-to-microservices planning or early in a project, generate candidate architectures, evaluate them against latency/cost/reliability targets, explore Pareto-optimal options, and scaffold the chosen design.
+
+### Cross-project knowledge reuse
+
+Use `/memory` for persistent local learnings. The federated knowledge store reuses patterns across repos without sharing raw code — only TF-IDF vectors are shared, with configurable privacy policies that block secrets, tokens, and keys.
 
 ---
 
@@ -466,15 +466,24 @@ max_turns = 30
 |----------|---------|---------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
+| OpenAI Responses | `OPENAI_API_KEY` | `gpt-4o` (Responses API) |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | Google | `GOOGLE_API_KEY` | `gemini-2.5-flash` |
+| Google Gemini CLI | `GOOGLE_GEMINI_CLI_TOKEN` | `gemini-2.5-pro` |
+| Vertex AI | `VERTEX_API_KEY` | `gemini-2.5-pro` |
+| Amazon Bedrock | `AWS_BEARER_TOKEN_BEDROCK` | `anthropic.claude-v2` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` | `gpt-4o` |
 | OpenRouter | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4-20250514` |
 | xAI | `XAI_API_KEY` | `grok-3` |
 | Cerebras | `CEREBRAS_API_KEY` | `llama-4-scout-17b-16e-instruct` |
 | Groq | `GROQ_API_KEY` | `llama-4-scout-17b-16e-instruct` |
 | Mistral | `MISTRAL_API_KEY` | `mistral-large-latest` |
+| HuggingFace | `HF_TOKEN` | `meta-llama/Llama-3-70b` |
+| MiniMax | `MINIMAX_API_KEY` | `abab6.5-chat` |
+| GitHub Copilot | `COPILOT_GITHUB_TOKEN` | `gpt-4o` |
 | Ollama | — | `qwen2.5-coder:14b` |
 | OpenAI-compatible | `OPENAI_API_KEY` | Any (set `--base-url`) |
+| Faux (testing) | `FAUX_API_KEY` | — |
 
 ### Local models
 
@@ -800,6 +809,9 @@ Commands:
   update      Update pipit to the latest version
   init        Scaffold a new project with framework defaults
   plugin      Manage plugins (install, uninstall, list, search)
+  export      Export a session ledger to Markdown or HTML
+  rpc         Start a JSON-RPC 2.0 server over stdio
+  web         Start the web UI server (HTTP + WebSocket)
 
 Options:
   -p, --provider <PROVIDER>    LLM provider
@@ -813,6 +825,13 @@ Options:
       --classic                Use classic REPL instead of TUI
       --thinking               Show model reasoning (default: true)
       --trace-ui               Show detailed tool traces
+      --voice                  Enable voice input (speech-to-text via Whisper)
+      --mesh                   Enable P2P mesh for multi-agent coordination
+      --tmux                   Run bash commands in a visible tmux pane
+      --json                   Output NDJSON events (for CI/scripting)
+      --dry-run                Preview changes without executing mutations
+      --resume                 Resume the last interrupted session
+      --vim                    Vim modal editing in the composer (default: true)
   -h, --help                   Print help
   -V, --version                Print version
 ```
@@ -831,9 +850,93 @@ Options:
 
 ---
 
+## Session export
+
+Export any session ledger to Markdown or HTML for sharing, review, or archival:
+
+```sh
+# Export to Markdown (stdout)
+pipit export .pipit/sessions/latest/ledger.jsonl --format md
+
+# Export to HTML file
+pipit export .pipit/sessions/latest/ledger.jsonl --format html -o session.html
+
+# Include thinking/reasoning output
+pipit export ledger.jsonl --format md --thinking
+
+# Skip tool call details
+pipit export ledger.jsonl --format md --no-tools
+```
+
+The HTML export is self-contained with GitHub-style styling and dark mode support. Both formats render user messages, assistant responses, tool calls with args/results, plans, subagent activity, and session statistics.
+
+---
+
+## JSON-RPC server
+
+Pipit exposes a headless JSON-RPC 2.0 interface over stdio for IDE integrations, CI pipelines, and external tooling:
+
+```sh
+pipit rpc
+```
+
+### Available methods
+
+| Method | Description |
+|---|---|
+| `system/ping` | Health check |
+| `system/version` | Version info |
+| `session/export` | Export a session ledger (params: `ledger`, `format`) |
+| `agent/run` | Start an agent run (params: `prompt`) |
+| `agent/cancel` | Cancel the current run |
+
+Example:
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"system/ping","params":{}}' | pipit rpc
+# → {"jsonrpc":"2.0","id":1,"result":{"pong":true}}
+```
+
+The server emits a `server/ready` notification on startup with the version and capability list.
+
+---
+
+## Web UI
+
+Serve a browser-based interface for pipit:
+
+```sh
+pipit web                        # Default: http://127.0.0.1:9090
+pipit web --bind 0.0.0.0:8080    # Custom bind address
+```
+
+Endpoints:
+
+| Path | Description |
+|---|---|
+| `/` | Landing page |
+| `/api/health` | Health check (`{"status":"ok"}`) |
+| `/api/version` | Version info |
+
+The web UI is a foundation for full browser-based agent interaction with real-time WebSocket streaming (coming soon).
+
+---
+
+## Voice mode
+
+Enable speech-to-text input via the Whisper API:
+
+```sh
+pipit --voice
+```
+
+Voice mode uses Voice Activity Detection (VAD) to segment audio into utterances, which are transcribed via the configured STT provider. Requires microphone access.
+
+---
+
 ## Architecture
 
-Pipit is a Rust workspace with 35+ crates and a hexagonal kernel architecture. All subsystems communicate through typed ports — no global mutable state.
+Pipit is a Rust workspace with 37+ crates, 1056 tests, and a hexagonal kernel architecture. All subsystems communicate through typed ports — no global mutable state.
 
 ### Kernel & Control Plane
 
@@ -877,12 +980,24 @@ Pipit is a Rust workspace with 35+ crates and a hexagonal kernel architecture. A
 | **Bridge Protocol** | `bridge_protocol.rs` | JWT auth, transport negotiation (WebSocket→SSE→HTTP-poll fallback), bounded replay buffer, session teleportation via ledger snapshot+replay. |
 | **Daemon Auth** | `server.rs` | Hashed bearer tokens (keyed digest) — raw secrets never stored in memory. |
 
+### Extensibility & Surfaces
+
+| Subsystem | Module | What it does |
+|---|---|---|
+| **Command Registry** | `command_registry.rs` | 38+ built-in slash commands with trie-prefix matching, Levenshtein fuzzy completion, typed args, category grouping. Supports dynamic plugin-registered commands at runtime via `register_dynamic()`. |
+| **Plugin Registry** | `plugin_registry.rs` | Signed manifests (Ed25519 + SHA-256), install/uninstall lifecycle, dependency resolution. 5 plugin kinds: LuaScript, Skill, Hook, ToolProvider, Theme. |
+| **Provider Registry** | `registry.rs` | Dynamic provider registration replacing static dispatch. 25+ built-in providers auto-registered at startup. Plugins can register custom providers at runtime. O(1) lookup by name. |
+| **Tool Wrappers** | `wrapper.rs` | Decorator pattern for tool interception. Before/after/on_error hooks with priority-ordered stacking. `WrapperAction::Continue`, `Replace`, or `Block`. |
+| **UI Components** | `ui_components.rs` | Typed protocol for plugins to contribute UI components (labels, progress bars, tables, alerts, sparklines). Slot-based layout: Header, Footer, SidePanel, StatusBar, Modal, Inline. |
+| **Session Export** | `export.rs` | Replay session ledger events into Markdown or self-contained HTML. Renders user messages, tool calls, plans, subagent activity, and cost statistics. |
+| **RPC Server** | `rpc.rs` | JSON-RPC 2.0 over stdio. Methods: `system/ping`, `system/version`, `session/export`, `agent/run`, `agent/cancel`. |
+| **Web UI** | `web_ui.rs` | HTTP server with health and version endpoints. Foundation for browser-based agent interaction. |
+| **Extension Port** | `kernel.rs` | 14 lifecycle hooks: input, before_request, content_delta, before_tool, after_tool, session_start/end, turn_start/end, tool_failure, pre/post_compact, agent_event, shutdown. |
+
 ### Developer Experience
 
 | Subsystem | Module | What it does |
 |---|---|---|
-| **Command Registry** | `command_registry.rs` | 38 built-in slash commands with trie-prefix matching, Levenshtein fuzzy completion, typed args, category grouping. |
-| **Plugin Registry** | `plugin_registry.rs` | Signed manifests (Ed25519 + SHA-256), install/uninstall lifecycle, dependency resolution. |
 | **DX Surface** | `dx_surface.rs` | `/doctor` diagnostics (6 checks), cost sparkline visualization, context budget stacked bar, theme system. |
 | **Plan Gate** | `plan_gate.rs` | Expected-cost model: require plan review when `C_plan < p × R`. Complexity scoring from file count, ambiguity, scope. |
 | **Adaptive Context** | `adaptive_context.rs` | 4-tier memory (Pinned/Active/Historical/Exhaust) with utility-per-token scoring and greedy knapsack retention. |
@@ -893,17 +1008,38 @@ Pipit is a Rust workspace with 35+ crates and a hexagonal kernel architecture. A
 
 | Layer | Crates |
 |---|---|
-| **CLI + TUI** | `pipit-cli`, `pipit-io` |
-| **Core runtime** | `pipit-core` (50 modules), `pipit-config`, `pipit-context`, `pipit-extensions` |
-| **Agent intelligence** | `pipit-intelligence`, `pipit-skills`, `pipit-edit`, `pipit-lsp` |
-| **Providers** | `pipit-provider` (Anthropic, OpenAI, Google, DeepSeek, Ollama, etc.) |
-| **Tools** | `pipit-tools`, `pipit-browser`, `pipit-deps`, `pipit-mcp` |
+| **CLI + TUI** | `pipit-cli` (export, rpc, web, plugin subcommands), `pipit-io` |
+| **Core runtime** | `pipit-core` (55+ modules incl. export, ui_components), `pipit-config`, `pipit-context`, `pipit-extensions` (WASM runtime) |
+| **Agent intelligence** | `pipit-intelligence`, `pipit-skills` (executable skills, manifests), `pipit-edit`, `pipit-lsp` (4 language servers), `pipit-agents` |
+| **Providers** | `pipit-provider` (25+ providers: Anthropic, OpenAI, Google, DeepSeek, Mistral, Groq, Cerebras, xAI, Ollama, Bedrock, Vertex, OpenRouter, HuggingFace, MiniMax, Faux, etc.) |
+| **Tools** | `pipit-tools` (tool wrappers, interceptors), `pipit-browser`, `pipit-deps`, `pipit-mcp` |
 | **Verification** | `pipit-verify`, `pipit-compliance`, `pipit-spec` |
-| **Mesh** | `pipit-mesh`, `pipit-agent-mesh`, `pipit-channel` |
+| **Mesh** | `pipit-mesh` (SWIM gossip, CRDT, capability routing), `pipit-channel` |
 | **Evolution** | `pipit-arch-evolution`, `pipit-evolve`, `pipit-hw-codesign` |
 | **Operations** | `pipit-daemon`, `pipit-bench`, `pipit-perf`, `pipit-env` |
-| **Integration** | `pipit-bridge`, `pipit-voice` |
+| **Integration** | `pipit-bridge`, `pipit-voice` (VAD + Whisper STT), `pipit-vim` (modal editing engine), `pipit-tmux` |
 | **Security** | `pipit-permissions`, `pipit-memory` (secret scanning) |
+
+---
+
+## Test suite
+
+Pipit ships with 1056 unit and integration tests across 82 test suites, covering:
+
+- Core runtime (267 tests): ledger, scheduler, policy, capability lattice, turn FSM, verification
+- Tools (61 tests): tool registry, wrappers, interceptors, builtins
+- Providers (50 tests): all 25+ providers, registry, circuit breaker
+- Skills (35 tests): discovery, manifests, trust tiers, policy engine
+- Context (26 tests): adaptive budget, compaction, memory hierarchy
+- Extensions (19 tests): hooks, WASM runtime, replay
+- CLI integration (8 tests): subcommand dispatch, export, RPC
+- And 590+ more across mesh, compliance, browser, agents, intelligence, etc.
+
+Run the full suite:
+
+```sh
+cargo test
+```
 
 ---
 
