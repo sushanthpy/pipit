@@ -41,7 +41,8 @@ default = []
 full = ["pipit-memory", "pipit-verify", "pipit-perf", "pipit-env", "pipit-spec",
         "pipit-compliance", "pipit-evolve", "pipit-arch-evolution",
         "pipit-hw-codesign", "pipit-agents", "pipit-bridge",
-        "pipit-voice", "pipit-tools/memory"]
+        "pipit-tools/memory"]
+voice = ["pipit-voice"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
