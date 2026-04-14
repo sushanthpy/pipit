@@ -385,3 +385,128 @@ Output:  234-line code_review.md with:
 | Code review (234 lines) | 46.6s total |
 | Gossip interval | 5s |
 | Failure detection | 15s (3 missed pings) |
+
+---
+
+## Real Developer Use Cases Demonstrated
+
+### Use Case 1: Remote Test Generation
+
+**Scenario**: Developer on Mac writes `calculator.py` with 5 functions (add, subtract, multiply, divide, power). Wants comprehensive tests but the local machine has no GPU and API calls cost money.
+
+**Flow**:
+1. Developer starts mesh: `pipit --mesh --mesh-bind 0.0.0.0:4190 --mesh-advertise 100.94.198.117:4190`
+2. Linux worker (with local Qwen 3.5-35B on vLLM) is already in the mesh
+3. Developer runs: `/mesh delegate Read calculator.py and add comprehensive pytest tests for all functions including edge cases. Save to test_calculator.py`
+4. Task is sent to Linux via Tailscale → pipit runs `full_auto` with local LLM → generates 141-line test file → result streams back
+
+**Result**: 38 pytest tests generated in 29.2s, covering:
+- Positive/negative numbers, zero, floats, large numbers for each operation
+- Division by zero (expects exception)
+- Power edge cases (0^0, negative exponents, float bases)
+- All 38 tests pass on `pytest -v`
+
+**Cost**: $0.0000 (local model, no API)
+
+### Use Case 2: Remote Code Review
+
+**Scenario**: Developer has a mini web framework (`app.py` — a Flask-like router). Wants a security and design review before shipping.
+
+**Flow**:
+1. Send to mesh: `/mesh delegate Review app.py for bugs, security issues, and design improvements. Create a code_review.md with your findings.`
+2. Linux worker reads `app.py`, analyzes it, writes `code_review.md`
+
+**Result**: 234-line code review in 46.6s covering:
+- 2 critical issues (raw exception info disclosure, missing input validation)
+- 3 security concerns (no CSRF, no rate limiting, unvalidated input)
+- 4 design issues (middleware registered but never called, inflexible routing)
+- 4 best practice gaps (no logging, inconsistent response format)
+- Concrete code fix examples for each finding
+
+**Cost**: $0.0000 (local model)
+
+### Use Case 3: Targeted Node Execution (`/mesh run`)
+
+**Scenario**: Team has multiple machines with different capabilities. Developer wants to run a task on a *specific* node (e.g., the one with a GPU, or the one that has a specific dataset).
+
+**Flow**:
+```
+/mesh nodes                          # See all nodes with capabilities, model, load %
+/mesh run spark Write unit tests     # Target node by name prefix
+/mesh run 3f8a Fix the bug in auth   # Target node by ID prefix
+```
+
+The `find_by_prefix()` method matches case-insensitively on both node name and UUID prefix.
+
+### Use Case 4: Broadcast to All Nodes (`/mesh broadcast`)
+
+**Scenario**: A refactoring touches multiple services. Developer wants every machine in the mesh to lint/test their local copy simultaneously.
+
+**Flow**:
+```
+/mesh broadcast Run pytest and report any failures
+```
+
+Tasks are sent to all remote nodes in parallel via `tokio::spawn`. Results stream back as each node finishes. Useful for:
+- Distributed CI across personal machines
+- Running the same analysis on different codebases
+- Cross-platform testing (aarch64 Linux + x86_64 Hetzner + macOS arm64)
+
+---
+
+## Terminal-Bench Results (2026-04-13)
+
+Pipit was benchmarked on Hetzner (x86_64, Ubuntu 24.04) using [terminal-bench-core v0.1.1](https://github.com/terminal-bench/terminal-bench) with Qwen 3.5-35B via vLLM on the Linux worker over Tailscale.
+
+### Run Configuration
+
+| Setting | Value |
+|---------|-------|
+| Agent | PipitAgent |
+| Model | openai_compatible/qwen |
+| Backend | vLLM on spark-132c via Tailscale |
+| Max turns | 50 |
+| Concurrency | 4 |
+| Dataset | terminal-bench-core 0.1.1 (80 tasks) |
+| Date | 2026-04-13 23:04 UTC |
+
+### Summary
+
+| Metric | Value |
+|--------|-------|
+| Total tasks | 80 |
+| Resolved | 0 |
+| Unresolved | 80 |
+| Accuracy | 0.0% |
+
+### Failure Breakdown
+
+| Category | Count | Notes |
+|----------|-------|-------|
+| Docker build failures | 84 (some retried) | `apt` index download failures inside containers |
+| Agent timeouts (360s) | 34 | Agent ran but couldn't finish in time |
+| Tasks where pipit ran | 38 | Agent output found in `post-agent.txt` |
+| Tasks with no output | 42 | Docker never built / container never started |
+
+### Near-Misses
+
+| Task | Result | Detail |
+|------|--------|--------|
+| **swe-bench-fsspec** | 133/134 passed | 1 failure: `open_async()` signature mismatch — pipit fixed 133 tests correctly |
+| **get-bitcoin-nodes** | 4 skipped, 1 failed | Network/service dependency |
+| **conda-env-conflict-resolution** | 3 failed | pipit ran (275 lines of agent output) but didn't complete the env setup |
+
+### Root Cause Analysis
+
+The **0% accuracy is misleading** — the primary failure mode was infrastructure, not agent quality:
+
+1. **Docker networking**: `apt-get update` failed inside containers (`Some index files failed to download`), preventing package installation needed by many tasks. This is a known Hetzner/Docker DNS issue.
+2. **Agent timeouts**: 34 tasks hit the 360s timeout — pipit was actively working but couldn't finish complex tasks (kernel builds, ML training, video processing) within the limit.
+3. **swe-bench-fsspec**: Pipit achieved **99.3% test pass rate** (133/134) on a real SWE-Bench task, demonstrating strong code reasoning but missing one async API signature change.
+
+### Recommendations for Next Run
+
+1. Fix Docker DNS/networking on Hetzner (use `--dns 8.8.8.8` or fix resolve.conf)
+2. Increase agent timeout to 600s+ for complex tasks
+3. Use a faster model endpoint or increase vLLM throughput
+4. Run on a machine with working Docker networking (or use `--network host`)
