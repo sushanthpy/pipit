@@ -145,6 +145,19 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     mesh: bool,
 
+    /// Mesh bind address (ip:port). Defaults to 0.0.0.0:4190.
+    #[arg(long, default_value = "0.0.0.0:4190")]
+    mesh_bind: String,
+
+    /// Mesh advertise address (ip:port) — the address other nodes use to reach this node.
+    /// Required when binding to 0.0.0.0 in multi-machine setups.
+    #[arg(long)]
+    mesh_advertise: Option<String>,
+
+    /// Mesh seed node address to join (ip:port). Can be specified multiple times.
+    #[arg(long)]
+    mesh_seed: Vec<String>,
+
     /// Output structured JSON (NDJSON events + final result). For CI/scripting.
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -1369,36 +1382,71 @@ async fn main() -> Result<()> {
 
     // ── Mesh mode (Task 10) ──
     #[cfg(feature = "mesh")]
-    let _mesh_handle = if cli.mesh {
+    let mesh_daemon: Option<std::sync::Arc<pipit_mesh::MeshDaemon>> = if cli.mesh {
         let root = project_root.clone();
-        Some(tokio::spawn(async move {
-            use pipit_mesh::{MeshDaemon, NodeDescriptor};
-            tracing::info!("Mesh mode enabled — joining P2P mesh");
-            let node = NodeDescriptor {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: hostname(),
-                addr: "127.0.0.1:0".parse().unwrap(),
-                capabilities: vec!["agent".to_string()],
-                model: None,
-                load: 0.0,
-                gpu: None,
-                project_roots: vec![root.display().to_string()],
-                joined_at: chrono::Utc::now(),
-                last_heartbeat: chrono::Utc::now(),
-            };
-            let daemon = MeshDaemon::new(node);
-            tracing::info!(node_id = %daemon.local_node.id, "Mesh daemon ready");
-            // Full mesh integration: register DelegationTool, CRDT state sync
-            // This placeholder starts the daemon; task routing is wired
-            // when pipit-tools gets a MeshDelegationTool.
-        }))
+        let bind_addr: std::net::SocketAddr = cli.mesh_bind.parse().unwrap_or_else(|_| {
+            eprintln!("\x1b[33mInvalid --mesh-bind address, using 0.0.0.0:4190\x1b[0m");
+            "0.0.0.0:4190".parse().unwrap()
+        });
+        // Advertise address: use --mesh-advertise if given, else use bind_addr
+        // (but warn if bind is 0.0.0.0 — other nodes can't reach that)
+        let advertise_addr: std::net::SocketAddr = if let Some(ref adv) = cli.mesh_advertise {
+            adv.parse().unwrap_or_else(|_| {
+                eprintln!("\x1b[33mInvalid --mesh-advertise, falling back to bind address\x1b[0m");
+                bind_addr
+            })
+        } else if bind_addr.ip().is_unspecified() {
+            eprintln!("\x1b[33mWarning: binding to {} — use --mesh-advertise <ip:port> so remote nodes can reach you\x1b[0m", bind_addr);
+            bind_addr
+        } else {
+            bind_addr
+        };
+        let seeds = cli.mesh_seed.clone();
+        use pipit_mesh::{MeshDaemon, NodeDescriptor};
+        tracing::info!("Mesh mode enabled — starting P2P mesh");
+        let node = NodeDescriptor {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: hostname(),
+            addr: advertise_addr,
+            capabilities: vec!["agent".to_string()],
+            model: None,
+            load: 0.0,
+            gpu: None,
+            project_roots: vec![root.display().to_string()],
+            joined_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+        };
+        let daemon = std::sync::Arc::new(MeshDaemon::new(node));
+        let d = daemon.clone();
+        tokio::spawn(async move {
+            if let Err(e) = d.start(bind_addr).await {
+                tracing::error!(error = %e, "Mesh daemon failed to start");
+                return;
+            }
+            tracing::info!(node_id = %d.local_node.id, bind = %bind_addr, advertise = %advertise_addr, "Mesh daemon listening");
+            for seed_str in &seeds {
+                if let Ok(seed_addr) = seed_str.parse::<std::net::SocketAddr>() {
+                    match d.join(seed_addr).await {
+                        Ok(_) => tracing::info!(seed = %seed_addr, "Joined mesh seed"),
+                        Err(e) => tracing::warn!(seed = %seed_addr, error = %e, "Failed to join seed"),
+                    }
+                } else {
+                    tracing::warn!(seed = %seed_str, "Invalid seed address");
+                }
+            }
+        });
+        eprintln!("\x1b[36mMesh daemon started on {} (advertise: {})\x1b[0m", bind_addr, advertise_addr);
+        Some(daemon)
     } else {
         None
     };
     #[cfg(not(feature = "mesh"))]
-    if cli.mesh {
+    let mesh_daemon: Option<()> = if cli.mesh {
         eprintln!("\x1b[33mMesh mode not available — rebuild with `--features mesh`\x1b[0m");
-    }
+        None
+    } else {
+        None
+    };
 
     // Create UI
     let mut ui = PipitUi::new(show_thinking, true, trace_ui, status.clone());
@@ -2815,38 +2863,190 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     SlashCommand::Mesh(ref action) => {
+                        #[cfg(feature = "mesh")]
                         match action.as_deref() {
                             None | Some("status") => {
                                 eprintln!("\n\x1b[1;33mMesh Status\x1b[0m\n");
-                                eprintln!(
-                                    "  \x1b[2mMesh daemon not running. Start with: pipit mesh start\x1b[0m"
-                                );
-                                eprintln!(
-                                    "  \x1b[2mMesh enables distributed multi-agent task delegation.\x1b[0m"
-                                );
-                                eprintln!();
+                                if let Some(ref d) = mesh_daemon {
+                                    let reg = d.registry.blocking_read();
+                                    let all = reg.all_nodes();
+                                    let alive = all.iter().filter(|(_, s)| **s == pipit_mesh::NodeStatus::Alive).count();
+                                    eprintln!("  Node ID:  {}", d.local_node.id);
+                                    eprintln!("  Address:  {}", d.local_node.addr);
+                                    eprintln!("  Nodes:    {} total, {} alive", all.len(), alive);
+                                    eprintln!();
+                                } else {
+                                    eprintln!("  \x1b[2mMesh not active. Start with: pipit --mesh\x1b[0m\n");
+                                }
                             }
                             Some("nodes") => {
-                                eprintln!(
-                                    "\x1b[2mNo mesh nodes discovered. Use /mesh join <seed> to connect.\x1b[0m"
-                                );
+                                if let Some(ref d) = mesh_daemon {
+                                    let reg = d.registry.blocking_read();
+                                    let nodes = reg.all_nodes();
+                                    if nodes.is_empty() {
+                                        eprintln!("\x1b[2mNo mesh nodes.\x1b[0m");
+                                    } else {
+                                        eprintln!("\n\x1b[1;33m  Mesh Nodes\x1b[0m\n");
+                                        for (desc, status) in &nodes {
+                                            let me = if desc.id == d.local_node.id { " ← you" } else { "" };
+                                            let status_icon = match status {
+                                                pipit_mesh::NodeStatus::Alive => "\x1b[32m●\x1b[0m",
+                                                pipit_mesh::NodeStatus::Suspect => "\x1b[33m◐\x1b[0m",
+                                                pipit_mesh::NodeStatus::Dead => "\x1b[31m○\x1b[0m",
+                                            };
+                                            let model = desc.model.as_deref().unwrap_or("-");
+                                            let gpu = desc.gpu.as_ref().map(|g| format!("{}×{} ({}GB)", g.count, g.name, g.vram_gb as u32)).unwrap_or_else(|| "cpu".into());
+                                            eprintln!("  {} \x1b[1m{}\x1b[0m  {}{}", status_icon, &desc.id[..8], desc.name, me);
+                                            eprintln!("    addr: {}  model: {}  hw: {}  load: {:.0}%", desc.addr, model, gpu, desc.load * 100.0);
+                                            if !desc.capabilities.is_empty() {
+                                                eprintln!("    caps: {}", desc.capabilities.join(", "));
+                                            }
+                                        }
+                                        eprintln!();
+                                    }
+                                } else {
+                                    eprintln!("\x1b[2mMesh not active.\x1b[0m");
+                                }
                             }
                             Some(sub) if sub.starts_with("join") => {
                                 let seed = sub.strip_prefix("join").map(|s| s.trim()).unwrap_or("");
                                 if seed.is_empty() {
-                                    eprintln!("\x1b[33mUsage: /mesh join <seed_address>\x1b[0m");
+                                    eprintln!("\x1b[33mUsage: /mesh join <ip:port>\x1b[0m");
+                                } else if let Some(ref d) = mesh_daemon {
+                                    if let Ok(addr) = seed.parse::<std::net::SocketAddr>() {
+                                        let d2 = d.clone();
+                                        tokio::spawn(async move {
+                                            match d2.join(addr).await {
+                                                Ok(_) => eprintln!("\x1b[32mJoined mesh seed {}\x1b[0m", addr),
+                                                Err(e) => eprintln!("\x1b[31mFailed to join {}: {}\x1b[0m", addr, e),
+                                            }
+                                        });
+                                    } else {
+                                        eprintln!("\x1b[31mInvalid address: {}\x1b[0m", seed);
+                                    }
                                 } else {
-                                    eprintln!("\x1b[36mConnecting to mesh seed: {}\x1b[0m", seed);
-                                    eprintln!(
-                                        "\x1b[2mMesh protocol (SWIM) will discover other nodes automatically.\x1b[0m"
-                                    );
+                                    eprintln!("\x1b[2mMesh not active. Start with: pipit --mesh\x1b[0m");
+                                }
+                            }
+                            Some(sub) if sub.starts_with("delegate") => {
+                                let prompt = sub.strip_prefix("delegate").map(|s| s.trim()).unwrap_or("");
+                                if prompt.is_empty() {
+                                    eprintln!("\x1b[33mUsage: /mesh delegate <task prompt>\x1b[0m");
+                                } else if let Some(ref d) = mesh_daemon {
+                                    let task = pipit_mesh::MeshTask {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        prompt: prompt.to_string(),
+                                        required_capabilities: vec!["agent".to_string()],
+                                        project_root: Some(project_root.display().to_string()),
+                                        timeout_secs: 300,
+                                    };
+                                    eprintln!("\x1b[36mDelegating task to mesh...\x1b[0m");
+                                    let d2 = d.clone();
+                                    tokio::spawn(async move {
+                                        match d2.delegate_task(task).await {
+                                            Ok(result) => {
+                                                eprintln!("\n\x1b[1;32m━━━ Mesh Task Result ━━━\x1b[0m");
+                                                eprintln!("  Node:    {}", if result.node_id.is_empty() { "remote" } else { &result.node_id });
+                                                eprintln!("  Status:  {}", if result.success { "\x1b[32mSuccess\x1b[0m" } else { "\x1b[31mFailed\x1b[0m" });
+                                                eprintln!("  Time:    {:.1}s", result.elapsed_secs);
+                                                eprintln!("\x1b[2m{}\x1b[0m", if result.output.len() > 2000 { &result.output[..2000] } else { &result.output });
+                                                eprintln!("\x1b[1;32m━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
+                                            }
+                                            Err(e) => {
+                                                eprintln!("\x1b[31mDelegation failed: {}\x1b[0m", e);
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    eprintln!("\x1b[2mMesh not active. Start with: pipit --mesh\x1b[0m");
+                                }
+                            }
+                            Some(sub) if sub.starts_with("run ") => {
+                                let rest = sub.strip_prefix("run ").unwrap().trim();
+                                let (node_prefix, prompt) = match rest.split_once(' ') {
+                                    Some((n, p)) => (n.trim(), p.trim()),
+                                    None => {
+                                        eprintln!("\x1b[33mUsage: /mesh run <node_name_or_id_prefix> <prompt>\x1b[0m");
+                                        continue;
+                                    }
+                                };
+                                if let Some(ref d) = mesh_daemon {
+                                    let reg = d.registry.blocking_read();
+                                    if let Some(target) = reg.find_by_prefix(node_prefix) {
+                                        let addr = target.addr;
+                                        let name = target.name.clone();
+                                        drop(reg);
+                                        let task = pipit_mesh::MeshTask {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            prompt: prompt.to_string(),
+                                            required_capabilities: vec![],
+                                            project_root: Some(project_root.display().to_string()),
+                                            timeout_secs: 300,
+                                        };
+                                        eprintln!("\x1b[36mSending task to {} ({})...\x1b[0m", name, addr);
+                                        let d2 = d.clone();
+                                        tokio::spawn(async move {
+                                            match d2.delegate_to_node(task, addr).await {
+                                                Ok(result) => {
+                                                    eprintln!("\n\x1b[1;32m━━━ Result from {} ━━━\x1b[0m", name);
+                                                    eprintln!("  Status:  {}", if result.success { "\x1b[32mSuccess\x1b[0m" } else { "\x1b[31mFailed\x1b[0m" });
+                                                    eprintln!("  Time:    {:.1}s", result.elapsed_secs);
+                                                    eprintln!("\x1b[2m{}\x1b[0m", if result.output.len() > 2000 { &result.output[..2000] } else { &result.output });
+                                                    eprintln!("\x1b[1;32m━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
+                                                }
+                                                Err(e) => eprintln!("\x1b[31mFailed: {}\x1b[0m", e),
+                                            }
+                                        });
+                                    } else {
+                                        eprintln!("\x1b[31mNo alive node matching '{}'. Use /mesh nodes to see available.\x1b[0m", node_prefix);
+                                    }
+                                } else {
+                                    eprintln!("\x1b[2mMesh not active.\x1b[0m");
+                                }
+                            }
+                            Some(sub) if sub.starts_with("broadcast") => {
+                                let prompt = sub.strip_prefix("broadcast").map(|s| s.trim()).unwrap_or("");
+                                if prompt.is_empty() {
+                                    eprintln!("\x1b[33mUsage: /mesh broadcast <prompt>\x1b[0m");
+                                } else if let Some(ref d) = mesh_daemon {
+                                    let task = pipit_mesh::MeshTask {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        prompt: prompt.to_string(),
+                                        required_capabilities: vec![],
+                                        project_root: Some(project_root.display().to_string()),
+                                        timeout_secs: 300,
+                                    };
+                                    eprintln!("\x1b[36mBroadcasting task to all mesh nodes...\x1b[0m");
+                                    let d2 = d.clone();
+                                    tokio::spawn(async move {
+                                        let results = d2.broadcast_task(task).await;
+                                        eprintln!("\n\x1b[1;33m━━━ Broadcast Results ({} nodes) ━━━\x1b[0m", results.len());
+                                        for (i, r) in results.iter().enumerate() {
+                                            match r {
+                                                Ok(result) => {
+                                                    eprintln!("  \x1b[1mNode {}\x1b[0m: {} in {:.1}s", i + 1,
+                                                        if result.success { "\x1b[32mSuccess\x1b[0m" } else { "\x1b[31mFailed\x1b[0m" },
+                                                        result.elapsed_secs);
+                                                    let preview = if result.output.len() > 500 { &result.output[..500] } else { &result.output };
+                                                    eprintln!("  \x1b[2m{}\x1b[0m", preview);
+                                                }
+                                                Err(e) => eprintln!("  \x1b[1mNode {}\x1b[0m: \x1b[31m{}\x1b[0m", i + 1, e),
+                                            }
+                                        }
+                                        eprintln!("\x1b[1;33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
+                                    });
+                                } else {
+                                    eprintln!("\x1b[2mMesh not active.\x1b[0m");
                                 }
                             }
                             Some(_) => {
-                                eprintln!(
-                                    "\x1b[33mUsage: /mesh [status|nodes|join <addr>|delegate <task>]\x1b[0m"
-                                );
+                                eprintln!("\x1b[33mUsage: /mesh [status|nodes|join|delegate|run|broadcast]\x1b[0m");
                             }
+                        }
+                        #[cfg(not(feature = "mesh"))]
+                        {
+                            let _ = action;
+                            eprintln!("\x1b[33mMesh not available — rebuild with `--features mesh`\x1b[0m");
                         }
                         continue;
                     }

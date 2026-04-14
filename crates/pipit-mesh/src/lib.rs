@@ -33,9 +33,9 @@ pub mod transport;
 
 // ── Public API ──
 pub use crdt::{CrdtStore, LwwRegister, OrSet};
-pub use delegation::MeshDelegation;
-pub use node::{MeshDaemon, NodeDescriptor, NodeId};
-pub use swim::SwimProtocol;
+pub use delegation::{MeshDelegation, MeshTask, MeshTaskResult, AffinityRule};
+pub use node::{GpuInfo, MeshDaemon, NodeDescriptor, NodeId, NodeRegistry, NodeStatus};
+pub use swim::{MeshMessage, SwimConfig, SwimMessage, SwimProtocol};
 pub use failure::{NodeLiveness, PhiAccrualConfig, PhiAccrualDetector};
 pub use negotiation::{NegotiationProtocol, NegotiationResult};
 pub use registry::{AgentCapability, AgentDescriptor, MeshRegistry};
