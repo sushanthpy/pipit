@@ -171,3 +171,22 @@ python3 -m pytest test_*.py -v
 ```
 
 Workspaces preserved at `/tmp/pipit-realworld/test{1..6}` for inspection.
+
+---
+
+## Run 2 — Azure GPT-5.4-mini (2026-04-14)
+
+**Model**: `gpt-5.4-mini` (Azure OpenAI)  
+**Binary**: pipit v0.3.5 (release build)  
+**Full results**: [BENCHMARK-AZURE-GPT54-RESULTS.md](BENCHMARK-AZURE-GPT54-RESULTS.md)
+
+| # | Scenario | Difficulty | Tests | Pass | Files | Score |
+|---|----------|-----------|-------|------|-------|-------|
+| 1 | Security audit (15 vulns in Flask app) | Hard | 10 | 10/10 | 3 | 9.5/10 |
+| 2 | REST API from scratch (FastAPI+JWT) | Hard | 3 | 2/3 | 4 | 7.8/10 |
+| 3 | Debug failing TTLCache tests | Medium | 7 | 7/7 | 1 | 9.2/10 |
+| 4 | Refactor 24-param god function | Medium | 7 | 7/7 | 2 | 9.0/10 |
+| 5 | Multi-file feature add (4 modules) | Hard | 4 | 4/4 | 5 | 8.8/10 |
+| 6 | Perf optimization (8 functions, measured) | Medium | 8 | 8/8 | 3 | 9.4/10 |
+
+**Overall: 38/39 tests pass (97.4%), avg score 9.0/10**

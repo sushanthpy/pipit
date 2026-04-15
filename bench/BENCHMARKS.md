@@ -119,3 +119,18 @@ mini-swe-agent/
 ```
 
 The `PipitAgent` class wraps pipit as a subprocess, replacing mini-swe-agent's default LLM+bash loop with pipit's own agent architecture.
+
+---
+
+## Related Benchmark Results
+
+| Benchmark | File | Model | Summary |
+|---|---|---|---|
+| E2E (Qwen 3.5-35B local) | [BENCHMARK-E2E-RESULTS.md](BENCHMARK-E2E-RESULTS.md) | Qwen3.5-35B-A3B-FP8 | 4-tier eval, 0.1.0 debug build |
+| E2E (Azure GPT-5.4-mini) | [BENCHMARK-AZURE-GPT54-RESULTS.md](BENCHMARK-AZURE-GPT54-RESULTS.md) | gpt-5.4-mini | 6 real-world tasks, 38/39 tests pass, 9.0/10 avg |
+| Terminal-bench | [BENCHMARK-TERMINAL-RESULTS.md](BENCHMARK-TERMINAL-RESULTS.md) | Various | Terminal-bench core dataset |
+| Fish shell | [BENCHMARK-FISH-RESULTS.md](BENCHMARK-FISH-RESULTS.md) | Various | Fish shell integration |
+| Parallel | [BENCHMARK-PARALLEL-RESULTS.md](BENCHMARK-PARALLEL-RESULTS.md) | Various | Parallel execution |
+| Render | [BENCHMARK-RENDER-RESULTS.md](BENCHMARK-RENDER-RESULTS.md) | Various | UI rendering |
+| Skills | [BENCHMARK-SKILLS-RESULTS.md](BENCHMARK-SKILLS-RESULTS.md) | Various | Skill activation |
+| Tools | [BENCHMARK-PIPIT-TOOLS-RESULTS.md](BENCHMARK-PIPIT-TOOLS-RESULTS.md) | Various | Tool usage |

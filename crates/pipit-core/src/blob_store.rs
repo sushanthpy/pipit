@@ -8,9 +8,8 @@
 //! becomes a first-class evidence artifact.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Maximum inline size before redirecting to blob store.
@@ -213,11 +212,10 @@ impl BlobStore {
     }
 }
 
-/// Compute a content-addressable hash.
+/// Compute a content-addressable SHA-256 hash (replacing DefaultHasher).
 fn content_hash(content: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let digest = Sha256::digest(content.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Guess MIME type from content heuristics.

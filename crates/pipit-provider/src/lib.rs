@@ -4,6 +4,7 @@ pub mod bedrock;
 pub mod circuit_breaker;
 pub mod codex_oauth;
 pub mod copilot_oauth;
+pub mod cross_cache;
 pub mod fallback;
 pub mod faux;
 pub mod google;

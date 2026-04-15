@@ -85,6 +85,16 @@ impl Default for FilesystemPolicy {
                 "~/.kube/config".into(),
                 // npm tokens
                 "~/.npmrc".into(),
+                // PyPI tokens
+                "~/.pypirc".into(),
+                // Cargo registry tokens
+                "~/.cargo/credentials.toml".into(),
+                // Helm
+                "~/.config/helm".into(),
+                // Terraform
+                "~/.terraform.d/credentials.tfrc.json".into(),
+                // Vault tokens
+                "~/.vault-token".into(),
             ],
             read_only_system: true,
         }
@@ -358,6 +368,16 @@ fn seatbelt_command(command: &str, cwd: &Path, config: &SandboxConfig) -> tokio:
     profile.push_str("(allow ipc-posix-shm-write-create)\n");
     // Signals needed for process management
     profile.push_str("(allow signal (target self))\n");
+    // TLS certificate validation via macOS Security framework
+    // Without this, HTTPS connections (git clone, curl, npm) fail with
+    // SecTrustEvaluateWithError or errSecInternalComponent.
+    profile.push_str("(allow mach-lookup (global-name \"com.apple.trustd.agent\"))\n");
+    profile.push_str("(allow mach-lookup (global-name \"com.apple.trustd\"))\n");
+    // DNS resolution via mDNSResponder
+    profile.push_str("(allow mach-lookup (global-name \"com.apple.dnssd.service\"))\n");
+    // Security framework keychain access (for TLS root certs, not user passwords)
+    profile.push_str("(allow mach-lookup (global-name \"com.apple.SecurityServer\"))\n");
+    profile.push_str("(allow mach-lookup (global-name \"com.apple.ocspd\"))\n");
 
     // ── File reads: allow everywhere ──
     // Dev tools read from too many scattered locations to enumerate.

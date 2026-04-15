@@ -151,19 +151,8 @@ resolve_install_dir() {
         return
     fi
 
-    # Prefer ~/.local/bin (no sudo needed). Fall back to /usr/local/bin
-    # only if ~/.local/bin is not in PATH and /usr/local/bin is writable.
+    # Always prefer ~/.local/bin (no sudo needed, no SIP issues on macOS).
     local_bin="${HOME}/.local/bin"
-    if echo "${PATH}" | grep -q "${local_bin}" 2>/dev/null; then
-        printf '%s\n' "${local_bin}"
-        return
-    fi
-
-    if [ -w "/usr/local/bin" ]; then
-        printf '%s\n' "/usr/local/bin"
-        return
-    fi
-
     printf '%s\n' "${local_bin}"
 }
 

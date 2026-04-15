@@ -13,11 +13,15 @@
 pub mod classifiers;
 pub mod denial_tracker;
 pub mod escape_gates;
+pub mod linear_caps;
+pub mod net_proxy;
 pub mod production_classifiers;
 pub mod rules;
 pub mod shadow_detector;
 
 pub use escape_gates::{DangerousWriteSet, WriteCheck};
+pub use linear_caps::{Capability, CapabilityError, CapabilityMinter, CapabilityToken};
+pub use net_proxy::{NetDecision, NetProxy, NetProxyConfig};
 
 use classifiers::*;
 use denial_tracker::DenialTracker;

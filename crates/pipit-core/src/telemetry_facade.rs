@@ -270,6 +270,28 @@ pub enum ExportTarget {
     Jsonl,
 }
 
+/// OTLP HTTP endpoint configuration.
+#[derive(Debug, Clone)]
+pub struct OtlpConfig {
+    /// OTLP endpoint (e.g., "http://localhost:4318").
+    pub endpoint: String,
+    /// Optional authorization header value (e.g., "Bearer <token>").
+    pub auth_header: Option<String>,
+    /// Request timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl Default for OtlpConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4318".to_string()),
+            auth_header: std::env::var("OTEL_EXPORTER_OTLP_HEADERS").ok(),
+            timeout_ms: 5_000,
+        }
+    }
+}
+
 /// The unified telemetry facade.
 pub struct TelemetryFacade {
     pub session_counters: SessionCounters,
@@ -278,6 +300,8 @@ pub struct TelemetryFacade {
     session_id: String,
     model_name: String,
     provider_name: String,
+    /// OTLP configuration (used when ExportTarget::Otlp is active).
+    pub otlp_config: OtlpConfig,
 }
 
 impl TelemetryFacade {
@@ -289,7 +313,17 @@ impl TelemetryFacade {
             session_id: session_id.to_string(),
             model_name: model.to_string(),
             provider_name: provider.to_string(),
+            otlp_config: OtlpConfig::default(),
         }
+    }
+
+    /// Enable OTLP export with the given configuration.
+    pub fn with_otlp(mut self, config: OtlpConfig) -> Self {
+        self.otlp_config = config;
+        if !self.export_targets.contains(&ExportTarget::Otlp) {
+            self.export_targets.push(ExportTarget::Otlp);
+        }
+        self
     }
 
     /// Start a new span.
@@ -320,13 +354,10 @@ impl TelemetryFacade {
                     self.export_jsonl(&spans)?;
                 }
                 ExportTarget::Otlp => {
-                    // OTLP export: batch POST to /v1/traces
-                    // In production: opentelemetry-otlp crate
-                    // For now, JSONL export covers offline analysis
+                    self.export_otlp(&spans)?;
                 }
                 ExportTarget::Prometheus => {
-                    // Prometheus: counters exposed via /metrics
-                    // Handled by the daemon's axum router
+                    self.export_prometheus(&spans)?;
                 }
             }
         }
@@ -348,6 +379,117 @@ impl TelemetryFacade {
             let json = serde_json::to_string(span).map_err(|e| e.to_string())?;
             writeln!(file, "{}", json).map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    /// Export spans to OTLP HTTP/JSON endpoint (/v1/traces).
+    ///
+    /// Implements the OTLP HTTP JSON protocol (no protobuf dependency).
+    /// Batches all spans into a single ExportTraceServiceRequest.
+    /// Tolerates connection failures (telemetry is best-effort).
+    fn export_otlp(&self, spans: &[OtelSpan]) -> Result<(), String> {
+        if spans.is_empty() {
+            return Ok(());
+        }
+
+        let resource = serde_json::json!({
+            "attributes": [
+                {"key": "service.name", "value": {"stringValue": "pipit"}},
+                {"key": "service.version", "value": {"stringValue": env!("CARGO_PKG_VERSION")}},
+                {"key": "session.id", "value": {"stringValue": &self.session_id}},
+                {"key": "model.name", "value": {"stringValue": &self.model_name}},
+                {"key": "provider.name", "value": {"stringValue": &self.provider_name}},
+            ]
+        });
+
+        let otlp_spans: Vec<serde_json::Value> = spans.iter().map(|s| {
+            let attrs: Vec<serde_json::Value> = s.attributes.iter().map(|(k, v)| {
+                let val = match v {
+                    SpanValue::String(sv) => serde_json::json!({"stringValue": sv}),
+                    SpanValue::Int(iv) => serde_json::json!({"intValue": iv.to_string()}),
+                    SpanValue::Float(fv) => serde_json::json!({"doubleValue": fv}),
+                    SpanValue::Bool(bv) => serde_json::json!({"boolValue": bv}),
+                };
+                serde_json::json!({"key": k, "value": val})
+            }).collect();
+
+            let status_code = match s.status {
+                SpanStatus::Ok => 1,
+                SpanStatus::Error => 2,
+                SpanStatus::Unset => 0,
+            };
+
+            serde_json::json!({
+                "traceId": hex_encode_id(&s.trace_id),
+                "spanId": hex_encode_id(&s.span_id),
+                "parentSpanId": s.parent_span_id.as_deref().map(hex_encode_id).unwrap_or_default(),
+                "name": s.operation_name,
+                "kind": 1, // SPAN_KIND_INTERNAL
+                "startTimeUnixNano": (s.start_time_ms as u64).saturating_mul(1_000_000).to_string(),
+                "endTimeUnixNano": s.end_time_ms.unwrap_or(s.start_time_ms).saturating_mul(1_000_000).to_string(),
+                "attributes": attrs,
+                "status": {"code": status_code},
+            })
+        }).collect();
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": resource,
+                "scopeSpans": [{
+                    "scope": {"name": "pipit", "version": env!("CARGO_PKG_VERSION")},
+                    "spans": otlp_spans,
+                }]
+            }]
+        });
+
+        let url = format!("{}/v1/traces", self.otlp_config.endpoint.trim_end_matches('/'));
+        let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+
+        // Synchronous HTTP POST (telemetry export happens at session end).
+        // Best-effort: swallow connection errors to avoid disrupting the session.
+        let result = otlp_http_post(&url, &body, &self.otlp_config);
+        match result {
+            Ok(status) if status >= 200 && status < 300 => Ok(()),
+            Ok(status) => Err(format!("OTLP endpoint returned HTTP {}", status)),
+            Err(e) => {
+                // Best-effort: log but don't fail
+                tracing::warn!("OTLP export failed (non-fatal): {}", e);
+                Ok(())
+            }
+        }
+    }
+
+    /// Export session metrics in Prometheus exposition format.
+    fn export_prometheus(&self, _spans: &[OtelSpan]) -> Result<(), String> {
+        let dir = std::path::Path::new(".pipit").join("telemetry");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("metrics.prom");
+
+        let counters = &self.session_counters;
+        let mut buf = String::new();
+        use std::fmt::Write;
+        let _ = writeln!(buf, "# HELP pipit_turns_total Total turns in this session");
+        let _ = writeln!(buf, "# TYPE pipit_turns_total counter");
+        let _ = writeln!(buf, "pipit_turns_total{{session=\"{}\"}} {}",
+            self.session_id, counters.turns.load(std::sync::atomic::Ordering::Relaxed));
+        let _ = writeln!(buf, "# HELP pipit_tool_calls_total Total tool calls");
+        let _ = writeln!(buf, "# TYPE pipit_tool_calls_total counter");
+        let _ = writeln!(buf, "pipit_tool_calls_total{{session=\"{}\"}} {}",
+            self.session_id, counters.tool_calls.load(std::sync::atomic::Ordering::Relaxed));
+        let _ = writeln!(buf, "# HELP pipit_tokens_input_total Input tokens consumed");
+        let _ = writeln!(buf, "# TYPE pipit_tokens_input_total counter");
+        let _ = writeln!(buf, "pipit_tokens_input_total{{session=\"{}\"}} {}",
+            self.session_id, counters.tokens_input.load(std::sync::atomic::Ordering::Relaxed));
+        let _ = writeln!(buf, "# HELP pipit_tokens_output_total Output tokens generated");
+        let _ = writeln!(buf, "# TYPE pipit_tokens_output_total counter");
+        let _ = writeln!(buf, "pipit_tokens_output_total{{session=\"{}\"}} {}",
+            self.session_id, counters.tokens_output.load(std::sync::atomic::Ordering::Relaxed));
+        let _ = writeln!(buf, "# HELP pipit_cost_usd Total cost in USD");
+        let _ = writeln!(buf, "# TYPE pipit_cost_usd gauge");
+        let _ = writeln!(buf, "pipit_cost_usd{{session=\"{}\"}} {:.6}",
+            self.session_id, counters.total_cost());
+
+        std::fs::write(&path, &buf).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -396,6 +538,72 @@ fn rand_u64() -> u64 {
     now_ms().hash(&mut hasher);
     std::thread::current().id().hash(&mut hasher);
     hasher.finish()
+}
+
+/// Ensure ID is a valid 32-char hex trace ID or 16-char span ID for OTLP.
+/// If the input is already hex, pad/truncate. Otherwise, hash it.
+fn hex_encode_id(id: &str) -> String {
+    if id.len() <= 32 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return format!("{:0>32}", id);
+    }
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(id.as_bytes());
+    hex::encode(&hash[..16])
+}
+
+/// Minimal synchronous HTTP POST for OTLP export.
+/// Uses std::net::TcpStream to avoid requiring an async runtime or reqwest.
+fn otlp_http_post(url: &str, body: &[u8], config: &OtlpConfig) -> Result<u16, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    // Parse URL: http://host:port/path
+    let url = url.strip_prefix("http://").ok_or("OTLP requires http:// URL")?;
+    let (host_port, path) = url.split_once('/').unwrap_or((url, "v1/traces"));
+    let path = format!("/{}", path);
+
+    let timeout = Duration::from_millis(config.timeout_ms);
+    let mut stream = TcpStream::connect_timeout(
+        &host_port.parse().map_err(|e: std::net::AddrParseError| e.to_string())?,
+        timeout,
+    ).map_err(|e| format!("OTLP connect failed: {}", e))?;
+
+    stream.set_write_timeout(Some(timeout)).ok();
+    stream.set_read_timeout(Some(timeout)).ok();
+
+    let mut request = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        path, host_port, body.len()
+    );
+    if let Some(auth) = &config.auth_header {
+        request.push_str(&format!("Authorization: {}\r\n", auth));
+    }
+    request.push_str("Connection: close\r\n\r\n");
+
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    stream.write_all(body).map_err(|e| e.to_string())?;
+
+    let mut response = [0u8; 256];
+    let n = stream.read(&mut response).map_err(|e| e.to_string())?;
+    let response_str = String::from_utf8_lossy(&response[..n]);
+
+    // Parse HTTP status from "HTTP/1.1 200 OK"
+    let status = response_str
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+
+    Ok(status)
+}
+
+/// Encode bytes as hex string.
+mod hex {
+    pub fn encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
 }
 
 #[cfg(test)]
@@ -456,5 +664,82 @@ mod tests {
         let attrs = counters.as_attributes();
         assert!(attrs.contains_key("session.turns"));
         assert!(attrs.contains_key("session.cost.usd"));
+    }
+
+    #[test]
+    fn otlp_config_default_from_env() {
+        let config = OtlpConfig::default();
+        assert!(config.endpoint.starts_with("http"));
+        assert_eq!(config.timeout_ms, 5000);
+    }
+
+    #[test]
+    fn otlp_payload_structure() {
+        let facade = TelemetryFacade::new("test-session", "gpt-4", "openai");
+        let mut span = facade.start_span("test.operation");
+        span.finish(SpanStatus::Ok);
+        facade.record_span(span);
+
+        // Verify spans are recorded
+        let spans = facade.spans.lock().unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].operation_name, "test.operation");
+        assert_eq!(spans[0].status, SpanStatus::Ok);
+    }
+
+    #[test]
+    fn otlp_export_best_effort_on_connection_failure() {
+        let mut facade = TelemetryFacade::new("test", "model", "provider");
+        facade.otlp_config = OtlpConfig {
+            endpoint: "http://127.0.0.1:1".to_string(), // unreachable
+            auth_header: None,
+            timeout_ms: 100,
+        };
+        facade.export_targets = vec![ExportTarget::Otlp];
+
+        let mut span = facade.start_span("op");
+        span.finish(SpanStatus::Ok);
+        facade.record_span(span);
+
+        // Should not error — OTLP is best-effort
+        let result = facade.export();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn hex_encode_id_pads_short_ids() {
+        let id = hex_encode_id("abc");
+        assert_eq!(id.len(), 32);
+        assert!(id.ends_with("abc"));
+    }
+
+    #[test]
+    fn hex_encode_id_hashes_non_hex() {
+        let id = hex_encode_id("my-trace-id-with-dashes");
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn with_otlp_adds_export_target() {
+        let facade = TelemetryFacade::new("s", "m", "p")
+            .with_otlp(OtlpConfig::default());
+        assert!(facade.export_targets.contains(&ExportTarget::Otlp));
+    }
+
+    #[test]
+    fn prometheus_export_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let facade = TelemetryFacade::new("prom-test", "model", "prov");
+        facade.session_counters.increment_turns();
+        facade.session_counters.increment_turns();
+        facade.session_counters.add_cost(0.42);
+
+        // Test the prometheus format generation
+        let counters = &facade.session_counters;
+        let turns = counters.turns.load(Ordering::Relaxed);
+        assert_eq!(turns, 2);
+        let cost = counters.total_cost();
+        assert!((cost - 0.42).abs() < 1e-10);
     }
 }

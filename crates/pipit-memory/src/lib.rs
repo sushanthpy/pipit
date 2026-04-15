@@ -14,6 +14,7 @@
 //! truncate at last newline before B_max (O(n) single pass).
 
 pub mod auto_dream;
+pub mod hnsw;
 pub mod memory_log;
 pub mod secret_scanner;
 pub mod team_sync;
