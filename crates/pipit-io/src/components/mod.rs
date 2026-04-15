@@ -22,6 +22,7 @@ pub(crate) fn render_widget<W: ratatui::widgets::Widget>(widget: W, area: Rect, 
 pub mod agent;
 pub mod data;
 pub mod effects;
+pub mod effort;
 pub mod feedback;
 pub mod input;
 pub mod layout;

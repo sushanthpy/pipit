@@ -1159,18 +1159,14 @@ pub fn draw_composer(frame: &mut Frame, area: Rect, composer: &Composer, is_work
     let input_rows = composer.lines.len().min(4) as u16;
     let input_area = Rect::new(area.x, y, area.width, input_rows + 2);
 
-    let (border_color, border_title) = match composer.vim_mode() {
-        Some(VimMode::Normal) => (Color::Yellow, " NORMAL "),
-        Some(VimMode::Insert) => (Color::Green, " INSERT "),
-        None => (Color::DarkGray, " input "),
+    let (border_color, border_title) = if composer.is_empty() {
+        (Color::DarkGray, "")
+    } else {
+        (Color::Green, "")
     };
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(
-            border_title,
-            Style::default().fg(border_color),
-        ));
+        .border_style(Style::default().fg(border_color));
     let inner = input_block.inner(input_area);
     frame.render_widget(input_block, input_area);
 

@@ -116,6 +116,8 @@ pub struct DiffLine {
     pub old_lineno: Option<usize>,
     pub new_lineno: Option<usize>,
     pub content: String,
+    /// Word-level inline highlights: (start_byte, end_byte) ranges that changed.
+    pub word_highlights: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +141,7 @@ impl DiffRenderer {
             old_lineno: None,
             new_lineno: None,
             content: format!("--- a/{filename}\n+++ b/{filename}"),
+            word_highlights: vec![],
         });
 
         let mut old_line = 1usize;
@@ -157,6 +160,7 @@ impl DiffRenderer {
                 old_lineno: None,
                 new_lineno: None,
                 content: format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@"),
+                word_highlights: vec![],
             });
 
             for op in &group {
@@ -186,6 +190,7 @@ impl DiffRenderer {
                         old_lineno: old_ln,
                         new_lineno: new_ln,
                         content: text,
+                        word_highlights: vec![],
                     });
                 }
             }
@@ -234,6 +239,85 @@ impl DiffRenderer {
             }
         }
         output
+    }
+
+    /// Two-pass diff: line-level first, then word-level within changed pairs.
+    ///
+    /// For each Delete→Add pair (adjacent), runs `TextDiff::from_chars` to
+    /// identify the exact character spans that differ, populating
+    /// `word_highlights` on both lines.
+    pub fn render_word_diff(&self, old: &str, new: &str, filename: &str) -> Vec<DiffLine> {
+        let mut lines = self.render(old, new, filename);
+        Self::annotate_word_highlights(&mut lines);
+        lines
+    }
+
+    /// Post-process diff lines: for adjacent Delete/Add pairs, compute
+    /// character-level diffs and populate `word_highlights`.
+    fn annotate_word_highlights(lines: &mut [DiffLine]) {
+        use similar::{ChangeTag, TextDiff};
+
+        let mut i = 0;
+        while i < lines.len() {
+            // Find a Delete followed by one or more Adds (or vice versa).
+            // We match adjacent Delete→Add pairs.
+            if lines[i].kind == DiffLineKind::Delete {
+                let del_start = i;
+                let mut del_end = i;
+                while del_end < lines.len() && lines[del_end].kind == DiffLineKind::Delete {
+                    del_end += 1;
+                }
+                let mut add_end = del_end;
+                while add_end < lines.len() && lines[add_end].kind == DiffLineKind::Add {
+                    add_end += 1;
+                }
+
+                let del_count = del_end - del_start;
+                let add_count = add_end - del_end;
+
+                // Pair them up 1:1 (min of del/add count)
+                let pairs = del_count.min(add_count);
+                for p in 0..pairs {
+                    let del_idx = del_start + p;
+                    let add_idx = del_end + p;
+
+                    let del_text = &lines[del_idx].content;
+                    let add_text = &lines[add_idx].content;
+
+                    let char_diff = TextDiff::from_chars(del_text, add_text);
+                    let mut del_highlights = Vec::new();
+                    let mut add_highlights = Vec::new();
+                    let mut del_byte = 0usize;
+                    let mut add_byte = 0usize;
+
+                    for change in char_diff.iter_all_changes() {
+                        let text = change.to_string_lossy();
+                        let len = text.len();
+                        match change.tag() {
+                            ChangeTag::Delete => {
+                                del_highlights.push((del_byte, del_byte + len));
+                                del_byte += len;
+                            }
+                            ChangeTag::Insert => {
+                                add_highlights.push((add_byte, add_byte + len));
+                                add_byte += len;
+                            }
+                            ChangeTag::Equal => {
+                                del_byte += len;
+                                add_byte += len;
+                            }
+                        }
+                    }
+
+                    lines[del_idx].word_highlights = del_highlights;
+                    lines[add_idx].word_highlights = add_highlights;
+                }
+
+                i = add_end;
+            } else {
+                i += 1;
+            }
+        }
     }
 }
 

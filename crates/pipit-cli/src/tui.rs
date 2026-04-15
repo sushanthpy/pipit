@@ -19,6 +19,20 @@ use crate::dbg_log;
 
 use crate::workflow;
 
+/// Commands sent from the TUI event loop to the agent task.
+enum TuiCommand {
+    /// A user prompt to send to the agent.
+    Prompt(String),
+    /// Switch provider: (provider_kind, model, api_key, base_url).
+    SwitchProvider {
+        kind: pipit_config::ProviderKind,
+        model: String,
+        api_key: String,
+        base_url: Option<String>,
+        label: String,
+    },
+}
+
 /// Convert a SlashCommand back to its string form for forwarding to the agent.
 fn slash_command_to_str(cmd: &pipit_io::input::SlashCommand) -> String {
     use pipit_io::input::SlashCommand::*;
@@ -134,6 +148,7 @@ pub async fn run(
     agent_mode: pipit_core::AgentMode,
     tmux_enabled: bool,
     vim_mode: bool,
+    provider_roster: pipit_config::provider_roster::ProviderRoster,
 ) -> Result<()> {
     use crossterm::event::{self as crossterm_event, Event};
 
@@ -230,8 +245,13 @@ pub async fn run(
         }
     });
 
+    // Provider roster wrapped in Arc<Mutex> for shared access between
+    // the TUI event loop (listing) and the agent task (switching)
+    let provider_roster = Arc::new(std::sync::Mutex::new(provider_roster));
+    let roster_for_agent = provider_roster.clone();
+
     // Channel for sending prompts to the agent task
-    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<String>(8);
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<TuiCommand>(8);
 
     // Shared cancellation token — Escape key cancels the current run
     let cancel_token: Arc<std::sync::Mutex<CancellationToken>> =
@@ -241,7 +261,9 @@ pub async fn run(
     // Spawn agent runner as a separate task so the TUI keeps redrawing
     let tui_state_for_agent = tui_state.clone();
     let agent_handle = tokio::spawn(async move {
-        while let Some(prompt) = prompt_rx.recv().await {
+        while let Some(cmd) = prompt_rx.recv().await {
+            match cmd {
+                TuiCommand::Prompt(prompt) => {
             {
                 let mut s = tui_state_for_agent.lock().unwrap();
                 s.begin_working("Thinking…");
@@ -316,6 +338,28 @@ pub async fn run(
                 // Stay in Task mode so the user can see results.
                 // They can press 'g' to return to Shell.
             }
+                } // end TuiCommand::Prompt
+                TuiCommand::SwitchProvider { kind, model, api_key, base_url, label } => {
+                    match agent.set_model(kind, &model, &api_key, base_url.as_deref()) {
+                        Ok(()) => {
+                            let mut s = tui_state_for_agent.lock().unwrap();
+                            s.status.model = label.clone();
+                            s.status.provider_kind = format!("{}", kind);
+                            if let Some(ref url) = base_url {
+                                s.status.base_url = url.clone();
+                            }
+                            s.push_activity("✓", Color::Green, format!("Switched to: {}", label));
+                        }
+                        Err(e) => {
+                            let mut s = tui_state_for_agent.lock().unwrap();
+                            s.push_activity("✗", Color::Red, format!("Provider switch failed: {}", e));
+                            // Revert the roster to previous position
+                            let mut roster = roster_for_agent.lock().unwrap();
+                            roster.prev();
+                        }
+                    }
+                }
+            } // end match cmd
         }
     });
 
@@ -383,10 +427,6 @@ pub async fn run(
                 }
                 Event::Key(key) => {
                     let mut state = tui_state.lock().unwrap();
-                    // Track vim mode BEFORE handling key, so we can detect
-                    // Insert → Normal transitions from Esc.
-                    let vim_was_insert = state.composer.vim_active()
-                        && state.composer.vim_mode() == Some(pipit_io::composer::VimMode::Insert);
                     app::handle_key(&mut state, key);
 
                     if state.should_quit {
@@ -405,12 +445,9 @@ pub async fn run(
                         state.begin_working("Stopping subagents…");
                     }
 
-                    // Escape cancels the current agent run.
-                    // Exception: when vim was in Insert mode, Esc switches to
-                    // Normal mode — do NOT cancel the agent on that Esc press.
+                    // Escape always cancels the current agent run.
                     if key.code == crossterm::event::KeyCode::Esc
                         && state.is_working
-                        && !vim_was_insert
                     {
                         let mut token = cancel_token.lock().unwrap();
                         token.cancel();
@@ -607,7 +644,7 @@ pub async fn run(
                                         s.has_received_input = true;
                                     }
                                     pipit_io::input::SlashCommand::Clear => {
-                                        let _ = prompt_tx.send("/clear".to_string()).await;
+                                        let _ = prompt_tx.send(TuiCommand::Prompt("/clear".to_string())).await;
                                         let mut s = tui_state.lock().unwrap();
                                         s.activity_lines.clear();
                                         s.content_lines.clear();
@@ -809,13 +846,13 @@ pub async fn run(
                                     }
                                     pipit_io::input::SlashCommand::Skills => {
                                         // Delegate to agent — it will list skills
-                                        let _ = prompt_tx.send("/skills".to_string()).await;
+                                        let _ = prompt_tx.send(TuiCommand::Prompt("/skills".to_string())).await;
                                     }
                                     pipit_io::input::SlashCommand::Hooks => {
-                                        let _ = prompt_tx.send("/hooks".to_string()).await;
+                                        let _ = prompt_tx.send(TuiCommand::Prompt("/hooks".to_string())).await;
                                     }
                                     pipit_io::input::SlashCommand::Mcp => {
-                                        let _ = prompt_tx.send("/mcp".to_string()).await;
+                                        let _ = prompt_tx.send(TuiCommand::Prompt("/mcp".to_string())).await;
                                     }
                                     pipit_io::input::SlashCommand::Undo
                                     | pipit_io::input::SlashCommand::Rewind => {
@@ -1242,11 +1279,11 @@ pub async fn run(
                                             }
                                         } else {
                                             // No message — delegate to agent for LLM-generated commit message
-                                            let _ = prompt_tx.send(
+                                            let _ = prompt_tx.send(TuiCommand::Prompt(
                                                 "Run `git diff --cached` and generate a conventional commit message \
                                                  (type(scope): description). Then run `git commit -m \"<your message>\"` \
                                                  to commit. Do NOT use --no-edit.".to_string()
-                                            ).await;
+                                            )).await;
                                         }
                                     }
                                     pipit_io::input::SlashCommand::Vim => {
@@ -1259,14 +1296,85 @@ pub async fn run(
                                             s.push_activity("⌨", Color::Green, "Vim mode ON (Esc → Normal, i → Insert)".to_string());
                                         }
                                     }
+                                    pipit_io::input::SlashCommand::Provider(ref arg) => {
+                                        let mut roster = provider_roster.lock().unwrap();
+                                        match arg.as_deref() {
+                                            None | Some("") | Some("list") => {
+                                                // Show provider list in the content pane
+                                                let mut s = tui_state.lock().unwrap();
+                                                s.push_activity("⚙", Color::Cyan, "/provider".to_string());
+                                                s.content_lines.clear();
+                                                s.content_scroll_offset = 0;
+                                                s.content_lines.push("## Provider Roster".to_string());
+                                                s.content_lines.push(String::new());
+                                                for line in roster.render_list().lines() {
+                                                    s.content_lines.push(line.to_string());
+                                                }
+                                                s.content_lines.push(String::new());
+                                                s.content_lines.push("Usage: `/provider next` · `/provider prev` · `/provider <name>`".to_string());
+                                                s.has_received_input = true;
+                                                s.ui_mode = pipit_io::app::UiMode::Task;
+                                            }
+                                            Some("next" | "n") => {
+                                                let profile = roster.next().clone();
+                                                let label = roster.status_label();
+                                                drop(roster);
+                                                let _ = prompt_tx.send(TuiCommand::SwitchProvider {
+                                                    kind: profile.kind,
+                                                    model: profile.model,
+                                                    api_key: profile.api_key,
+                                                    base_url: profile.base_url,
+                                                    label,
+                                                }).await;
+                                            }
+                                            Some("prev" | "p") => {
+                                                let profile = roster.prev().clone();
+                                                let label = roster.status_label();
+                                                drop(roster);
+                                                let _ = prompt_tx.send(TuiCommand::SwitchProvider {
+                                                    kind: profile.kind,
+                                                    model: profile.model,
+                                                    api_key: profile.api_key,
+                                                    base_url: profile.base_url,
+                                                    label,
+                                                }).await;
+                                            }
+                                            Some(query) => {
+                                                // Try numeric index first, then label match
+                                                let result = if let Ok(idx) = query.parse::<usize>() {
+                                                    roster.switch_to_index(idx).cloned()
+                                                } else {
+                                                    roster.switch_to(query).cloned()
+                                                };
+                                                match result {
+                                                    Ok(profile) => {
+                                                        let label = roster.status_label();
+                                                        drop(roster);
+                                                        let _ = prompt_tx.send(TuiCommand::SwitchProvider {
+                                                            kind: profile.kind,
+                                                            model: profile.model,
+                                                            api_key: profile.api_key,
+                                                            base_url: profile.base_url,
+                                                            label,
+                                                        }).await;
+                                                    }
+                                                    Err(e) => {
+                                                        drop(roster);
+                                                        let mut s = tui_state.lock().unwrap();
+                                                        s.push_activity("✗", Color::Red, e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     other => {
                                         let cmd_str = format!("/{}", slash_command_to_str(&other));
-                                        let _ = prompt_tx.send(cmd_str).await;
+                                        let _ = prompt_tx.send(TuiCommand::Prompt(cmd_str)).await;
                                     }
                                 }
                             }
                             pipit_io::input::UserInput::Prompt(prompt) => {
-                                let _ = prompt_tx.send(prompt).await;
+                                let _ = prompt_tx.send(TuiCommand::Prompt(prompt)).await;
                             }
                             pipit_io::input::UserInput::ShellPassthrough(cmd) => {
                                 // Push to composer's shell history for !-completion
@@ -1395,7 +1503,7 @@ pub async fn run(
                                     files.join(", "),
                                     prompt
                                 );
-                                let _ = prompt_tx.send(enriched).await;
+                                let _ = prompt_tx.send(TuiCommand::Prompt(enriched)).await;
                             }
                             pipit_io::input::UserInput::PromptWithImages {
                                 prompt,
@@ -1406,7 +1514,7 @@ pub async fn run(
                                     image_paths.join(", "),
                                     prompt
                                 );
-                                let _ = prompt_tx.send(enriched).await;
+                                let _ = prompt_tx.send(TuiCommand::Prompt(enriched)).await;
                             }
                         }
                     }

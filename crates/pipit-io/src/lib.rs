@@ -1,10 +1,17 @@
+pub mod agent_colors;
+pub mod animation;
 pub mod app;
+pub mod budget_viz;
 pub mod components;
 pub mod composer;
 pub mod editor_integration;
 pub mod input;
 pub mod render;
 pub mod render_engine;
+pub mod spinner_verbs;
+pub mod suggestions;
+pub mod terminal_caps;
+pub mod theme;
 pub mod tui;
 pub mod vim;
 

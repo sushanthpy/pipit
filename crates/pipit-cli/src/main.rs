@@ -127,7 +127,7 @@ struct Cli {
     classic: bool,
 
     /// Enable Vim modal editing in the input composer
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     vim: bool,
 
     /// Enable tmux bridge — bash commands run in a visible tmux pane.
@@ -1689,6 +1689,7 @@ async fn main() -> Result<()> {
             agent_mode,
             cli.tmux,
             cli.vim,
+            provider_roster,
         )
         .await;
     }
