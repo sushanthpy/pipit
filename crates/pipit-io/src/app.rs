@@ -2492,7 +2492,7 @@ fn draw_task_activity(frame: &mut Frame, area: Rect, state: &TuiState) {
 
 fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner_height = area.height.saturating_sub(2) as usize;
-    let pane_width = area.width.saturating_sub(2) as usize;
+    let pane_width = (area.width.saturating_sub(2) as usize).min(102);
 
     // Live streaming indicator: blinking cursor at end of current output
     let is_streaming = !state.streaming_text.is_empty() && state.is_working;
@@ -2673,6 +2673,7 @@ pub(crate) fn render_markdown_lines(
     let mut turn_has_body = false;
     let mut turn_start_index: Option<usize> = None;
     let mut prev_was_empty = false;
+    let mut prev_was_list = false;
 
     let mut raw_line_index = 0usize;
     while raw_line_index < raw_lines.len() {
@@ -2767,7 +2768,7 @@ pub(crate) fn render_markdown_lines(
                     &mut all_lines,
                     Line::from(Span::styled(
                         format!("  └{}", "─".repeat(pane_width.saturating_sub(5).min(30))),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::Rgb(80, 85, 100)),
                     )),
                     raw_is_match,
                     raw_is_current,
@@ -2803,7 +2804,7 @@ pub(crate) fn render_markdown_lines(
                 push_rendered_line(
                     &mut all_lines,
                     Line::from(vec![
-                        Span::styled("  ┌", Style::default().fg(Color::DarkGray)),
+                        Span::styled("  ┌", Style::default().fg(Color::Rgb(80, 85, 100))),
                         Span::styled(
                             label,
                             Style::default()
@@ -2812,7 +2813,7 @@ pub(crate) fn render_markdown_lines(
                         ),
                         Span::styled(
                             "─".repeat(pane_width.saturating_sub(6 + code_lang.len()).min(16)),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(Color::Rgb(80, 85, 100)),
                         ),
                     ]),
                     raw_is_match,
@@ -2848,10 +2849,10 @@ pub(crate) fn render_markdown_lines(
                 truncate_spans_to_width(highlighted, max_code_width, fallback_style)
             };
 
-            let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
+            let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::Rgb(80, 85, 100)))];
             spans.extend(code_spans);
             if in_turn_cell {
-                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::DarkGray))];
+                let mut bordered = vec![Span::styled(" │ ", Style::default().fg(Color::Rgb(80, 85, 100)))];
                 bordered.extend(spans);
                 all_lines.push(Line::from(bordered));
             } else {
@@ -3063,17 +3064,31 @@ pub(crate) fn render_markdown_lines(
         }
 
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            let mut spans = vec![Span::styled("   • ", Style::default().fg(Color::Cyan))];
-            spans.extend(parse_inline_spans(&trimmed[2..]));
-            push_rendered_line(
-                &mut all_lines,
-                Line::from(spans),
-                raw_is_match,
-                raw_is_current,
-                in_turn_cell,
-                in_code_block,
-            );
+            if !prev_was_empty && !prev_was_list {
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(""),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
+            let prefix = vec![Span::styled("   • ", Style::default().fg(Color::Cyan))];
+            let content = parse_inline_spans(&trimmed[2..]);
+            let wrapped = wrap_line_with_indent(prefix, "     ", content, pane_width);
+            for line in wrapped {
+                push_rendered_line(
+                    &mut all_lines,
+                    line,
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
             prev_was_empty = false;
+            prev_was_list = true;
             raw_line_index += 1;
             continue;
         }
@@ -3083,20 +3098,36 @@ pub(crate) fn render_markdown_lines(
                 let num_str = &trimmed[..dot_pos];
                 let rest = &trimmed[dot_pos + 2..];
                 if !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit()) {
-                    let mut spans = vec![Span::styled(
-                        format!("   {}. ", num_str),
+                    if !prev_was_empty && !prev_was_list {
+                        push_rendered_line(
+                            &mut all_lines,
+                            Line::from(""),
+                            raw_is_match,
+                            raw_is_current,
+                            in_turn_cell,
+                            in_code_block,
+                        );
+                    }
+                    let prefix_str = format!("   {}. ", num_str);
+                    let cont_indent = " ".repeat(prefix_str.len());
+                    let prefix = vec![Span::styled(
+                        prefix_str,
                         Style::default().fg(Color::Cyan),
                     )];
-                    spans.extend(parse_inline_spans(rest));
-                    push_rendered_line(
-                        &mut all_lines,
-                        Line::from(spans),
-                        raw_is_match,
-                        raw_is_current,
-                        in_turn_cell,
-                        in_code_block,
-                    );
+                    let content = parse_inline_spans(rest);
+                    let wrapped = wrap_line_with_indent(prefix, &cont_indent, content, pane_width);
+                    for line in wrapped {
+                        push_rendered_line(
+                            &mut all_lines,
+                            line,
+                            raw_is_match,
+                            raw_is_current,
+                            in_turn_cell,
+                            in_code_block,
+                        );
+                    }
                     prev_was_empty = false;
+                    prev_was_list = true;
                     raw_line_index += 1;
                     continue;
                 }
@@ -3190,14 +3221,26 @@ pub(crate) fn render_markdown_lines(
                 );
                 prev_was_empty = true;
             }
+            prev_was_list = false;
             raw_line_index += 1;
             continue;
         }
 
         turn_has_body |= in_turn_cell;
         // Add ● bullet on the first line of a new paragraph
-        let is_paragraph_start = prev_was_empty;
+        let is_paragraph_start = prev_was_empty || prev_was_list;
+        if prev_was_list && !prev_was_empty {
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(""),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+        }
         prev_was_empty = false;
+        prev_was_list = false;
         push_rendered_line(
             &mut all_lines,
             style_paragraph_line(raw, is_paragraph_start),
@@ -3421,38 +3464,104 @@ fn render_table_block(
 }
 
 /// Style a paragraph line with inline markdown: `code`, **bold**, *italic*.
+/// Pre-wrap a line of styled spans into multiple `Line` objects so that
+/// continuation lines get a hanging indent. The first line uses `first_prefix`,
+/// subsequent lines use `cont_prefix` (same visual width, but spaces).
+fn wrap_line_with_indent(
+    first_prefix: Vec<Span<'static>>,
+    cont_prefix: &str,
+    content: Vec<Span<'static>>,
+    max_width: usize,
+) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthStr;
+
+    let prefix_width: usize = first_prefix
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let avail = max_width.saturating_sub(prefix_width);
+    let total_content_width: usize = content
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+
+    // Everything fits on one line — skip wrapping
+    if total_content_width <= avail || avail == 0 {
+        let mut line = first_prefix;
+        line.extend(content);
+        return vec![Line::from(line)];
+    }
+
+    // Flatten content into a list of (text, style) atoms split on spaces
+    let mut atoms: Vec<(String, Style)> = Vec::new();
+    for span in &content {
+        let text = span.content.as_ref();
+        let style = span.style;
+        let mut start = 0;
+        for (idx, ch) in text.char_indices() {
+            if ch == ' ' {
+                if idx > start {
+                    atoms.push((text[start..idx].to_string(), style));
+                }
+                atoms.push((" ".to_string(), style));
+                start = idx + 1;
+            }
+        }
+        if start < text.len() {
+            atoms.push((text[start..].to_string(), style));
+        }
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut cur_spans: Vec<Span<'static>> = first_prefix;
+    let mut cur_width = prefix_width;
+    let mut is_first = true;
+
+    for (text, style) in atoms {
+        let w = UnicodeWidthStr::width(text.as_str());
+        if cur_width + w > max_width && cur_spans.len() > 1 {
+            // Trim trailing space from current line
+            if let Some(last) = cur_spans.last() {
+                if last.content.as_ref() == " " {
+                    cur_spans.pop();
+                }
+            }
+            lines.push(Line::from(std::mem::take(&mut cur_spans)));
+            is_first = false;
+            cur_spans = vec![Span::styled(
+                cont_prefix.to_string(),
+                Style::default(),
+            )];
+            cur_width = UnicodeWidthStr::width(cont_prefix);
+            // Skip leading space on continuation line
+            if text == " " {
+                continue;
+            }
+        }
+        cur_spans.push(Span::styled(text, style));
+        cur_width += w;
+    }
+    if !cur_spans.is_empty() && (cur_spans.len() > 1 || !is_first) {
+        lines.push(Line::from(cur_spans));
+    }
+
+    // lines always has at least one entry since cur_spans starts non-empty
+    lines
+}
+
 fn style_paragraph_line(raw: &str, is_paragraph_start: bool) -> Line<'static> {
     let prefix = if is_paragraph_start { " ● " } else { "   " };
-    let spans = parse_inline_spans(raw);
-    if spans.len() == 1 {
-        let style = if is_paragraph_start {
-            Style::default().fg(Color::White)
+    let spans = parse_inline_spans(raw.trim());
+    let mut result = vec![Span::styled(
+        prefix.to_string(),
+        if is_paragraph_start {
+            Style::default().fg(Color::Cyan)
         } else {
-            Style::default().fg(Color::White)
-        };
-        Line::from(vec![
-            Span::styled(
-                prefix.to_string(),
-                if is_paragraph_start {
-                    Style::default().fg(Color::Cyan)
-                } else {
-                    Style::default()
-                },
-            ),
-            Span::styled(raw.to_string(), style),
-        ])
-    } else {
-        let mut result = vec![Span::styled(
-            prefix.to_string(),
-            if is_paragraph_start {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default()
-            },
-        )];
-        result.extend(spans);
-        Line::from(result)
-    }
+            Style::default()
+        },
+    )];
+    result.extend(spans);
+    Line::from(result)
 }
 
 fn looks_like_diff_start(raw: &str) -> bool {
@@ -3558,9 +3667,10 @@ fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
         match event {
             Event::Text(text) => spans.push(Span::styled(text.to_string(), state.style())),
             Event::Code(code) => spans.push(Span::styled(
-                code.to_string(),
+                format!(" {} ", code),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Color::Rgb(180, 220, 255))
+                    .bg(Color::Rgb(35, 40, 55))
                     .add_modifier(Modifier::BOLD),
             )),
             Event::SoftBreak | Event::HardBreak => spans.push(Span::raw(" ")),
