@@ -12,9 +12,12 @@
 
 pub mod classifiers;
 pub mod denial_tracker;
+pub mod escape_gates;
 pub mod production_classifiers;
 pub mod rules;
 pub mod shadow_detector;
+
+pub use escape_gates::{DangerousWriteSet, WriteCheck};
 
 use classifiers::*;
 use denial_tracker::DenialTracker;

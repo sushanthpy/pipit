@@ -1,5 +1,6 @@
 pub mod analysis;
 mod bash;
+pub mod bash_security;
 mod edit_file;
 pub mod extended;
 mod glob;

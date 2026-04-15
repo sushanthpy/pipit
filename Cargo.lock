@@ -2894,6 +2894,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3257,6 +3258,7 @@ dependencies = [
 name = "pipit-tools"
 version = "0.3.4"
 dependencies = [
+ "aho-corasick",
  "async-trait",
  "base64 0.22.1",
  "chrono",
@@ -3284,6 +3286,8 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
  "urlencoding",
  "uuid",
 ]
@@ -4867,6 +4871,16 @@ dependencies = [
  "regex",
  "regex-syntax",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-bash"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e5ec769279cc91b561d3df0d8a5deb26b0ad40d183127f409494d6d8fc53062"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

@@ -35,6 +35,7 @@ pipit-agents = { path = "../pipit-agents", optional = true }
 pipit-bridge = { path = "../pipit-bridge", optional = true }
 pipit-voice = { path = "../pipit-voice", optional = true }
 regex = "1"
+sha2 = { workspace = true }
 
 [features]
 default = []

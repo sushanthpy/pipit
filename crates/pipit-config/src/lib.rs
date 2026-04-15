@@ -2,6 +2,7 @@ pub mod credentials;
 pub mod feature_flags;
 pub mod model_routing;
 pub mod provider_roster;
+pub mod settings_hierarchy;
 mod types;
 
 pub use credentials::{

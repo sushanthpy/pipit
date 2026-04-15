@@ -115,6 +115,26 @@ impl Tool for BashTool {
             }
         }
 
+        // ── Layer 1.5: Adversarial semantic analysis (tree-sitter-backed) ──
+        // Catches Zsh escape vectors, EQUALS expansion, IFS injection,
+        // heredoc smuggling, process substitution exfil, obfuscated flags,
+        // bare-repo planting, config writes, and eval/exec abuse.
+        match super::bash_security::analyze_command(command, &ctx.project_root) {
+            super::bash_security::SecurityVerdict::Reject(reason) => {
+                return Err(ToolError::PermissionDenied(reason));
+            }
+            super::bash_security::SecurityVerdict::Review(reason) => {
+                tracing::warn!(command = command, reason = %reason, "bash security: needs review");
+                // In full-auto mode, treat review as reject for safety
+                if ctx.approval_mode == ApprovalMode::FullAuto {
+                    return Err(ToolError::PermissionDenied(format!(
+                        "Blocked (full_auto): {}", reason
+                    )));
+                }
+            }
+            super::bash_security::SecurityVerdict::Safe => {}
+        }
+
         // ── cd interception: persist directory changes across calls ──
         //
         // Each bash call spawns a fresh subprocess, so `cd /foo` doesn't

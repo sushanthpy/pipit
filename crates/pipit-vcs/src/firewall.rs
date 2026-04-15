@@ -152,13 +152,18 @@ impl GitFirewall {
             "core.sshCommand",
             "core.gitProxy",
             "core.pager",
+            "core.editor",
             "diff.external",
             "merge.tool",
             "credential.helper",
             "filter.clean",
             "filter.smudge",
+            "filter.process",
             "receive.denyCurrentBranch",
             "protocol.allow",
+            "protocol.ext.allow",
+            "protocol.file.allow",
+            "url.insteadOf",
         ] {
             self.dangerous_config_keys.insert(key.to_string());
         }
@@ -243,6 +248,48 @@ impl GitFirewall {
                 .any(|t| t.contains("://") || t.starts_with("git@"))
             {
                 threats.push(ThreatClass::SubmoduleInjection);
+            }
+        }
+
+        // Check for ext:: protocol in clone/fetch URLs (RCE vector)
+        if matches!(tokens.get(1).map(|s| *s), Some("clone") | Some("fetch") | Some("pull") | Some("remote")) {
+            for token in &tokens[2..] {
+                if token.starts_with("ext::") {
+                    threats.push(ThreatClass::ConfigInjection);
+                    break;
+                }
+            }
+        }
+
+        // Check for git clone --config with dangerous keys
+        if tokens.get(1) == Some(&"clone") {
+            let mut i = 2;
+            while i < tokens.len() {
+                if tokens[i] == "--config" || tokens[i] == "-c" {
+                    if let Some(next) = tokens.get(i + 1) {
+                        let key = next.split('=').next().unwrap_or("");
+                        if self.dangerous_config_keys.contains(key) {
+                            threats.push(ThreatClass::ConfigInjection);
+                        }
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        // Check for worktree escape (git worktree add to path outside project)
+        if tokens.get(1) == Some(&"worktree") && tokens.get(2) == Some(&"add") {
+            for token in &tokens[3..] {
+                if token.starts_with('-') {
+                    continue;
+                }
+                // Path argument — check if it escapes the project root
+                if token.starts_with('/') || token.contains("..") {
+                    threats.push(ThreatClass::WorktreeEscape);
+                    break;
+                }
             }
         }
 

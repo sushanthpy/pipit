@@ -62,12 +62,29 @@ impl Default for FilesystemPolicy {
         Self {
             allow_write: vec![".".into()],
             deny_read: vec![
-                // NOTE: ~/.ssh is intentionally NOT denied.
-                // Git push via SSH is a core workflow and requires reading
-                // the user's SSH keys. The sandbox still prevents writes to
-                // ~/.ssh and network access is domain-restricted.
+                // NOTE: ~/.ssh is intentionally NOT fully denied.
+                // Git push via SSH requires reading the user's keys.
+                // We only deny private keys specifically.
+                "~/.ssh/id_rsa".into(),
+                "~/.ssh/id_ed25519".into(),
+                "~/.ssh/id_ecdsa".into(),
+                "~/.ssh/id_dsa".into(),
+                // Cloud credentials
                 "~/.aws".into(),
+                "~/.config/gcloud".into(),
+                "~/.azure".into(),
+                // Crypto keys
+                "~/.gnupg".into(),
+                // macOS Keychain
+                "~/Library/Keychains".into(),
+                // Pipit secrets
                 "~/.config/pipit/secrets".into(),
+                // Docker credentials
+                "~/.docker/config.json".into(),
+                // Kubernetes
+                "~/.kube/config".into(),
+                // npm tokens
+                "~/.npmrc".into(),
             ],
             read_only_system: true,
         }

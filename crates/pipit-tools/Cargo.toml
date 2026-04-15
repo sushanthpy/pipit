@@ -31,6 +31,9 @@ urlencoding = "2"
 libc = "0.2"
 base64 = { workspace = true }
 once_cell = "1"
+tree-sitter = { workspace = true }
+tree-sitter-bash = { workspace = true }
+aho-corasick = { workspace = true }
 pipit-memory = { path = "../pipit-memory", optional = true }
 pipit-agents = { path = "../pipit-agents", optional = true }
 
