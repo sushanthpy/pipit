@@ -289,7 +289,14 @@ pub fn build_composed_prompt_v2(
         provider_hint: provider_hint_text(inputs.provider).map(String::from),
         project_instructions,
         conventions,
-        skills_section: Some(inputs.skills.prompt_section()),
+        skills_section: Some({
+            // Use 1% of context window for skill listing budget (4 chars ≈ 1 token)
+            let budget_chars = inputs
+                .context_window
+                .map(|cw| (cw as usize / 100) * 4) // 1% of tokens × 4 chars/token
+                .unwrap_or(3200);
+            inputs.skills.prompt_section_with_budget(budget_chars.max(800))
+        }),
         workflow_section: Some(inputs.workflow_assets.prompt_section()),
         knowledge_section,
         memory_section: None,

@@ -344,6 +344,11 @@ impl AgentLoop {
         self.memory_store = Some(store);
     }
 
+    /// Get the session ID for this agent instance.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// Set the cached ArchitectureIR for this session.
     /// Called once after `build_composed_prompt_v2` synthesizes the IR.
     pub fn set_architecture_ir(&mut self, ir: Option<crate::domain_architect::ArchitectureIR>) {

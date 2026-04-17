@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use pipit_rules::{RuleLoader, RuleRegistry};
+
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowAssets {
     pub skill_dirs: Vec<PathBuf>,
@@ -177,6 +179,20 @@ impl WorkflowAssets {
         rules
     }
 
+    /// Load all rules into a typed `RuleRegistry` with full metadata.
+    /// Each rule carries its kind (Mandate/Procedure/Preference/Invariant),
+    /// implementation tier, trust tier, capability scope, and content-addressed ID.
+    pub fn load_rules_typed(&self) -> RuleRegistry {
+        let loader = RuleLoader::new(self.rule_dirs.clone());
+        match loader.load() {
+            Ok(registry) => registry,
+            Err(e) => {
+                tracing::warn!("Failed to load typed rules: {}", e);
+                RuleRegistry::new()
+            }
+        }
+    }
+
     pub fn ui_summary(
         &self,
         skill_count: usize,
@@ -265,22 +281,18 @@ impl WorkflowAssets {
         const MAX_INSTRUCTION_BYTES: usize = 32_000; // ~8K tokens
         const MAX_SINGLE_FILE_BYTES: usize = 12_000; // ~3K tokens per file
 
-        // Rules injection (highest priority — project conventions)
-        let rules = self.load_rules();
-        if !rules.is_empty() {
+        // Rules injection — use typed rules with budget-aware rendering.
+        let registry = self.load_rules_typed();
+        if registry.active_count() > 0 {
+            let (rules_text, mode, included, truncated) =
+                pipit_rules::budget::render_within_budget(&registry, MAX_RULES_BYTES);
             section.push_str("\n## Project Rules\n");
-            if rules.len() > MAX_RULES_BYTES {
-                // Truncate with notice
-                let safe_end = rules[..MAX_RULES_BYTES]
-                    .rfind('\n')
-                    .unwrap_or(MAX_RULES_BYTES);
-                section.push_str(&rules[..safe_end]);
+            section.push_str(&rules_text);
+            if truncated > 0 {
                 section.push_str(&format!(
-                    "\n\n*({} more bytes of rules truncated — use /rules or read rules/ directory for full content)*\n",
-                    rules.len() - safe_end
+                    "\n\n*({} rules truncated, {} included, mode: {:?} — use /rules for full content)*\n",
+                    truncated, included, mode
                 ));
-            } else {
-                section.push_str(&rules);
             }
             section.push('\n');
         }

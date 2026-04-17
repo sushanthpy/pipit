@@ -1,14 +1,19 @@
 [package]
-name = "pipit-skills"
+name = "pipit-rules"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pipit-core = { path = "../pipit-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
-ignore = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-toml = { workspace = true }
+sha2 = { workspace = true }
+notify = { workspace = true }
 chrono = { workspace = true }
+globset = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

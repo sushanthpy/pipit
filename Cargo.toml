@@ -37,10 +37,11 @@ members = [
     "crates/pipit-voice",
     "crates/pipit-permissions",
     "crates/pipit-memory",
+    "crates/pipit-rules",
 ]
 
 [workspace.package]
-version = "0.3.6"
+version = "0.3.7"
 edition = "2024"
 license = "MIT"
 rust-version = "1.94"
@@ -155,7 +156,7 @@ proptest = "1"
 # Gap-fill dependencies
 regex = "1"
 dirs = "5"
-serde_yaml_ng = "0.2"
+serde_yaml_ng = "0.10"
 base64 = "0.22"
 
 [profile.release]

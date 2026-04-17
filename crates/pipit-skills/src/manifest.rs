@@ -276,11 +276,10 @@ impl SkillPackage {
         let (manifest, source) = if toml_path.exists() {
             let content = std::fs::read_to_string(&toml_path)?;
             let manifest: SkillManifest = toml::from_str(&content).map_err(|e| {
-                crate::SkillError::FrontmatterParse(format!(
-                    "Skill.toml parse error in {}: {}",
-                    toml_path.display(),
-                    e
-                ))
+                crate::SkillError::FrontmatterParse {
+                    path: toml_path.clone(),
+                    detail: format!("Skill.toml parse error: {}", e),
+                }
             })?;
             (manifest, ManifestSource::Explicit)
         } else {

@@ -219,6 +219,35 @@ pub enum SessionEvent {
         /// Serialized message state (compact).
         state_hash: u64,
     },
+
+    // ── Rules (Task #4: rule activations as ledger events) ──
+    RuleActivated {
+        rule_id: String,
+        content_hash: String,
+        scope: String,
+        capabilities: u32,
+        turn: u32,
+    },
+    RuleDeactivated {
+        rule_id: String,
+        reason: String,
+        turn: u32,
+    },
+    RuleConflictResolved {
+        rule_a: String,
+        rule_b: String,
+        winner: String,
+        reasoning: String,
+    },
+    RuleRejected {
+        rule_path: String,
+        reason: String,
+    },
+    RuleDisabledForBranch {
+        rule_id: String,
+        branch_id: String,
+        reason: String,
+    },
 }
 
 // ─── Ledger ─────────────────────────────────────────────────────────────
@@ -652,6 +681,15 @@ impl SessionState {
             // ── Snapshots ──
             SessionEvent::Snapshot { .. } => {
                 // Snapshots are metadata; don't change state
+            }
+
+            // ── Rules ──
+            SessionEvent::RuleActivated { .. }
+            | SessionEvent::RuleDeactivated { .. }
+            | SessionEvent::RuleConflictResolved { .. }
+            | SessionEvent::RuleRejected { .. }
+            | SessionEvent::RuleDisabledForBranch { .. } => {
+                // Rule events are audit-only; state is managed by RuleRegistry.
             }
         }
     }

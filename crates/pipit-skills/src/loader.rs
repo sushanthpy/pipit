@@ -1,5 +1,5 @@
 use crate::frontmatter::SkillMetadata;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Tier 2 — loaded on demand. Full skill instructions + references.
 #[derive(Debug, Clone)]
@@ -11,8 +11,34 @@ pub struct LoadedSkill {
 
 impl LoadedSkill {
     /// Format the skill body as a message to inject into the conversation.
-    pub fn as_injection(&self, user_args: &str) -> String {
-        let expanded = crate::discovery::SkillRegistry::expand_arguments(&self.body, user_args);
+    /// Expands `$ARGUMENTS`, `${ARGUMENTS}`, `${PIPIT_SKILL_DIR}`, and `${PIPIT_SESSION_ID}`.
+    /// Path separators are normalized to `/` on all platforms so downstream consumers
+    /// don't encounter unintended escape sequences.
+    pub fn as_injection(&self, user_args: &str, session_id: Option<&str>) -> String {
+        let skill_dir = if self.metadata.path.is_dir() {
+            self.metadata.path.display().to_string()
+        } else {
+            self.metadata
+                .path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .display()
+                .to_string()
+        };
+
+        // Normalize path separators for Windows compatibility
+        let skill_dir_normalized = skill_dir.replace('\\', "/");
+
+        let mut expanded = self
+            .body
+            .replace("$ARGUMENTS", user_args)
+            .replace("${ARGUMENTS}", user_args)
+            .replace("${PIPIT_SKILL_DIR}", &skill_dir_normalized);
+
+        if let Some(sid) = session_id {
+            expanded = expanded.replace("${PIPIT_SESSION_ID}", sid);
+        }
+
         format!(
             "[Skill: {}]\n{}\n\nUser request: {}",
             self.metadata.name, expanded, user_args

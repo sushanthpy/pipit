@@ -25,7 +25,7 @@ use pipit_intelligence::RepoMap;
 use pipit_io::input::{SlashCommand, UserInput, classify_input, read_input};
 use pipit_io::{InteractiveApprovalHandler, PipitUi, StatusBarState};
 use pipit_provider::LlmProvider;
-use pipit_skills::SkillRegistry;
+use pipit_skills::{ConditionalRegistry, SkillRegistry};
 use pipit_tools::ToolRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1121,8 +1121,18 @@ async fn main() -> Result<()> {
     // Discover skills (#21: progressive disclosure)
     let skill_paths: Vec<PathBuf> = workflow_assets.skill_search_paths();
     let mut skills = SkillRegistry::discover(&skill_paths);
-    if skills.count() > 0 {
-        tracing::info!("Skills: {} discovered", skills.count());
+
+    // Separate conditional skills (those with `paths:` patterns) from always-active ones.
+    // Conditional skills activate on file-touch during the session.
+    let conditional_skills = skills.drain_conditional();
+    let mut conditional_registry = ConditionalRegistry::new(conditional_skills);
+
+    if skills.count() > 0 || conditional_registry.total_count() > 0 {
+        tracing::info!(
+            "Skills: {} active, {} conditional",
+            skills.count(),
+            conditional_registry.total_count()
+        );
     }
 
     dbg_log(&format!(
@@ -3491,7 +3501,11 @@ async fn main() -> Result<()> {
                             usage.total, usage.limit, pct
                         );
                         eprintln!("  \x1b[90mCost:        \x1b[0m${:.4}", usage.cost);
-                        eprintln!("  \x1b[90mSkills:      \x1b[0m{}", skills.count());
+                        eprintln!(
+                            "  \x1b[90mSkills:      \x1b[0m{} active, {} conditional",
+                            skills.count(),
+                            conditional_registry.total_count()
+                        );
                         eprintln!(
                             "  \x1b[90mHooks:       \x1b[0m{}",
                             workflow_assets.hook_files.len()
@@ -3503,13 +3517,22 @@ async fn main() -> Result<()> {
                         eprintln!();
                         eprintln!("  \x1b[1;33mSkills\x1b[0m");
                         eprintln!();
-                        if skills.count() == 0 {
+                        if skills.count() == 0 && conditional_registry.total_count() == 0 {
                             eprintln!(
                                 "  \x1b[90mNo skills found. Add .pipit/skills/<name>/SKILL.md\x1b[0m"
                             );
                         } else {
                             for name in skills.list() {
                                 eprintln!("  \x1b[36m/{}\x1b[0m", name);
+                            }
+                            for (name, _) in conditional_registry.active_skills() {
+                                eprintln!("  \x1b[36m/{}\x1b[0m \x1b[90m(conditional, active)\x1b[0m", name);
+                            }
+                            if conditional_registry.dormant_count() > 0 {
+                                eprintln!(
+                                    "  \x1b[90m({} conditional skills dormant — activate by touching matching files)\x1b[0m",
+                                    conditional_registry.dormant_count()
+                                );
                             }
                         }
                         eprintln!();
@@ -3571,14 +3594,17 @@ async fn main() -> Result<()> {
                         if skills.has_skill(&cmd) {
                             match skills.load(&cmd) {
                                 Ok(skill) => {
-                                    let injection = skill.as_injection(args);
+                                    let sid = agent.session_id().to_string();
+                                    let injection = skill.as_injection(args, Some(&sid));
                                     let cancel = CancellationToken::new();
                                     let outcome = agent.run(injection, cancel).await;
+                                    let modified = extract_modified_files(&outcome);
                                     if let Some(rb) =
                                         handle_agent_outcome(&project_root, &mut agent, outcome)
                                     {
                                         last_rollback = Some(rb);
                                     }
+                                    activate_conditional_skills(&modified, &mut conditional_registry, &project_root);
                                 }
                                 Err(e) => {
                                     eprintln!("\x1b[31mFailed to load skill: {}\x1b[0m", e);
@@ -3783,9 +3809,11 @@ async fn main() -> Result<()> {
                 });
                 let outcome = agent.run(prompt, cancel).await;
                 ctrlc_handle.abort();
+                let modified = extract_modified_files(&outcome);
                 if let Some(rb) = handle_agent_outcome(&project_root, &mut agent, outcome) {
                     last_rollback = Some(rb);
                 }
+                activate_conditional_skills(&modified, &mut conditional_registry, &project_root);
                 println!();
             }
         }
@@ -3795,6 +3823,36 @@ async fn main() -> Result<()> {
     let _ = extensions_for_lifecycle.on_session_end().await;
 
     Ok(())
+}
+
+/// Extract modified file paths from a completed agent outcome.
+fn extract_modified_files(outcome: &AgentOutcome) -> Vec<String> {
+    match outcome {
+        AgentOutcome::Completed { proof, .. } => {
+            proof.realized_edits.iter().map(|e| e.path.clone()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Activate conditional skills based on files modified by the last agent run.
+fn activate_conditional_skills(
+    modified_files: &[String],
+    conditional_registry: &mut ConditionalRegistry,
+    cwd: &std::path::Path,
+) {
+    if modified_files.is_empty() || conditional_registry.dormant_count() == 0 {
+        return;
+    }
+    let paths: Vec<&std::path::Path> = modified_files
+        .iter()
+        .map(|s| std::path::Path::new(s.as_str()))
+        .collect();
+    let activated = conditional_registry.activate_for_paths(&paths, cwd);
+    for name in &activated {
+        eprintln!("\x1b[36m  ⚡ Activated skill: {}\x1b[0m", name);
+        tracing::info!("Conditional skill '{}' activated by file touch", name);
+    }
 }
 
 /// Handle the outcome of an agent run — persist proofs, print summaries, show errors.
