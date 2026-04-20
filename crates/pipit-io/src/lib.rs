@@ -6,6 +6,7 @@ pub mod components;
 pub mod composer;
 pub mod editor_integration;
 pub mod input;
+pub mod math;
 pub mod render;
 pub mod render_engine;
 pub mod spinner_verbs;

@@ -2939,6 +2939,39 @@ pub(crate) fn render_markdown_lines(
             turn_has_body = true;
         }
 
+        if trimmed.starts_with("#### ") {
+            if !prev_was_empty {
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(""),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
+            let heading_style = Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+            let mut heading_spans = vec![Span::styled("   ", Style::default())];
+            heading_spans.extend(
+                parse_inline_spans(trimmed.trim_start_matches("#### "))
+                    .into_iter()
+                    .map(|s| Span::styled(s.content, heading_style.patch(s.style))),
+            );
+            push_rendered_line(
+                &mut all_lines,
+                Line::from(heading_spans),
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+            prev_was_empty = false;
+            raw_line_index += 1;
+            continue;
+        }
+
         if trimmed.starts_with("### ") {
             if !prev_was_empty {
                 push_rendered_line(
@@ -2950,22 +2983,25 @@ pub(crate) fn render_markdown_lines(
                     in_code_block,
                 );
             }
-            push_rendered_line(
-                &mut all_lines,
-                Line::from(vec![
-                    Span::styled("   ", Style::default()),
-                    Span::styled(
-                        trimmed.trim_start_matches("### ").to_string(),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                raw_is_match,
-                raw_is_current,
-                in_turn_cell,
-                in_code_block,
-            );
+            {
+                let heading_style = Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD);
+                let mut heading_spans = vec![Span::styled("   ", Style::default())];
+                heading_spans.extend(
+                    parse_inline_spans(trimmed.trim_start_matches("### "))
+                        .into_iter()
+                        .map(|s| Span::styled(s.content, heading_style.patch(s.style))),
+                );
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(heading_spans),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
             push_rendered_line(
                 &mut all_lines,
                 Line::from(""),
@@ -2990,22 +3026,26 @@ pub(crate) fn render_markdown_lines(
                     in_code_block,
                 );
             }
-            push_rendered_line(
-                &mut all_lines,
-                Line::from(vec![
-                    Span::styled(" ◆ ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        trimmed.trim_start_matches("## ").to_string(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                raw_is_match,
-                raw_is_current,
-                in_turn_cell,
-                in_code_block,
-            );
+            {
+                let heading_style = Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD);
+                let mut heading_spans =
+                    vec![Span::styled(" ◆ ", Style::default().fg(Color::Blue))];
+                heading_spans.extend(
+                    parse_inline_spans(trimmed.trim_start_matches("## "))
+                        .into_iter()
+                        .map(|s| Span::styled(s.content, heading_style.patch(s.style))),
+                );
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(heading_spans),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
             push_rendered_line(
                 &mut all_lines,
                 Line::from(""),
@@ -3031,25 +3071,33 @@ pub(crate) fn render_markdown_lines(
                     in_code_block,
                 );
             }
-            push_rendered_line(
-                &mut all_lines,
-                Line::from(vec![
-                    Span::styled(
-                        format!(" ━━ {} ", heading),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "━".repeat(pane_width.saturating_sub(heading.len() + 6).min(20)),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]),
-                raw_is_match,
-                raw_is_current,
-                in_turn_cell,
-                in_code_block,
-            );
+            {
+                let heading_style = Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD);
+                let mut heading_spans = vec![Span::styled(
+                    " ━━ ",
+                    heading_style,
+                )];
+                heading_spans.extend(
+                    parse_inline_spans(heading)
+                        .into_iter()
+                        .map(|s| Span::styled(s.content, heading_style.patch(s.style))),
+                );
+                heading_spans.push(Span::styled(" ", heading_style));
+                heading_spans.push(Span::styled(
+                    "━".repeat(pane_width.saturating_sub(heading.len() + 6).min(20)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                push_rendered_line(
+                    &mut all_lines,
+                    Line::from(heading_spans),
+                    raw_is_match,
+                    raw_is_current,
+                    in_turn_cell,
+                    in_code_block,
+                );
+            }
             push_rendered_line(
                 &mut all_lines,
                 Line::from(""),
@@ -3063,7 +3111,7 @@ pub(crate) fn render_markdown_lines(
             continue;
         }
 
-        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
             if !prev_was_empty && !prev_was_list {
                 push_rendered_line(
                     &mut all_lines,
@@ -3074,8 +3122,31 @@ pub(crate) fn render_markdown_lines(
                     in_code_block,
                 );
             }
-            let prefix = vec![Span::styled("   • ", Style::default().fg(Color::Cyan))];
-            let content = parse_inline_spans(&trimmed[2..]);
+            // Detect task list: `- [ ] ...`, `- [x] ...`, `- [X] ...`.
+            let body = &trimmed[2..];
+            let (prefix, content_text): (Vec<Span<'static>>, &str) = if body.starts_with("[ ] ") {
+                (
+                    vec![
+                        Span::styled("   ", Style::default()),
+                        Span::styled("☐ ", Style::default().fg(Color::DarkGray)),
+                    ],
+                    &body[4..],
+                )
+            } else if body.starts_with("[x] ") || body.starts_with("[X] ") {
+                (
+                    vec![
+                        Span::styled("   ", Style::default()),
+                        Span::styled("☑ ", Style::default().fg(Color::Green)),
+                    ],
+                    &body[4..],
+                )
+            } else {
+                (
+                    vec![Span::styled("   • ", Style::default().fg(Color::Cyan))],
+                    body,
+                )
+            };
+            let content = parse_inline_spans(content_text);
             let wrapped = wrap_line_with_indent(prefix, "     ", content, pane_width);
             for line in wrapped {
                 push_rendered_line(
@@ -3241,14 +3312,17 @@ pub(crate) fn render_markdown_lines(
         }
         prev_was_empty = false;
         prev_was_list = false;
-        push_rendered_line(
-            &mut all_lines,
-            style_paragraph_line(raw, is_paragraph_start),
-            raw_is_match,
-            raw_is_current,
-            in_turn_cell,
-            in_code_block,
-        );
+        let para_lines = style_paragraph_lines(raw, is_paragraph_start, pane_width);
+        for line in para_lines {
+            push_rendered_line(
+                &mut all_lines,
+                line,
+                raw_is_match,
+                raw_is_current,
+                in_turn_cell,
+                in_code_block,
+            );
+        }
         raw_line_index += 1;
     }
 
@@ -3390,68 +3464,63 @@ fn render_table_block(
 ) -> Vec<Line<'static>> {
     let parsed_rows: Vec<Vec<String>> = rows.iter().map(|row| parse_table_cells(row)).collect();
     let col_count = parsed_rows.iter().map(Vec::len).max().unwrap_or(0);
-    let mut widths = vec![0usize; col_count];
+    if col_count == 0 {
+        return Vec::new();
+    }
 
+    // Compute natural (unconstrained) column widths from all non-separator rows.
+    let mut natural_widths = vec![0usize; col_count];
     for (row, parsed) in rows.iter().zip(parsed_rows.iter()) {
         if is_table_separator_row(row) {
             continue;
         }
         for (idx, cell) in parsed.iter().enumerate() {
-            widths[idx] = widths[idx].max(unicode_width::UnicodeWidthStr::width(cell.as_str()));
+            if idx < col_count {
+                natural_widths[idx] =
+                    natural_widths[idx].max(unicode_width::UnicodeWidthStr::width(cell.as_str()));
+            }
         }
     }
 
-    let separator_width = if col_count > 1 { (col_count - 1) * 3 } else { 0 };
-    let available = pane_width.saturating_sub(3 + separator_width);
-    let total_width: usize = widths.iter().sum();
-    if total_width > available && total_width > 0 {
-        let scale = available as f64 / total_width as f64;
-        for width in &mut widths {
-            *width = ((*width as f64 * scale).floor() as usize).max(1);
-        }
+    // Indent (3) + borders: "│ " + cells separated by " │ " + " │"
+    //   total overhead = 2 (left "│ ") + (col_count - 1) * 3 (" │ ") + 2 (right " │")
+    let border_overhead = 2 + col_count.saturating_sub(1) * 3 + 2;
+    let available = pane_width.saturating_sub(3 + border_overhead);
+
+    // Fair-share column allocation: give each column at least min(natural, 6),
+    // then distribute remaining space proportionally to each column's excess.
+    let widths = fair_share_widths(&natural_widths, col_count, available);
+    let was_truncated = widths
+        .iter()
+        .zip(&natural_widths)
+        .any(|(a, n)| *a < *n);
+
+    let border_style = Style::default().fg(Color::Rgb(80, 85, 100));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Render top border if the first row is a header (standard markdown tables).
+    // We treat the first non-separator row as the header. If the second row is
+    // a separator row, insert a top border above the header and a middle
+    // separator after it. Otherwise render a simpler grid with only borders
+    // above/below content.
+    let header_row_idx = rows
+        .iter()
+        .position(|r| !is_table_separator_row(r));
+    let has_separator = rows.iter().skip(1).any(|r| is_table_separator_row(r));
+
+    if header_row_idx.is_some() && has_separator {
+        lines.push(table_border_line('┌', '┬', '┐', &widths, border_style));
     }
 
-    let mut lines = Vec::new();
     for (offset, (row, parsed)) in rows.iter().zip(parsed_rows.iter()).enumerate() {
         let line_idx = start_index + offset;
         let is_match = content_matches.contains(&line_idx);
         let is_current = content_active_match == Some(line_idx);
 
         let mut line = if is_table_separator_row(row) {
-            let mut spans = vec![Span::styled("   ", Style::default())];
-            for (idx, width) in widths.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(Span::styled("─┼─", Style::default().fg(Color::DarkGray)));
-                }
-                spans.push(Span::styled(
-                    "─".repeat((*width).max(1)),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-            Line::from(spans)
+            table_border_line('├', '┼', '┤', &widths, border_style)
         } else {
-            let mut spans = vec![Span::styled("   ", Style::default())];
-            for (idx, width) in widths.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-                }
-                let cell = parsed.get(idx).map(String::as_str).unwrap_or("");
-                let mut cell_spans = truncate_spans_to_width(
-                    parse_inline_spans(cell),
-                    (*width).max(1),
-                    Style::default().fg(Color::White),
-                );
-                let rendered_width: usize = cell_spans
-                    .iter()
-                    .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
-                    .sum();
-                spans.append(&mut cell_spans);
-                let padding = width.saturating_sub(rendered_width);
-                if padding > 0 {
-                    spans.push(Span::raw(" ".repeat(padding)));
-                }
-            }
-            Line::from(spans)
+            render_table_cell_row(parsed, &widths, border_style)
         };
 
         if is_match {
@@ -3460,7 +3529,114 @@ fn render_table_block(
         lines.push(line);
     }
 
+    if header_row_idx.is_some() && has_separator {
+        lines.push(table_border_line('└', '┴', '┘', &widths, border_style));
+    }
+
+    if was_truncated {
+        lines.push(Line::from(vec![
+            Span::styled("   ", Style::default()),
+            Span::styled(
+                "[ columns truncated to fit width ]".to_string(),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+
     lines
+}
+
+/// Fair-share column width allocation: each column gets at least its natural
+/// width (if total fits), else a minimum of 1–6 chars plus a proportional share
+/// of remaining space based on excess over minimum.
+fn fair_share_widths(natural_widths: &[usize], col_count: usize, target: usize) -> Vec<usize> {
+    let naturals: Vec<usize> = (0..col_count)
+        .map(|i| natural_widths.get(i).copied().unwrap_or(1).max(1))
+        .collect();
+
+    let total_natural: usize = naturals.iter().sum();
+    if total_natural <= target {
+        return naturals;
+    }
+
+    // Minimum width per column: at most 6 chars, at least 1, capped by natural.
+    let mins: Vec<usize> = naturals.iter().map(|&n| n.clamp(1, 6)).collect();
+    let total_min: usize = mins.iter().sum();
+
+    if total_min >= target {
+        // Even minimums don't fit — give each column an equal-ish share.
+        let per_col = (target / col_count).max(1);
+        return mins.iter().map(|&m| m.min(per_col).max(1)).collect();
+    }
+
+    let remaining = target - total_min;
+    let total_excess: usize = naturals.iter().zip(&mins).map(|(&n, &m)| n.saturating_sub(m)).sum();
+
+    let mut widths = mins.clone();
+    if total_excess > 0 {
+        for (i, (&natural, &min)) in naturals.iter().zip(&mins).enumerate() {
+            let excess = natural.saturating_sub(min);
+            let extra = (excess * remaining) / total_excess;
+            widths[i] = (min + extra).min(natural);
+        }
+    }
+    widths
+}
+
+fn table_border_line(
+    left: char,
+    mid: char,
+    right: char,
+    widths: &[usize],
+    style: Style,
+) -> Line<'static> {
+    let mut s = String::new();
+    s.push_str("   ");
+    s.push(left);
+    for (i, w) in widths.iter().enumerate() {
+        if i > 0 {
+            s.push(mid);
+        }
+        for _ in 0..(*w + 2) {
+            s.push('─');
+        }
+    }
+    s.push(right);
+    Line::from(Span::styled(s, style))
+}
+
+fn render_table_cell_row(
+    parsed: &[String],
+    widths: &[usize],
+    border_style: Style,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(widths.len() * 4 + 2);
+    spans.push(Span::styled("   ", Style::default()));
+    spans.push(Span::styled("│ ", border_style));
+
+    for (idx, width) in widths.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(" │ ", border_style));
+        }
+        let cell = parsed.get(idx).map(String::as_str).unwrap_or("");
+        let mut cell_spans = truncate_spans_to_width(
+            parse_inline_spans(cell),
+            (*width).max(1),
+            Style::default().fg(Color::DarkGray),
+        );
+        let rendered_width: usize = cell_spans
+            .iter()
+            .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+            .sum();
+        spans.append(&mut cell_spans);
+        let padding = width.saturating_sub(rendered_width);
+        if padding > 0 {
+            spans.push(Span::raw(" ".repeat(padding)));
+        }
+    }
+
+    spans.push(Span::styled(" │", border_style));
+    Line::from(spans)
 }
 
 /// Style a paragraph line with inline markdown: `code`, **bold**, *italic*.
@@ -3549,19 +3725,14 @@ fn wrap_line_with_indent(
     lines
 }
 
-fn style_paragraph_line(raw: &str, is_paragraph_start: bool) -> Line<'static> {
-    let prefix = if is_paragraph_start { " ● " } else { "   " };
+fn style_paragraph_lines(raw: &str, is_paragraph_start: bool, pane_width: usize) -> Vec<Line<'static>> {
+    let prefix = if is_paragraph_start {
+        vec![Span::styled(" ● ", Style::default().fg(Color::Cyan))]
+    } else {
+        vec![Span::styled("   ", Style::default())]
+    };
     let spans = parse_inline_spans(raw.trim());
-    let mut result = vec![Span::styled(
-        prefix.to_string(),
-        if is_paragraph_start {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        },
-    )];
-    result.extend(spans);
-    Line::from(result)
+    wrap_line_with_indent(prefix, "   ", spans, pane_width)
 }
 
 fn looks_like_diff_start(raw: &str) -> bool {
@@ -3690,8 +3861,24 @@ fn parse_inline_spans(text: &str) -> Vec<Span<'static>> {
                 TagEnd::Link => state.link_depth = state.link_depth.saturating_sub(1),
                 _ => {}
             },
-            Event::InlineMath(math) | Event::DisplayMath(math) => {
-                spans.push(Span::styled(math.to_string(), state.style()))
+            Event::InlineMath(math) => {
+                // LaTeX → Unicode for inline math.
+                let rendered = crate::math::latex_to_unicode(&math);
+                spans.push(Span::styled(
+                    rendered,
+                    state.style().add_modifier(Modifier::ITALIC),
+                ))
+            }
+            Event::DisplayMath(math) => {
+                // Display math — render bracketed.
+                let rendered = crate::math::latex_to_unicode(&math);
+                spans.push(Span::styled(
+                    format!("⟨ {} ⟩", rendered),
+                    state
+                        .style()
+                        .fg(Color::Rgb(180, 200, 255))
+                        .add_modifier(Modifier::ITALIC),
+                ))
             }
             Event::Html(html) | Event::InlineHtml(html) => {
                 spans.push(Span::styled(html.to_string(), state.style()))
