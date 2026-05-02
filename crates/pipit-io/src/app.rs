@@ -213,6 +213,8 @@ pub enum Overlay {
     None,
     Help,
     Search,
+    /// Settings/config overlay (inspired by clawdesk-tui's settings modal).
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +254,8 @@ pub struct ActivityLine {
     pub icon: String,
     pub color: Color,
     pub text: String,
+    /// When this activity was recorded.
+    pub timestamp: std::time::Instant,
 }
 
 /// Maximum content lines retained. Beyond this, oldest lines are evicted.
@@ -362,6 +366,18 @@ pub struct TuiState {
     pub kill_active_subagents_requested: bool,
     /// Tmux bridge state for the Agents tab.
     pub tmux_state: TmuxBridgeState,
+
+    // ── Animation state ──────────────────────────────────────────────
+    /// Shimmer engine for spinner label text.
+    pub shimmer: crate::animation::ShimmerEngine,
+    /// Stalled-stream detector: fades spinner toward red when LLM goes quiet.
+    pub stalled: crate::animation::StalledDetector,
+    /// Phase-aware rotating spinner verbs (replaces static "thinking…").
+    pub spinner_verbs: crate::spinner_verbs::SpinnerVerbs,
+    /// Accessibility / reduced-motion configuration.
+    pub accessibility: crate::animation::AccessibilityMode,
+    /// Slide-in progress for the current overlay (0.0 = offscreen, 1.0 = final).
+    pub overlay_slide: f32,
 }
 
 /// Prominent completion indicator shown after the agent finishes.
@@ -419,6 +435,11 @@ impl TuiState {
             subagent_runs: Vec::new(),
             kill_active_subagents_requested: false,
             tmux_state: TmuxBridgeState::default(),
+            shimmer: crate::animation::ShimmerEngine::default(),
+            stalled: crate::animation::StalledDetector::default(),
+            spinner_verbs: crate::spinner_verbs::SpinnerVerbs::default(),
+            accessibility: crate::animation::AccessibilityMode::detect(),
+            overlay_slide: 0.0,
         }
     }
 
@@ -435,6 +456,24 @@ impl TuiState {
         if self.working_since.is_none() {
             self.working_since = Some(std::time::Instant::now());
         }
+
+        // Drive animation state
+        self.stalled.reset();
+        // Map phase label to AgentPhase
+        let phase = match self.phase_label.to_lowercase().as_str() {
+            s if s.contains("plan") => crate::spinner_verbs::AgentPhase::Plan,
+            s if s.contains("verif") || s.contains("check") => {
+                crate::spinner_verbs::AgentPhase::Verify
+            }
+            s if s.contains("repair") || s.contains("fix") => {
+                crate::spinner_verbs::AgentPhase::Repair
+            }
+            s if s.contains("execut") || s.contains("run") || s.contains("tool") => {
+                crate::spinner_verbs::AgentPhase::Execute
+            }
+            _ => crate::spinner_verbs::AgentPhase::Execute,
+        };
+        self.spinner_verbs.set_phase(phase);
     }
 
     /// Finish working — commit the streaming text to the content pane.
@@ -458,8 +497,38 @@ impl TuiState {
         self.is_thinking = false;
         self.working_label.clear();
         self.working_since = None;
+        self.stalled.reset();
+        self.spinner_verbs
+            .set_phase(crate::spinner_verbs::AgentPhase::Idle);
         self.evict_if_needed();
         self.auto_scroll_content();
+    }
+
+    /// Advance all animation clocks. Called once per draw cycle.
+    pub fn tick_animations(&mut self) {
+        self.spinner_verbs.tick();
+
+        // Advance overlay slide-in/out toward target
+        let target = if self.overlay != Overlay::None {
+            1.0
+        } else {
+            0.0
+        };
+        let delta = 0.15; // ~6-7 frames to reach target at 60fps
+        if (self.overlay_slide - target).abs() > 0.01 {
+            if self.overlay_slide < target {
+                self.overlay_slide = (self.overlay_slide + delta).min(1.0);
+            } else {
+                self.overlay_slide = (self.overlay_slide - delta).max(0.0);
+            }
+        } else {
+            self.overlay_slide = target;
+        }
+    }
+
+    /// Record incoming tokens for stalled-stream detection.
+    pub fn record_stream_tokens(&mut self, count: u64) {
+        self.stalled.record_tokens(count);
     }
 
     /// Flush any in-flight streaming text to content_lines.
@@ -503,6 +572,7 @@ impl TuiState {
             icon: icon.to_string(),
             color,
             text: text.clone(),
+            timestamp: std::time::Instant::now(),
         });
         if self.activity_lines.len() > MAX_ACTIVITY_LINES {
             self.activity_lines.drain(..ACTIVITY_EVICT_BATCH);
@@ -834,6 +904,37 @@ impl TuiState {
         self.tag_buffer.clear();
     }
 
+    /// Inject the user's prompt into the content stream as a chat bubble.
+    /// Call this after setting `task_label` and before the agent responds.
+    pub fn inject_user_prompt(&mut self, prompt: &str) {
+        // Separator from previous content
+        if !self.content_lines.is_empty() {
+            if self
+                .content_lines
+                .last()
+                .is_some_and(|l| !l.is_empty())
+            {
+                self.content_lines.push(String::new());
+            }
+            self.content_lines.push("---".to_string());
+            self.content_lines.push(String::new());
+        }
+
+        // User prompt as a blockquote-style bubble
+        for line in prompt.lines() {
+            self.content_lines.push(format!("> {}", line));
+        }
+        if prompt.lines().count() == 0 {
+            self.content_lines.push("> ".to_string());
+        }
+        self.content_lines.push(String::new());
+
+        // Update turn start so discard_current_turn_content preserves the prompt
+        self.current_turn_content_start = self.content_lines.len();
+        self.pending_turn_separator = false;
+        self.invalidate_content_cache();
+    }
+
     /// Ensure the current turn starts with a markdown separator when needed.
     pub fn ensure_turn_separator(&mut self) {
         if !self.pending_turn_separator {
@@ -992,8 +1093,23 @@ pub fn draw(frame: &mut Frame, state: &TuiState) {
 
     match state.overlay {
         Overlay::None => {}
-        Overlay::Help => draw_help_overlay(frame, area, state),
+        Overlay::Help => {
+            // Dim background behind overlay
+            if state.overlay_slide > 0.01 {
+                let fade = crate::components::effects::FadeTransition::fade_in(state.overlay_slide);
+                fade.apply(area, frame.buffer_mut());
+            }
+            draw_help_overlay(frame, area, state);
+        }
         Overlay::Search => draw_search_overlay(frame, area, state),
+        Overlay::Settings => {
+            // Dim background behind overlay
+            if state.overlay_slide > 0.01 {
+                let fade = crate::components::effects::FadeTransition::fade_in(state.overlay_slide);
+                fade.apply(area, frame.buffer_mut());
+            }
+            draw_settings_overlay(frame, area, state);
+        }
     }
 }
 
@@ -1008,6 +1124,25 @@ fn draw_top_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
     let mode_label = match state.ui_mode {
         UiMode::Shell => "SHELL",
         UiMode::Task => "TASK",
+    };
+    let (mode_bg, mode_fg) = match state.ui_mode {
+        UiMode::Shell => (Color::Green, Color::Black),
+        UiMode::Task => (Color::Yellow, Color::Black),
+    };
+
+    // Provider badge — [local] cyan vs [remote] yellow
+    let provider_lower = s.provider_kind.to_lowercase();
+    let is_local = provider_lower.contains("ollama")
+        || provider_lower.contains("lm-studio")
+        || provider_lower.contains("lmstudio")
+        || provider_lower.contains("local")
+        || provider_lower.contains("llama")
+        || provider_lower.contains("mistral.rs")
+        || provider_lower.is_empty(); // default unknown = treat as local during dev
+    let (provider_label, provider_color) = if is_local {
+        ("[local]", Color::Cyan)
+    } else {
+        ("[remote]", Color::Yellow)
     };
 
     let mut left = vec![
@@ -1049,24 +1184,48 @@ fn draw_top_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(mode_fg)
+                    .bg(mode_bg)
                     .add_modifier(Modifier::BOLD)
+            },
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            provider_label,
+            if no_c {
+                Style::default()
+            } else {
+                Style::default().fg(provider_color)
             },
         ),
     ];
 
-    // Right side: model · approvals · status
+    // Right side: model · working indicator or approvals · cost
+    let working_indicator = if state.is_working {
+        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
+        format!(" {} ", SPINNER[idx])
+    } else {
+        String::new()
+    };
+
+    let cost_str = if s.cost > 0.0 {
+        format!(" ${:.02}", s.cost)
+    } else {
+        String::new()
+    };
+
     let right_text = format!(
-        "model:{} {}{}",
+        "model:{}{}{}{}",
         s.model,
         s.approval_mode.label(),
-        if state.is_working { "  running" } else { "" },
+        working_indicator,
+        cost_str,
     );
-    let left_width: usize = left.iter().map(|sp| sp.content.len()).sum();
+    let left_width: usize = left.iter().map(|sp| sp.content.chars().count()).sum();
     let pad = (area.width as usize)
         .saturating_sub(left_width)
-        .saturating_sub(right_text.len() + 1);
+        .saturating_sub(right_text.chars().count() + 1);
     if pad > 0 {
         left.push(Span::raw(" ".repeat(pad)));
     }
@@ -1180,15 +1339,31 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     lines.push(Line::from(""));
 
+    // Running/tracked summary with colour-coded count
+    let (run_count_color, run_count_icon) = if running.is_empty() {
+        (Color::DarkGray, "○")
+    } else {
+        (Color::Yellow, "●")
+    };
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled(
-            format!(
-                "{} running  {} tracked",
-                running.len(),
-                state.subagent_runs.len()
-            ),
-            Style::default().fg(Color::Gray),
+            format!("{} ", run_count_icon),
+            Style::default().fg(run_count_color),
+        ),
+        Span::styled(
+            format!("{} running", running.len()),
+            Style::default()
+                .fg(run_count_color)
+                .add_modifier(if running.is_empty() {
+                    Modifier::empty()
+                } else {
+                    Modifier::BOLD
+                }),
+        ),
+        Span::styled(
+            format!("  {} tracked", state.subagent_runs.len()),
+            Style::default().fg(Color::DarkGray),
         ),
     ]));
     lines.push(Line::from(vec![
@@ -1216,18 +1391,33 @@ fn draw_agents_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
             Span::styled("No active subagents", Style::default().fg(Color::DarkGray)),
         ]));
     } else {
-        for run in &running {
-            let task = truncate_str(run.task.trim(), 68);
+        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        for (i, run) in running.iter().enumerate() {
+            // Stagger each subagent's spinner frame so they don't all blink in sync
+            let idx = ((state.spinner_frame / 4) as usize + i * 3) % SPINNER.len();
+            let elapsed = run.started_at.elapsed().as_secs();
+            let elapsed_str = if elapsed > 0 {
+                format!("  {}s", elapsed)
+            } else {
+                String::new()
+            };
+            let task = truncate_str(run.task.trim(), 55);
             lines.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled("● ", Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!("{} ", SPINNER[idx]),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(task, Style::default().fg(Color::White)),
+                Span::styled(elapsed_str, Style::default().fg(Color::DarkGray)),
             ]));
             if !run.tools.is_empty() {
+                // Show tools as compact chips [tool1, tool2]
+                let tools_str = format!("[{}]", run.tools.join(", "));
                 lines.push(Line::from(vec![
                     Span::raw("      "),
                     Span::styled(
-                        format!("tools: {}", run.tools.join(", ")),
+                        truncate_str(&tools_str, 66),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]));
@@ -1500,6 +1690,62 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
     )]));
     lines.push(Line::from(""));
 
+    // ── Hero stats row (inspired by clawdesk-tui overview) ─────────────
+    let tool_calls = state.activity_lines.len();
+    let active_subagents = state.active_subagent_count();
+    let elapsed = state
+        .working_since
+        .map(|s| format!("{}s", s.elapsed().as_secs()))
+        .unwrap_or_else(|| "—".to_string());
+
+    lines.push(Line::from(vec![
+        Span::styled("    ", Style::default()),
+        Span::styled(
+            format!(" {} ", state.current_turn),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("TURNS  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(" {} ", tool_calls),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("ACTIONS  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(" {} ", active_subagents),
+            Style::default()
+                .fg(if active_subagents > 0 {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("AGENTS  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(" {} ", elapsed),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("ELAPSED  ", Style::default().fg(Color::DarkGray)),
+        if state.status.cost > 0.0 {
+            Span::styled(
+                format!(" ${:.4} ", state.status.cost),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(" $0 ", Style::default().fg(Color::DarkGray))
+        },
+        Span::styled("COST", Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(""));
+
     // Token usage
     lines.push(Line::from(vec![Span::styled(
         "  Token Budget",
@@ -1520,6 +1766,7 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
         _ => Color::Red,
     };
 
+    // Bar row with inline percentage
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled("[", Style::default().fg(Color::DarkGray)),
@@ -1534,13 +1781,74 @@ fn draw_context_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(bar_color).add_modifier(Modifier::BOLD),
         ),
     ]));
+
+    // Token count + cost summary row
     lines.push(Line::from(vec![
         Span::raw("    "),
         Span::styled(
-            format!("{} / {} tokens", used, limit),
+            format!("{} / {} tokens", format_token_count(used), format_token_count(limit)),
             Style::default().fg(Color::Gray),
         ),
+        if state.status.cost > 0.0 {
+            Span::styled(
+                format!("  ●  ${:.4} spent", state.status.cost),
+                Style::default().fg(Color::Yellow),
+            )
+        } else {
+            Span::raw("")
+        },
     ]));
+
+    // Threshold labels row — bold on the active threshold
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            "● safe",
+            if pct <= 50 {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            "● caution",
+            if pct > 50 && pct <= 80 {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            "● critical",
+            if pct > 80 {
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+    ]));
+
+    // /compact hint when usage is elevated (blink above 80%)
+    if pct > 60 {
+        let show_warning = pct <= 80 || (state.spinner_frame / 8) % 2 == 0;
+        if show_warning {
+            let warn_color = if pct > 80 { Color::Red } else { Color::Yellow };
+            let warn_text = if pct > 80 {
+                "    ⚠  Context pressure high — consider /compact"
+            } else {
+                "    ▸  Use /compact to compress and free context"
+            };
+            lines.push(Line::from(vec![Span::styled(
+                warn_text,
+                Style::default().fg(warn_color),
+            )]));
+        } else {
+            lines.push(Line::from(""));
+        }
+    }
+
     lines.push(Line::from(""));
 
     // Session info
@@ -1840,32 +2148,59 @@ fn draw_help_tab(frame: &mut Frame, area: Rect, state: &TuiState) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn draw_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let tab_hint = " ctrl+1-4 / ctrl+←→ / click tabs ·";
-    let mode_hint = match state.active_tab {
+    const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+    // ── Right: always-visible tab navigation hint ─────────────────────────
+    let right_hint = " ctrl+1-4 tabs ";
+
+    // ── Left: context-specific hints per tab and mode ─────────────────────
+    let left_hint: &str = match state.active_tab {
         TabView::Coding => match state.ui_mode {
             UiMode::Shell => {
                 if state.is_working {
-                    " esc stop · ? help · /help · ctrl+c quit"
+                    " esc stop · ? help · ctrl+c quit"
                 } else {
-                    " ? help · @file · !shell · enter send · esc cancel · ctrl+c quit"
+                    " ? help · S settings · @file · !shell · enter send · ctrl+c quit"
                 }
             }
-            UiMode::Task => " ? help · tab focus · j/k scroll · g shell · esc stop · ctrl+c quit",
+            UiMode::Task => " tab focus · j/k scroll · ctrl+f search · g shell · esc stop · ctrl+c quit",
         },
-        TabView::Agents => " j/k scroll · x kill active subagents · ctrl+1 to return to coding",
-        TabView::Context => " j/k scroll · ctrl+1 to return to coding",
-        TabView::Help => " j/k scroll · ctrl+1 to return to coding",
+        TabView::Agents => " j/k scroll · x kill subagents",
+        TabView::Context => " j/k scroll · /compact to compress context",
+        TabView::Help => " j/k scroll · ? toggle",
     };
 
-    let hints = format!("{}{}", tab_hint, mode_hint);
-
-    // Completion banner on the right if present.
-    if let Some(_banner) = &state.completion_status {
-        // Banner is shown above the composer in Task mode, not in footer
+    // Build left spans: optional spinner prefix + hint text
+    let mut left_spans: Vec<Span> = Vec::new();
+    if state.is_working {
+        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
+        left_spans.push(Span::styled(
+            format!(" {} ", SPINNER[idx]),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
+    left_spans.push(Span::styled(
+        left_hint,
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let footer_style = Style::default().bg(Color::Rgb(30, 30, 40));
+
     frame.render_widget(
-        Paragraph::new(Span::styled(&hints, Style::default().fg(Color::DarkGray)))
-            .style(Style::default().bg(Color::Rgb(30, 30, 40))),
+        Paragraph::new(Line::from(left_spans))
+            .style(footer_style)
+            .alignment(ratatui::layout::Alignment::Left),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            right_hint,
+            Style::default().fg(Color::DarkGray),
+        ))
+        .style(footer_style)
+        .alignment(ratatui::layout::Alignment::Right),
         area,
     );
 }
@@ -2086,6 +2421,98 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Settings overlay — live config display (inspired by clawdesk-tui)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn draw_settings_overlay(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let target = centered_rect(area, 72, 22);
+
+    // Slide-in from the right
+    let slide = crate::components::effects::SlideTransition::new(
+        state.overlay_slide,
+        crate::components::effects::SlideDirection::Right,
+    );
+    let popup = slide.offset_area(target);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "  Current Configuration",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(""));
+
+    // Session info
+    let fields: Vec<(&str, String)> = vec![
+        ("Model", state.status.model.clone()),
+        ("Provider", if state.status.provider_kind.is_empty() { "—".to_string() } else { state.status.provider_kind.clone() }),
+        ("Base URL", if state.status.base_url.is_empty() { "default".to_string() } else { state.status.base_url.clone() }),
+        ("Agent Mode", state.agent_mode.clone()),
+        ("Approval", state.status.approval_mode.label().to_string()),
+        ("Max Turns", format!("{}", state.max_turns)),
+        ("Current Turn", format!("{}", state.current_turn)),
+        ("Tokens", format!("{} / {}", format_token_count(state.status.tokens_used), format_token_count(state.status.tokens_limit))),
+        ("Cost", format!("${:.4}", state.status.cost)),
+        ("UI Mode", match state.ui_mode { UiMode::Shell => "Shell", UiMode::Task => "Task" }.to_string()),
+        ("Active Tab", state.active_tab.title().to_string()),
+        ("Vim Mode", if state.composer.vim_active() { "enabled" } else { "disabled" }.to_string()),
+    ];
+
+    for (label, value) in &fields {
+        let value_style = if value == "—" || value == "default" || value == "disabled" {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {:<16}", label), Style::default().fg(Color::Gray)),
+            Span::styled(value.as_str(), value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Theme info
+    lines.push(Line::from(vec![Span::styled(
+        "  Theme",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(vec![
+        Span::styled("    palette         ", Style::default().fg(Color::Gray)),
+        Span::styled("dark", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled("  (8 palettes available)", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        "  Press Esc to close. Use /config to edit settings.",
+        Style::default().fg(Color::DarkGray),
+    )]));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .title(Span::styled(
+                    " settings ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Shell mode — clean terminal-first prompt
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2215,8 +2642,12 @@ fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClas
     draw_task_header(frame, body[0], state);
     draw_content_pane(frame, body[1], state);
 
-    // Completion banner
+    // Completion banner with pulse highlight
     if let Some(banner) = &state.completion_status {
+        let pulse = crate::components::effects::PulseHighlight::new(
+            state.spinner_frame,
+            banner.color,
+        );
         let line = Line::from(vec![
             Span::styled(
                 format!(" {} ", banner.icon),
@@ -2227,9 +2658,7 @@ fn draw_task_mode(frame: &mut Frame, area: Rect, state: &TuiState, wc: WidthClas
             ),
             Span::styled(
                 format!(" {}", banner.message),
-                Style::default()
-                    .fg(banner.color)
-                    .add_modifier(Modifier::BOLD),
+                pulse.style(),
             ),
         ]);
         frame.render_widget(Paragraph::new(line), body[2]);
@@ -2262,116 +2691,196 @@ fn draw_task_header(frame: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 /// Dedicated status bar rendered directly above the composer input.
+/// Left side: animated spinner + phase label + active tool card.
+/// Right side: token mini-bar + cost + elapsed time.
 fn draw_status_bar(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let status_text = if state.is_working {
-        if state.is_thinking {
-            "reasoning"
-        } else if !state.phase_label.is_empty() {
-            &state.phase_label
+    const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+    // ── Left side: spinner + phase + active tool ──────────────────────────
+    let mut left_spans: Vec<Span> = Vec::new();
+
+    if state.is_working {
+        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
+
+        // Base spinner color: thinking=magenta, normal=cyan
+        let base_spinner_color = if state.is_thinking {
+            Color::Magenta
         } else {
-            "working"
+            Color::Cyan
+        };
+
+        // Stalled detection: fade toward red when LLM goes quiet
+        let spinner_color =
+            state
+                .stalled
+                .spinner_color(base_spinner_color, Color::Rgb(220, 50, 47));
+
+        left_spans.push(Span::styled(
+            format!(" {} ", SPINNER[idx]),
+            Style::default()
+                .fg(spinner_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        // Phase label: use rotating spinner verbs instead of static text
+        let phase = if state.is_thinking {
+            "reasoning"
+        } else {
+            state.spinner_verbs.current()
+        };
+
+        // Shimmer effect on the phase label text
+        if state.accessibility.animations_enabled() && phase.len() > 1 {
+            let shimmer_target = Color::White;
+            let colors =
+                state
+                    .shimmer
+                    .shimmer_colors(state.spinner_frame, phase, spinner_color, shimmer_target);
+            for (ch, color) in phase.chars().zip(colors.iter()) {
+                left_spans.push(Span::styled(
+                    ch.to_string(),
+                    Style::default().fg(*color),
+                ));
+            }
+        } else {
+            left_spans.push(Span::styled(
+                phase.to_string(),
+                Style::default().fg(spinner_color),
+            ));
+        }
+
+        // Active tool card — shown inline when a tool is in flight
+        if let Some(ref tool_info) = state.active_tool {
+            let elapsed_secs = tool_info.started_at.elapsed().as_secs();
+            let tool_color = match tool_info.tool_name.as_str() {
+                n if n.contains("read")
+                    || n.contains("list")
+                    || n.contains("search")
+                    || n.contains("grep")
+                    || n.contains("glob") =>
+                {
+                    Color::Cyan
+                }
+                n if n.contains("write")
+                    || n.contains("edit")
+                    || n.contains("create")
+                    || n.contains("patch")
+                    || n.contains("append") =>
+                {
+                    Color::Green
+                }
+                "bash" | "shell" | "run_command" => Color::Magenta,
+                _ => Color::Yellow,
+            };
+            left_spans.push(Span::styled(
+                "  ▸ ",
+                Style::default().fg(Color::DarkGray),
+            ));
+            left_spans.push(Span::styled(
+                tool_info.tool_name.clone(),
+                Style::default()
+                    .fg(tool_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if !tool_info.args_summary.is_empty() {
+                left_spans.push(Span::styled(
+                    format!("  {}", truncate_str(&tool_info.args_summary, 28)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            if elapsed_secs > 0 {
+                left_spans.push(Span::styled(
+                    format!("  {}s", elapsed_secs),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
         }
     } else {
-        "idle"
-    };
-
-    let mut spans = Vec::new();
-
-    // Spinner
-    if state.is_working {
-        const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let idx = (state.spinner_frame / 4) as usize % SPINNER.len();
-        spans.push(Span::styled(
-            format!(" {} ", SPINNER[idx]),
-            Style::default().fg(Color::Cyan),
+        left_spans.push(Span::styled(
+            " ● idle",
+            Style::default().fg(Color::DarkGray),
         ));
     }
 
-    spans.push(Span::styled(
-        " Status: ",
-        Style::default().fg(Color::DarkGray),
-    ));
-    spans.push(Span::styled(status_text, Style::default().fg(Color::Cyan)));
-
-    spans.push(Span::styled(
-        format!("  {}", state.status.model),
-        Style::default().fg(Color::Green),
-    ));
-
-    // Show active tool name if executing
-    if let Some(ref tool_info) = state.active_tool {
-        spans.push(Span::styled(
-            format!("  ▸ {}", tool_info.tool_name),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-
+    // Focus pane label (task mode only)
     if state.ui_mode == UiMode::Task {
         let focus_label = match state.focused_pane {
             PaneFocus::Input => "input",
             PaneFocus::Activity => "activity",
             PaneFocus::Response => "response",
         };
-        spans.push(Span::styled(
-            format!("  focus: {}", focus_label),
+        left_spans.push(Span::styled(
+            format!("  [{}]", focus_label),
             Style::default().fg(Color::DarkGray),
         ));
     }
 
-    // Turn indicator hidden from normal UI — only useful for debugging.
-    // if state.current_turn > 0 {
-    //     spans.push(Span::styled(
-    //         format!("  turn {}/{}", state.current_turn, state.max_turns),
-    //         Style::default().fg(Color::DarkGray),
-    //     ));
-    // }
+    // ── Right side: elapsed + cost + token bar ────────────────────────────
+    let mut right_spans: Vec<Span> = Vec::new();
 
+    // Elapsed time (only while working)
+    if let Some(since) = state.working_since {
+        let elapsed = since.elapsed().as_secs();
+        if elapsed > 0 {
+            right_spans.push(Span::styled(
+                format!("{}s  ", elapsed),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    // Cost
+    if state.status.cost > 0.0 {
+        right_spans.push(Span::styled(
+            format!("${:.02}  ", state.status.cost),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    // Token bar
     if state.status.tokens_limit > 0 {
         let used = state.status.tokens_used;
         let limit = state.status.tokens_limit;
         let pct = state.status.token_pct().min(100);
-        let bar_width = 10usize;
+        let bar_width = 8usize;
         let filled = (pct as usize * bar_width / 100).min(bar_width);
         let token_color = match pct {
             0..=50 => Color::Green,
             51..=80 => Color::Yellow,
             _ => Color::Red,
         };
-
-        spans.push(Span::styled("  ", Style::default()));
-        spans.push(Span::styled(
-            format!("{}/{}", format_token_count(used), format_token_count(limit)),
-            Style::default().fg(token_color),
-        ));
-        spans.push(Span::styled(
-            format!("[{}{}]", "█".repeat(filled), "░".repeat(bar_width - filled)),
-            Style::default().fg(token_color),
-        ));
-    }
-
-    if state.status.cost > 0.0 {
-        spans.push(Span::styled(
-            format!("  ${:.02}", state.status.cost),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-
-    if let Some(since) = state.working_since {
-        let elapsed = since.elapsed().as_secs();
-        if elapsed > 0 {
-            spans.push(Span::styled(
-                format!("  {}s", elapsed),
-                Style::default().fg(Color::DarkGray),
-            ));
+        if pct > 80 {
+            right_spans.push(Span::styled("⚠ ", Style::default().fg(Color::Red)));
         }
+        right_spans.push(Span::styled(
+            format!(
+                "[{}{}] {}/{} ",
+                "█".repeat(filled),
+                "░".repeat(bar_width - filled),
+                format_token_count(used),
+                format_token_count(limit)
+            ),
+            Style::default().fg(token_color),
+        ));
     }
 
-    let line = Line::from(spans);
+    // ── Render: block with top border, then two overlapping paragraphs ────
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, area);
+        .border_style(Style::default().fg(Color::Rgb(55, 55, 70)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(left_spans))
+            .alignment(ratatui::layout::Alignment::Left),
+        inner,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(right_spans))
+            .alignment(ratatui::layout::Alignment::Right),
+        inner,
+    );
 }
 
 fn draw_task_activity(frame: &mut Frame, area: Rect, state: &TuiState) {
@@ -2403,12 +2912,21 @@ fn draw_task_activity(frame: &mut Frame, area: Rect, state: &TuiState) {
         let line_idx = start + offset;
         let is_match = matches.contains(&line_idx);
         let is_current = active_match == Some(line_idx);
-        let max_text = (area.width as usize).saturating_sub(6);
+        // Reserve space for time-ago label (e.g. " 5s")
+        let ago = format_time_ago(entry.timestamp);
+        let ago_width = ago.len() + 1;
+        let max_text = (area.width as usize).saturating_sub(6 + ago_width);
         let mut line = if entry.icon.is_empty() {
-            Line::from(Span::styled(
-                format!("   {}", truncate_str(&entry.text, max_text)),
-                Style::default().fg(entry.color),
-            ))
+            Line::from(vec![
+                Span::styled(
+                    format!("   {}", truncate_str(&entry.text, max_text)),
+                    Style::default().fg(entry.color),
+                ),
+                Span::styled(
+                    format!(" {}", ago),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
         } else {
             Line::from(vec![
                 Span::styled(
@@ -2416,6 +2934,10 @@ fn draw_task_activity(frame: &mut Frame, area: Rect, state: &TuiState) {
                     Style::default().fg(entry.color),
                 ),
                 Span::raw(truncate_str(&entry.text, max_text)),
+                Span::styled(
+                    format!(" {}", ago),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ])
         };
         if is_match {
@@ -2527,7 +3049,7 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         content_active_match,
     );
 
-    // Thinking indicator
+    // Thinking indicator with spinner verbs + skeleton loader for long waits
     if all_lines.is_empty()
         && (state.is_thinking || (state.is_working && state.streaming_text.is_empty()))
     {
@@ -2536,19 +3058,33 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
         let label = if state.is_thinking {
             "reasoning"
         } else {
-            "thinking"
+            state.spinner_verbs.current()
         };
-        let spinner_color = if state.is_thinking {
+        let base_color = if state.is_thinking {
             Color::Magenta
         } else {
             Color::Cyan
         };
+        let spinner_color =
+            state
+                .stalled
+                .spinner_color(base_color, Color::Rgb(220, 50, 47));
+
         all_lines.push(Line::from(vec![
             Span::styled(
                 format!(" {} ", SPINNER[spin_frame]),
                 Style::default().fg(spinner_color),
             ),
             Span::styled(label, Style::default().fg(Color::DarkGray)),
+        ]));
+
+        // Streaming indicator dots below the spinner verb
+        let dot_phase = ((state.spinner_frame / 6) % 4) as usize;
+        let dots = "●".repeat(dot_phase + 1);
+        let empty = "○".repeat(3usize.saturating_sub(dot_phase));
+        all_lines.push(Line::from(vec![
+            Span::styled(format!(" {}", dots), Style::default().fg(spinner_color)),
+            Span::styled(empty, Style::default().fg(Color::DarkGray)),
         ]));
     }
 
@@ -2605,7 +3141,7 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(Color::DarkGray),
         ));
 
-    // Append live streaming cursor at the end of content
+    // Append live streaming cursor + streaming dots at the end of content
     if !cursor_char.is_empty() {
         if let Some(last_line) = all_lines.last_mut() {
             last_line.spans.push(Span::styled(
@@ -2613,6 +3149,18 @@ fn draw_content_pane(frame: &mut Frame, area: Rect, state: &TuiState) {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
+            ));
+            // Animated streaming dots after the cursor
+            let dot_phase = ((state.spinner_frame / 6) % 4) as usize;
+            let dots = "●".repeat(dot_phase + 1);
+            let empty = "○".repeat(3usize.saturating_sub(dot_phase));
+            last_line.spans.push(Span::styled(
+                format!(" {}", dots),
+                Style::default().fg(Color::Cyan),
+            ));
+            last_line.spans.push(Span::styled(
+                empty,
+                Style::default().fg(Color::DarkGray),
             ));
         } else {
             all_lines.push(Line::from(Span::styled(
@@ -3901,6 +4449,17 @@ fn format_token_count(tokens: u64) -> String {
     }
 }
 
+/// Format an elapsed duration as a compact "time ago" label (inspired by clawdesk-tui).
+fn format_time_ago(instant: std::time::Instant) -> String {
+    let secs = instant.elapsed().as_secs();
+    match secs {
+        0..=2 => "now".to_string(),
+        3..=59 => format!("{}s", secs),
+        60..=3599 => format!("{}m", secs / 60),
+        _ => format!("{}h", secs / 3600),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4243,6 +4802,19 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
             Overlay::None => Overlay::Help,
             Overlay::Help => Overlay::None,
             Overlay::Search => Overlay::Help,
+            Overlay::Settings => Overlay::Help,
+        };
+        return true;
+    }
+
+    // 'S' (shift-s) toggles settings overlay when composer is empty
+    if matches!(key.code, KeyCode::Char('S'))
+        && state.composer.is_empty()
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        state.overlay = match state.overlay {
+            Overlay::Settings => Overlay::None,
+            _ => Overlay::Settings,
         };
         return true;
     }
@@ -4276,6 +4848,13 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent) -> bool {
                 state.sync_search_scroll();
             }
             _ => {}
+        }
+        return true;
+    }
+
+    if state.overlay == Overlay::Settings {
+        if matches!(key.code, KeyCode::Esc) {
+            state.overlay = Overlay::None;
         }
         return true;
     }

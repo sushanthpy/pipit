@@ -13,6 +13,7 @@ pub mod spinner_verbs;
 pub mod suggestions;
 pub mod terminal_caps;
 pub mod theme;
+pub mod theme_bridge;
 pub mod tui;
 pub mod vim;
 

@@ -624,6 +624,7 @@ pub async fn run(
                         };
 
                         state.task_label = task_label;
+                        state.inject_user_prompt(&input);
                         state.push_activity("›", Color::Green, display);
 
                         drop(state); // Release lock before async
@@ -1572,6 +1573,7 @@ pub async fn run(
 
             if needs_redraw && state.should_redraw() {
                 state.spinner_frame = state.spinner_frame.wrapping_add(1);
+                state.tick_animations();
                 terminal.draw(|f| app::draw(f, &state))?;
                 needs_redraw = false;
             }
@@ -1948,6 +1950,10 @@ fn apply_agent_event(state: &mut TuiState, event: &pipit_core::AgentEvent) {
                     state.streaming_text.clear();
                     state.streaming_text.push_str(&normalized);
                 }
+            }
+            // Feed stalled detector so it knows tokens are flowing
+            if pushed {
+                state.record_stream_tokens(text.len() as u64);
             }
         }
         AgentEvent::ContentComplete { full_text } => {

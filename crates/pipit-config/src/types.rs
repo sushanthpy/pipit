@@ -149,7 +149,7 @@ impl Default for ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     AmazonBedrock,
     Anthropic,
@@ -257,6 +257,18 @@ impl FromStr for ProviderKind {
                 s
             )),
         }
+    }
+}
+
+/// Custom Serialize that uses the Display impl so saved config files contain
+/// snake_case names (e.g. `openai_compatible`) instead of serde's default
+/// PascalCase variant names.
+impl Serialize for ProviderKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
